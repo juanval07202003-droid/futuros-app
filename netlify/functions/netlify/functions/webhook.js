@@ -80,23 +80,3 @@ async function getMaticPriceUSD(maticAmount) {
     return maticAmount * (data?.["matic-network"]?.usd || 0.5);
   } catch { return maticAmount * 0.5; }
 }
-```
-
-Click **"Commit changes"** (botón verde abajo).
-
----
-
-## Archivo 2 — `netlify.toml`
-
-Click **"Add file" → "Create new file"**, escribe en el nombre:
-```
-netlify.toml
-
-[build]
-  functions = "netlify/functions"
-  publish = "."
-
-[[headers]]
-  for = "/*"
-  [headers.values]
-    X-Frame-Options = "DENY"
