@@ -2,6 +2,9 @@
   functions = "netlify/functions"
   publish = "."
 
+[[plugins]]
+  package = "@netlify/plugin-functions-install-core"
+
 [[headers]]
   for = "/*"
   [headers.values]
