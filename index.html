@@ -2461,12 +2461,10 @@ function renderAuth(){
 
         ${(()=>{
       const mob = isMobile();
-      const inWallet = isInsideWalletBrowser();
-      const inMM = mob && (navigator.userAgent.toLowerCase().includes('metamask') || window.ethereum?.isMetaMask);
-      const inPH = mob && (navigator.userAgent.toLowerCase().includes('phantom') || !!window.phantom?.ethereum);
-      const inTW = mob && (navigator.userAgent.toLowerCase().includes('trust') || !!window.trustwallet || !!window.ethereum?.isTrust);
-      // Safari puro móvil → links <a>
-      if(mob && !inWallet) return `
+      const wallet = whichWalletBrowser(); // "phantom"|"metamask"|"trust"|"unknown"|null
+
+      // 1. Safari/Chrome puro móvil — sin wallet inyectada → links <a>
+      if(mob && !wallet) return `
     <a class="wallet-btn" href="https://metamask.app.link/dapp/futurosapp.netlify.app" style="text-decoration:none;display:flex;align-items:center;gap:14px">
       <div class="wallet-btn-icon" style="background:#f6851b1a"><svg width="30" height="30" viewBox="0 0 35 33" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M32.9 1L19.4 10.7l2.4-5.7z" fill="#E17726" stroke="#E17726" stroke-width=".25"/><path d="M2.1 1l13.4 9.8-2.3-5.8z" fill="#E27625" stroke="#E27625" stroke-width=".25"/><path d="M28.1 23.5l-3.6 5.5 7.7 2.1 2.2-7.5z" fill="#E27625" stroke="#E27625" stroke-width=".25"/><path d="M1.6 23.6l2.2 7.5 7.7-2.1-3.6-5.5z" fill="#E27625" stroke="#E27625" stroke-width=".25"/><path d="M11 14.8l-2.1 3.2 7.6.3-.3-8.1z" fill="#E27625" stroke="#E27625" stroke-width=".25"/><path d="M24 14.8l-5.3-4.7-.2 8.2 7.6-.3z" fill="#E27625" stroke="#E27625" stroke-width=".25"/><path d="M11.4 29l4.6-2.2-3.9-3.1z" fill="#E27625" stroke="#E27625" stroke-width=".25"/><path d="M19 26.8l4.6 2.2-.8-5.3z" fill="#E27625" stroke="#E27625" stroke-width=".25"/><path d="M23.6 29l-4.6-2.2.4 3-.1 1.1z" fill="#D5BFB2" stroke="#D5BFB2" stroke-width=".25"/><path d="M11.4 29l4.3 1.9-.1-1.1.4-3z" fill="#D5BFB2" stroke="#D5BFB2" stroke-width=".25"/><path d="M15.8 21.8l-3.8-1.1 2.7-1.2z" fill="#233447" stroke="#233447" stroke-width=".25"/><path d="M19.2 21.8l1.1-2.3 2.7 1.2z" fill="#233447" stroke="#233447" stroke-width=".25"/><path d="M11.4 29l.7-5.5-6.3.1z" fill="#CC6228" stroke="#CC6228" stroke-width=".25"/><path d="M23.9 23.5l.7 5.5 5.6-5.4z" fill="#CC6228" stroke="#CC6228" stroke-width=".25"/><path d="M26.6 18l-7.6.3.7 4 1.1-2.3 2.7 1.2z" fill="#CC6228" stroke="#CC6228" stroke-width=".25"/><path d="M12 20.7l2.7-1.2 1.1 2.3.7-4-7.6-.3z" fill="#CC6228" stroke="#CC6228" stroke-width=".25"/><path d="M8.9 18l3.2 6.2-.1-3z" fill="#E27525" stroke="#E27525" stroke-width=".25"/><path d="M23 21.2l-.2 3 3.2-6.2z" fill="#E27525" stroke="#E27525" stroke-width=".25"/><path d="M16.5 18.3l-.7 4 .8 4.3.2-5.7z" fill="#E27525" stroke="#E27525" stroke-width=".25"/><path d="M18.5 18.3l-.2 2.5.1 5.8.9-4.3z" fill="#E27525" stroke="#E27525" stroke-width=".25"/><path d="M19.2 22.3l-.9 4.3.7.5 3.8-3.1.2-3z" fill="#F5841F" stroke="#F5841F" stroke-width=".25"/><path d="M12 20.7l.1 3 3.8 3.1.7-.5-.8-4.3z" fill="#F5841F" stroke="#F5841F" stroke-width=".25"/><path d="M19.3 30.9l.1-1.1-.3-.3h-4.2l-.3.3.1 1.1-4.3-1.9 1.5 1.2 3 2.1h5.2l3-2.1 1.5-1.2z" fill="#C0AC9D" stroke="#C0AC9D" stroke-width=".25"/><path d="M19 26.8l-.7-.5h-3.6l-.7.5-.4 3 .3-.3h4.2l.3.3z" fill="#161616" stroke="#161616" stroke-width=".25"/><path d="M33.5 11.3l1.1-5.4L32.9 1 19 10.3l5 4.2 7.1 2.1 1.6-1.8-.7-.5 1.1-1-.8-.6 1.1-.8z" fill="#763E1A" stroke="#763E1A" stroke-width=".25"/><path d="M.4 5.9l1.1 5.4-.7.5 1.1.8-.8.6 1.1 1-.7.5 1.6 1.8 7.1-2.1 5-4.2L2.1 1z" fill="#763E1A" stroke="#763E1A" stroke-width=".25"/><path d="M31.1 16.6l-7.1-2.1 2.1 3.2-3.1 6.2 4.1-.1h6.1z" fill="#F5841F" stroke="#F5841F" stroke-width=".25"/><path d="M11 14.5L3.9 16.6l-2.1 7.2h6.1l4.1.1-3.1-6.2z" fill="#F5841F" stroke="#F5841F" stroke-width=".25"/><path d="M18.5 18.3l.5-8.1 2.4-6.5h-10.8l2.4 6.5.5 8.1.2 2.6v5.7h3.6l.1-5.7z" fill="#F5841F" stroke="#F5841F" stroke-width=".25"/></svg></div>
       <div class="wallet-btn-text"><span class="wallet-btn-name">MetaMask</span><span class="wallet-btn-desc">Abrir en app MetaMask</span></div>
@@ -2482,26 +2480,32 @@ function renderAuth(){
       <div class="wallet-btn-text"><span class="wallet-btn-name">Trust Wallet</span><span class="wallet-btn-desc">Abrir en app Trust Wallet</span></div>
       <span class="wallet-btn-arrow">›</span>
     </a>`;
-      // Dentro de un browser de wallet → mostrar solo esa wallet + conectar directo
-      if(inPH) return `
+
+      // 2. Dentro del browser de Phantom → conectar directo con Phantom
+      if(wallet === "phantom") return `
     <button class="wallet-btn" onclick="authConnectPhantom()">
       <div class="wallet-btn-icon" style="background:#ab9ff21a"><svg width="30" height="30" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg"><rect width="128" height="128" rx="26" fill="#AB9FF2"/><path d="M28 72 C26 52 34 32 52 26 C70 20 92 28 100 46 C108 62 104 80 94 90 C88 96 80 94 76 88 C72 82 68 82 64 88 C60 94 52 96 46 90 C36 82 30 88 28 72 Z" fill="white"/><ellipse cx="60" cy="58" rx="6" ry="7" fill="#AB9FF2"/><ellipse cx="76" cy="55" rx="6" ry="7" fill="#AB9FF2"/></svg></div>
       <div class="wallet-btn-text"><span class="wallet-btn-name">Phantom</span><span class="wallet-btn-desc">Conectar con Phantom</span></div>
       <span class="wallet-btn-arrow">›</span>
     </button>`;
-      if(inMM) return `
+
+      // 3. Dentro del browser de MetaMask
+      if(wallet === "metamask") return `
     <button class="wallet-btn" onclick="authConnectMetaMask()">
       <div class="wallet-btn-icon" style="background:#f6851b1a"><svg width="30" height="30" viewBox="0 0 35 33" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M32.9 1L19.4 10.7l2.4-5.7z" fill="#E17726" stroke="#E17726" stroke-width=".25"/><path d="M2.1 1l13.4 9.8-2.3-5.8z" fill="#E27625" stroke="#E27625" stroke-width=".25"/><path d="M28.1 23.5l-3.6 5.5 7.7 2.1 2.2-7.5z" fill="#E27625" stroke="#E27625" stroke-width=".25"/><path d="M1.6 23.6l2.2 7.5 7.7-2.1-3.6-5.5z" fill="#E27625" stroke="#E27625" stroke-width=".25"/><path d="M11 14.8l-2.1 3.2 7.6.3-.3-8.1z" fill="#E27625" stroke="#E27625" stroke-width=".25"/><path d="M24 14.8l-5.3-4.7-.2 8.2 7.6-.3z" fill="#E27625" stroke="#E27625" stroke-width=".25"/><path d="M11.4 29l4.6-2.2-3.9-3.1z" fill="#E27625" stroke="#E27625" stroke-width=".25"/><path d="M19 26.8l4.6 2.2-.8-5.3z" fill="#E27625" stroke="#E27625" stroke-width=".25"/><path d="M23.6 29l-4.6-2.2.4 3-.1 1.1z" fill="#D5BFB2" stroke="#D5BFB2" stroke-width=".25"/><path d="M11.4 29l4.3 1.9-.1-1.1.4-3z" fill="#D5BFB2" stroke="#D5BFB2" stroke-width=".25"/><path d="M15.8 21.8l-3.8-1.1 2.7-1.2z" fill="#233447" stroke="#233447" stroke-width=".25"/><path d="M19.2 21.8l1.1-2.3 2.7 1.2z" fill="#233447" stroke="#233447" stroke-width=".25"/><path d="M11.4 29l.7-5.5-6.3.1z" fill="#CC6228" stroke="#CC6228" stroke-width=".25"/><path d="M23.9 23.5l.7 5.5 5.6-5.4z" fill="#CC6228" stroke="#CC6228" stroke-width=".25"/><path d="M26.6 18l-7.6.3.7 4 1.1-2.3 2.7 1.2z" fill="#CC6228" stroke="#CC6228" stroke-width=".25"/><path d="M12 20.7l2.7-1.2 1.1 2.3.7-4-7.6-.3z" fill="#CC6228" stroke="#CC6228" stroke-width=".25"/><path d="M8.9 18l3.2 6.2-.1-3z" fill="#E27525" stroke="#E27525" stroke-width=".25"/><path d="M23 21.2l-.2 3 3.2-6.2z" fill="#E27525" stroke="#E27525" stroke-width=".25"/><path d="M16.5 18.3l-.7 4 .8 4.3.2-5.7z" fill="#E27525" stroke="#E27525" stroke-width=".25"/><path d="M18.5 18.3l-.2 2.5.1 5.8.9-4.3z" fill="#E27525" stroke="#E27525" stroke-width=".25"/><path d="M19.2 22.3l-.9 4.3.7.5 3.8-3.1.2-3z" fill="#F5841F" stroke="#F5841F" stroke-width=".25"/><path d="M12 20.7l.1 3 3.8 3.1.7-.5-.8-4.3z" fill="#F5841F" stroke="#F5841F" stroke-width=".25"/><path d="M19.3 30.9l.1-1.1-.3-.3h-4.2l-.3.3.1 1.1-4.3-1.9 1.5 1.2 3 2.1h5.2l3-2.1 1.5-1.2z" fill="#C0AC9D" stroke="#C0AC9D" stroke-width=".25"/><path d="M19 26.8l-.7-.5h-3.6l-.7.5-.4 3 .3-.3h4.2l.3.3z" fill="#161616" stroke="#161616" stroke-width=".25"/><path d="M33.5 11.3l1.1-5.4L32.9 1 19 10.3l5 4.2 7.1 2.1 1.6-1.8-.7-.5 1.1-1-.8-.6 1.1-.8z" fill="#763E1A" stroke="#763E1A" stroke-width=".25"/><path d="M.4 5.9l1.1 5.4-.7.5 1.1.8-.8.6 1.1 1-.7.5 1.6 1.8 7.1-2.1 5-4.2L2.1 1z" fill="#763E1A" stroke="#763E1A" stroke-width=".25"/><path d="M31.1 16.6l-7.1-2.1 2.1 3.2-3.1 6.2 4.1-.1h6.1z" fill="#F5841F" stroke="#F5841F" stroke-width=".25"/><path d="M11 14.5L3.9 16.6l-2.1 7.2h6.1l4.1.1-3.1-6.2z" fill="#F5841F" stroke="#F5841F" stroke-width=".25"/><path d="M18.5 18.3l.5-8.1 2.4-6.5h-10.8l2.4 6.5.5 8.1.2 2.6v5.7h3.6l.1-5.7z" fill="#F5841F" stroke="#F5841F" stroke-width=".25"/></svg></div>
       <div class="wallet-btn-text"><span class="wallet-btn-name">MetaMask</span><span class="wallet-btn-desc">Conectar con MetaMask</span></div>
       <span class="wallet-btn-arrow">›</span>
     </button>`;
-      if(inTW) return `
+
+      // 4. Dentro del browser de Trust Wallet
+      if(wallet === "trust") return `
     <button class="wallet-btn" onclick="authConnectTrustWallet()">
       <div class="wallet-btn-icon" style="background:#3375bb1a"><svg width="30" height="30" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg"><rect width="40" height="40" rx="10" fill="#3375BB"/><path d="M20 7L9 11.5V20.5C9 26.3 13.8 31.7 20 33C26.2 31.7 31 26.3 31 20.5V11.5L20 7Z" fill="white"/><path d="M17.5 24.5L13.5 20.5L15 19L17.5 21.5L25 14L26.5 15.5L17.5 24.5Z" fill="#3375BB"/></svg></div>
       <div class="wallet-btn-text"><span class="wallet-btn-name">Trust Wallet</span><span class="wallet-btn-desc">Conectar con Trust Wallet</span></div>
       <span class="wallet-btn-arrow">›</span>
     </button>`;
-      // Desktop → todos los botones
+
+      // 5. Desktop o wallet desconocida → todos los botones
       return `
     <button class="wallet-btn" onclick="authConnectMetaMask()">
       <div class="wallet-btn-icon" style="background:#f6851b1a"><svg width="30" height="30" viewBox="0 0 35 33" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M32.9 1L19.4 10.7l2.4-5.7z" fill="#E17726" stroke="#E17726" stroke-width=".25"/><path d="M2.1 1l13.4 9.8-2.3-5.8z" fill="#E27625" stroke="#E27625" stroke-width=".25"/><path d="M28.1 23.5l-3.6 5.5 7.7 2.1 2.2-7.5z" fill="#E27625" stroke="#E27625" stroke-width=".25"/><path d="M1.6 23.6l2.2 7.5 7.7-2.1-3.6-5.5z" fill="#E27625" stroke="#E27625" stroke-width=".25"/><path d="M11 14.8l-2.1 3.2 7.6.3-.3-8.1z" fill="#E27625" stroke="#E27625" stroke-width=".25"/><path d="M24 14.8l-5.3-4.7-.2 8.2 7.6-.3z" fill="#E27625" stroke="#E27625" stroke-width=".25"/><path d="M11.4 29l4.6-2.2-3.9-3.1z" fill="#E27625" stroke="#E27625" stroke-width=".25"/><path d="M19 26.8l4.6 2.2-.8-5.3z" fill="#E27625" stroke="#E27625" stroke-width=".25"/><path d="M23.6 29l-4.6-2.2.4 3-.1 1.1z" fill="#D5BFB2" stroke="#D5BFB2" stroke-width=".25"/><path d="M11.4 29l4.3 1.9-.1-1.1.4-3z" fill="#D5BFB2" stroke="#D5BFB2" stroke-width=".25"/><path d="M15.8 21.8l-3.8-1.1 2.7-1.2z" fill="#233447" stroke="#233447" stroke-width=".25"/><path d="M19.2 21.8l1.1-2.3 2.7 1.2z" fill="#233447" stroke="#233447" stroke-width=".25"/><path d="M11.4 29l.7-5.5-6.3.1z" fill="#CC6228" stroke="#CC6228" stroke-width=".25"/><path d="M23.9 23.5l.7 5.5 5.6-5.4z" fill="#CC6228" stroke="#CC6228" stroke-width=".25"/><path d="M26.6 18l-7.6.3.7 4 1.1-2.3 2.7 1.2z" fill="#CC6228" stroke="#CC6228" stroke-width=".25"/><path d="M12 20.7l2.7-1.2 1.1 2.3.7-4-7.6-.3z" fill="#CC6228" stroke="#CC6228" stroke-width=".25"/><path d="M8.9 18l3.2 6.2-.1-3z" fill="#E27525" stroke="#E27525" stroke-width=".25"/><path d="M23 21.2l-.2 3 3.2-6.2z" fill="#E27525" stroke="#E27525" stroke-width=".25"/><path d="M16.5 18.3l-.7 4 .8 4.3.2-5.7z" fill="#E27525" stroke="#E27525" stroke-width=".25"/><path d="M18.5 18.3l-.2 2.5.1 5.8.9-4.3z" fill="#E27525" stroke="#E27525" stroke-width=".25"/><path d="M19.2 22.3l-.9 4.3.7.5 3.8-3.1.2-3z" fill="#F5841F" stroke="#F5841F" stroke-width=".25"/><path d="M12 20.7l.1 3 3.8 3.1.7-.5-.8-4.3z" fill="#F5841F" stroke="#F5841F" stroke-width=".25"/><path d="M19.3 30.9l.1-1.1-.3-.3h-4.2l-.3.3.1 1.1-4.3-1.9 1.5 1.2 3 2.1h5.2l3-2.1 1.5-1.2z" fill="#C0AC9D" stroke="#C0AC9D" stroke-width=".25"/><path d="M19 26.8l-.7-.5h-3.6l-.7.5-.4 3 .3-.3h4.2l.3.3z" fill="#161616" stroke="#161616" stroke-width=".25"/><path d="M33.5 11.3l1.1-5.4L32.9 1 19 10.3l5 4.2 7.1 2.1 1.6-1.8-.7-.5 1.1-1-.8-.6 1.1-.8z" fill="#763E1A" stroke="#763E1A" stroke-width=".25"/><path d="M.4 5.9l1.1 5.4-.7.5 1.1.8-.8.6 1.1 1-.7.5 1.6 1.8 7.1-2.1 5-4.2L2.1 1z" fill="#763E1A" stroke="#763E1A" stroke-width=".25"/><path d="M31.1 16.6l-7.1-2.1 2.1 3.2-3.1 6.2 4.1-.1h6.1z" fill="#F5841F" stroke="#F5841F" stroke-width=".25"/><path d="M11 14.5L3.9 16.6l-2.1 7.2h6.1l4.1.1-3.1-6.2z" fill="#F5841F" stroke="#F5841F" stroke-width=".25"/><path d="M18.5 18.3l.5-8.1 2.4-6.5h-10.8l2.4 6.5.5 8.1.2 2.6v5.7h3.6l.1-5.7z" fill="#F5841F" stroke="#F5841F" stroke-width=".25"/></svg></div>
@@ -2591,10 +2595,22 @@ function isMobile(){
 
 function isInsideWalletBrowser(){
   const ua = navigator.userAgent.toLowerCase();
-  return ua.includes("metamask") || ua.includes("phantom") ||
-         ua.includes("trust") || ua.includes("dappbrowser") ||
-         !!window.ethereum?.isMetaMask || !!window.phantom?.ethereum ||
-         !!window.trustwallet || !!window.ethereum?.isTrust;
+  // Detectar por UA
+  if(ua.includes("metamask") || ua.includes("phantom") ||
+     ua.includes("trust") || ua.includes("dappbrowser")) return true;
+  // Detectar por provider inyectado
+  if(window.ethereum || window.phantom?.ethereum ||
+     window.trustwallet || window.ethereum?.isTrust) return true;
+  return false;
+}
+
+function whichWalletBrowser(){
+  const ua = navigator.userAgent.toLowerCase();
+  if(ua.includes("phantom") || window.phantom?.ethereum || window.ethereum?.isPhantom) return "phantom";
+  if(ua.includes("metamask") || window.ethereum?.isMetaMask) return "metamask";
+  if(ua.includes("trust") || window.trustwallet || window.ethereum?.isTrust) return "trust";
+  if(window.ethereum) return "unknown"; // alguna wallet desconocida
+  return null;
 }
 
 // Safari en iOS bloquea window.location.href en funciones async
@@ -2637,14 +2653,14 @@ async function authConnectPhantom(){
     mobileDeepLink(`https://phantom.app/ul/browse/${encodeURIComponent(APP_URL)}?ref=${encodeURIComponent(APP_URL)}`);
     return;
   }
-  // Dentro del browser de Phantom, inyecta window.ethereum directamente
-  // window.phantom?.ethereum puede ser undefined en móvil — usar fallbacks
-  let provider = window.phantom?.ethereum
+  // Dentro del browser de Phantom móvil:
+  // window.phantom puede ser undefined — Phantom inyecta window.ethereum directamente
+  const provider = window.phantom?.ethereum
     || (window.ethereum?.isPhantom ? window.ethereum : null)
     || (window.ethereum?.providers?.find(p=>p.isPhantom))
-    || window.ethereum; // último recurso: dentro del browser de Phantom siempre hay ethereum
+    || window.ethereum; // Phantom móvil siempre inyecta window.ethereum
   if(!provider){
-    notify("Phantom no detectado.","error");
+    notify("No se detectó proveedor Ethereum. Asegúrate de estar en el browser de Phantom.","error");
     return;
   }
   await _authConnectEVM("phantom", provider);
