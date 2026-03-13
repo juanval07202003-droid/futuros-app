@@ -2572,17 +2572,54 @@ function isMobile(){
   return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
 }
 
+function isInsideWalletBrowser(){
+  const ua = navigator.userAgent.toLowerCase();
+  return ua.includes("metamask") || ua.includes("phantom") ||
+         ua.includes("trust") || ua.includes("dappbrowser") ||
+         !!window.ethereum?.isMetaMask || !!window.phantom?.ethereum ||
+         !!window.trustwallet || !!window.ethereum?.isTrust;
+}
+
 const WC_PROJECT_ID = "a74e0b17ba439a0c165308a1357367f4";
 let wcProvider = null;
 
-async function authConnectTrustWallet(){
-  // En móvil sin Trust Wallet → deep link al browser de Trust Wallet
+async function authConnectMetaMask(){
+  // En móvil fuera del browser de MetaMask → redirigir
+  if(isMobile() && !isInsideWalletBrowser()){
+    window.location.href = `https://metamask.app.link/dapp/${APP_URL.replace("https://","")}`;
+    return;
+  }
   if(!window.ethereum){
-    if(isMobile()){
-      window.location.href = `https://link.trustwallet.com/open_url?coin_id=966&url=${encodeURIComponent(APP_URL)}`;
-      return;
-    }
-    // En desktop → usar WalletConnect (Trust Wallet lo soporta)
+    notify("MetaMask no detectado. Instala la extensión primero.","error");
+    window.open("https://metamask.io/download/","_blank");
+    return;
+  }
+  await _authConnectEVM("metamask");
+}
+
+async function authConnectPhantom(){
+  // En móvil fuera del browser de Phantom → redirigir
+  if(isMobile() && !isInsideWalletBrowser()){
+    window.location.href = `https://phantom.app/ul/browse/${encodeURIComponent(APP_URL)}?ref=${encodeURIComponent(APP_URL)}`;
+    return;
+  }
+  const provider = window.phantom?.ethereum || window.ethereum;
+  if(!provider){
+    notify("Phantom no detectado. Instala la extensión primero.","error");
+    window.open("https://phantom.com/download","_blank");
+    return;
+  }
+  await _authConnectEVM("phantom", provider);
+}
+
+async function authConnectTrustWallet(){
+  // En móvil fuera del browser de Trust → redirigir
+  if(isMobile() && !isInsideWalletBrowser()){
+    window.location.href = `https://link.trustwallet.com/open_url?coin_id=966&url=${encodeURIComponent(APP_URL)}`;
+    return;
+  }
+  if(!window.ethereum){
+    // Desktop sin wallet → WalletConnect
     await authConnectWalletConnect("trust");
     return;
   }
@@ -2592,7 +2629,6 @@ async function authConnectTrustWallet(){
 async function authConnectWalletConnect(hint=""){
   try{
     notify("Iniciando WalletConnect…","info");
-    // Inicializar provider de WalletConnect v2
     const EthereumProvider = window.EthereumProvider ||
       window["@walletconnect/ethereum-provider"]?.EthereumProvider;
     if(!EthereumProvider){
@@ -2601,14 +2637,14 @@ async function authConnectWalletConnect(hint=""){
     }
     wcProvider = await EthereumProvider.init({
       projectId: WC_PROJECT_ID,
-      chains: [137], // Polygon Mainnet
+      chains: [137],
       showQrModal: true,
       qrModalOptions: {
         themeMode: document.documentElement.getAttribute("data-theme")==="dark"?"dark":"light",
         explorerRecommendedWalletIds: [
-          "4622a2b2d6af1c9844944291e5e7351a6aa24cd7b23099efac1b2fd875da31a0", // Trust Wallet
-          "c57ca95b47569778a828d19178114f4db188b89b763c899ba0be274e97267d96", // MetaMask
-          "1ae92b26df02f0abca6304df07debccd18262fdf5fe82daa81593582dac9a369", // Rainbow
+          "4622a2b2d6af1c9844944291e5e7351a6aa24cd7b23099efac1b2fd875da31a0",
+          "c57ca95b47569778a828d19178114f4db188b89b763c899ba0be274e97267d96",
+          "1ae92b26df02f0abca6304df07debccd18262fdf5fe82daa81593582dac9a369",
         ],
       },
     });
@@ -2622,7 +2658,6 @@ async function authConnectWalletConnect(hint=""){
     const accounts = await wcProvider.request({method:"eth_accounts"});
     if(!accounts.length) throw new Error("No accounts");
 
-    // Asegurarse de estar en Polygon
     try{
       await wcProvider.request({method:"wallet_switchEthereumChain",params:[{chainId:"0x89"}]});
     }catch(sw){
@@ -2637,7 +2672,6 @@ async function authConnectWalletConnect(hint=""){
       }
     }
 
-    // Usar el provider de WC como proveedor EVM
     window._wcProvider = wcProvider;
     await _authConnectEVM("walletconnect", wcProvider);
 
@@ -2649,39 +2683,6 @@ async function authConnectWalletConnect(hint=""){
       notify("Error WalletConnect: "+(e?.message||e),"error");
     }
   }
-}
-
-
-async function authConnectMetaMask(){
-  // En móvil sin MetaMask instalado → abrir en el browser de MetaMask
-  if(!window.ethereum || !window.ethereum.isMetaMask){
-    if(isMobile()){
-      // Deep link al browser integrado de MetaMask Mobile
-      window.location.href = `https://metamask.app.link/dapp/${APP_URL.replace("https://","")}`;
-      return;
-    }
-    const en=STATE.lang==="en";
-    notify(en?"MetaMask not detected. Install the extension first.":"MetaMask no detectado. Instala la extensión primero.","error");
-    window.open("https://metamask.io/download/","_blank");
-    return;
-  }
-  await _authConnectEVM("metamask");
-}
-
-async function authConnectPhantom(){
-  const provider=window.phantom?.ethereum||window.ethereum;
-  if(!provider){
-    if(isMobile()){
-      // Deep link al browser integrado de Phantom Mobile
-      window.location.href = `https://phantom.app/ul/browse/${encodeURIComponent(APP_URL)}?ref=${encodeURIComponent(APP_URL)}`;
-      return;
-    }
-    const en=STATE.lang==="en";
-    notify(en?"Phantom not detected. Install the extension first.":"Phantom no detectado. Instala la extensión primero.","error");
-    window.open("https://phantom.com/download","_blank");
-    return;
-  }
-  await _authConnectEVM("phantom",provider);
 }
 
 async function _authConnectEVM(walletType,provider=window.ethereum){
