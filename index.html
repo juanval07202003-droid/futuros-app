@@ -4,6 +4,7 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>⚡ Futuros — Prediction Market</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2300c896'/%3E%3Cpolygon points='19,3 9,18 15,18 13,29 23,14 17,14' fill='white'/%3E%3C/svg%3E"/>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700;9..40,800;9..40,900&display=swap" rel="stylesheet"/>
 
@@ -2298,8 +2299,15 @@ function renderHome(){
   </div>
   <div class="markets-grid">${filtered.length?filtered.map(renderMarketCard).join(""):`<p style="color:var(--muted);padding:24px 0">${t("markets_empty")}</p>`}</div>
 </div>`;
-  // kick off carousel timer after DOM paint
-  setTimeout(()=>startCarousel(featuredCount),0);
+  // kick off carousel timer after DOM paint + attach non-passive touchmove for iOS swipe
+  setTimeout(()=>{
+    startCarousel(featuredCount);
+    const wrap=document.getElementById("carousel-wrap");
+    if(wrap){
+      wrap.removeEventListener("touchmove",carouselTouchMove);
+      wrap.addEventListener("touchmove",carouselTouchMove,{passive:false});
+    }
+  },0);
   return html;
 }
 
@@ -2364,6 +2372,28 @@ function startCarousel(total){
 }
 function stopCarousel(){clearInterval(carouselTimer);}
 
+let _cTouchX=null;
+function carouselTouchStart(e){
+  _cTouchX=e.touches[0].clientX;
+  stopCarousel();
+}
+function carouselTouchMove(e){
+  // Prevent vertical scroll hijack only if clearly horizontal
+  if(_cTouchX!==null){
+    const dx=e.touches[0].clientX-_cTouchX;
+    if(Math.abs(dx)>8) e.preventDefault();
+  }
+}
+function carouselTouchEnd(e){
+  if(_cTouchX===null)return;
+  const dx=e.changedTouches[0].clientX-_cTouchX;
+  _cTouchX=null;
+  if(dx<-40) carouselNext();
+  else if(dx>40) carouselPrev();
+  else startCarousel(carouselTotal);
+  if(carouselTotal>1) startCarousel(carouselTotal);
+}
+
 function renderFeaturedCarousel(){
   const featured=STATE.markets.filter(m=>m.featured&&!m.resolved);
   if(!featured.length)return"";
@@ -2409,7 +2439,9 @@ function renderFeaturedCarousel(){
     onmouseenter="stopCarousel()"
     onmouseleave="startCarousel(${n})">
     ${navPrev}
-    <div class="carousel-wrap">
+    <div class="carousel-wrap" id="carousel-wrap"
+      ontouchstart="carouselTouchStart(event)"
+      ontouchend="carouselTouchEnd(event)">
       <div id="carousel-track" class="carousel-track">${slides}</div>
     </div>
     ${navNext}
@@ -2499,20 +2531,6 @@ function renderAuth(){
       <span class="wallet-btn-arrow">›</span>
     </button>
 
-    <button class="wallet-btn" onclick="authConnectWalletConnect()">
-      <div class="wallet-btn-icon" style="background:#3b99fc1a">
-        <svg width="30" height="30" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <rect width="40" height="40" rx="10" fill="#3B99FC"/>
-          <path d="M12.5 18.2C16.6 14.2 23.4 14.2 27.5 18.2L28 18.7C28.2 18.9 28.2 19.2 28 19.4L26.4 21C26.3 21.1 26.1 21.1 26 21L25.3 20.3C22.4 17.5 17.6 17.5 14.7 20.3L14 21C13.9 21.1 13.7 21.1 13.6 21L12 19.4C11.8 19.2 11.8 18.9 12 18.7L12.5 18.2ZM30.8 21.5L32.2 22.9C32.4 23.1 32.4 23.4 32.2 23.6L25.7 30C25.5 30.2 25.2 30.2 25 30L20.5 25.6C20.45 25.55 20.35 25.55 20.3 25.6L15.8 30C15.6 30.2 15.3 30.2 15.1 30L8.6 23.6C8.4 23.4 8.4 23.1 8.6 22.9L10 21.5C10.2 21.3 10.5 21.3 10.7 21.5L15.2 25.9C15.25 25.95 15.35 25.95 15.4 25.9L19.9 21.5C20.1 21.3 20.4 21.3 20.6 21.5L25.1 25.9C25.15 25.95 25.25 25.95 25.3 25.9L29.8 21.5C30.1 21.3 30.6 21.3 30.8 21.5Z" fill="white"/>
-        </svg>
-      </div>
-      <div class="wallet-btn-text">
-        <span class="wallet-btn-name">WalletConnect</span>
-        <span class="wallet-btn-desc">${en?"Connect any wallet via QR":"Conecta cualquier wallet por QR"}</span>
-      </div>
-      <span class="wallet-btn-arrow">›</span>
-    </button>
-
     <div class="auth-terms">
       ${en?"By connecting you accept our":"Al conectar aceptas nuestros"}
       <a onclick="navigate('terms')">${en?"Terms":"Términos"}</a> ${en?"and":"y"}
@@ -2593,19 +2611,15 @@ function isInsideWalletBrowser(){
 // Safari en iOS bloquea window.location.href en funciones async
 // Usar un <a> tag temporal es la forma más confiable
 function mobileDeepLink(url){
-  const a = document.createElement("a");
-  a.href = url;
-  a.style.display = "none";
-  document.body.appendChild(a);
-  a.click();
-  setTimeout(()=>document.body.removeChild(a), 1000);
+  try{ window.location.replace(url); }catch(e){
+    const a=document.createElement("a");
+    a.href=url; a.style.display="none";
+    document.body.appendChild(a); a.click();
+    setTimeout(()=>document.body.removeChild(a),500);
+  }
 }
 
-const WC_PROJECT_ID = "a74e0b17ba439a0c165308a1357367f4";
-let wcProvider = null;
-
 async function authConnectMetaMask(){
-  // Redirección SÍNCRONA antes de cualquier await
   if(isMobile() && !isInsideWalletBrowser()){
     mobileDeepLink(`https://metamask.app.link/dapp/${APP_URL.replace("https://","")}`);
     return;
@@ -2638,82 +2652,10 @@ async function authConnectTrustWallet(){
     return;
   }
   if(!window.ethereum){
-    await authConnectWalletConnect("trust");
+    notify("Trust Wallet no detectado. Instálalo primero.","error");
     return;
   }
   await _authConnectEVM("trust");
-}
-
-async function authConnectWalletConnect(hint=""){
-  try{
-    notify("Cargando WalletConnect…","info");
-
-    // Cargar SDK dinámicamente solo cuando se necesita
-    if(!window.EthereumProvider){
-      await new Promise((resolve, reject) => {
-        const s = document.createElement("script");
-        s.src = "https://cdn.jsdelivr.net/npm/@walletconnect/ethereum-provider@2/dist/index.umd.js";
-        s.onload = resolve;
-        s.onerror = () => reject(new Error("No se pudo cargar WalletConnect"));
-        document.head.appendChild(s);
-      });
-    }
-
-    const EthereumProvider = window.EthereumProvider;
-    if(!EthereumProvider){
-      notify("WalletConnect no disponible — intenta de nuevo","error");
-      return;
-    }
-
-    notify("Iniciando WalletConnect…","info");
-    wcProvider = await EthereumProvider.init({
-      projectId: WC_PROJECT_ID,
-      chains: [137],
-      showQrModal: true,
-      qrModalOptions: {
-        themeMode: document.documentElement.getAttribute("data-theme")==="dark"?"dark":"light",
-        explorerRecommendedWalletIds: [
-          "4622a2b2d6af1c9844944291e5e7351a6aa24cd7b23099efac1b2fd875da31a0",
-          "c57ca95b47569778a828d19178114f4db188b89b763c899ba0be274e97267d96",
-          "1ae92b26df02f0abca6304df07debccd18262fdf5fe82daa81593582dac9a369",
-        ],
-      },
-    });
-
-    wcProvider.on("disconnect", ()=>{
-      wcProvider = null;
-      if(STATE.session) handleLogout();
-    });
-
-    await wcProvider.connect();
-    const accounts = await wcProvider.request({method:"eth_accounts"});
-    if(!accounts.length) throw new Error("No accounts");
-
-    try{
-      await wcProvider.request({method:"wallet_switchEthereumChain",params:[{chainId:"0x89"}]});
-    }catch(sw){
-      if(sw.code===4902){
-        await wcProvider.request({method:"wallet_addEthereumChain",params:[{
-          chainId:"0x89",
-          chainName:"Polygon Mainnet",
-          nativeCurrency:{name:"MATIC",symbol:"MATIC",decimals:18},
-          rpcUrls:["https://polygon-rpc.com"],
-          blockExplorerUrls:["https://polygonscan.com"],
-        }]});
-      }
-    }
-
-    window._wcProvider = wcProvider;
-    await _authConnectEVM("walletconnect", wcProvider);
-
-  }catch(e){
-    if(e?.message?.includes("User rejected") || e?.code===4001){
-      notify("Conexión cancelada","error");
-    } else {
-      console.error("[WC]",e);
-      notify("Error WalletConnect: "+(e?.message||e),"error");
-    }
-  }
 }
 
 async function _authConnectEVM(walletType,provider=window.ethereum){
@@ -3265,10 +3207,6 @@ function renderPolygonStep(amt,token){
         <button class="btn-polygon" style="background:linear-gradient(135deg,#ab9ff2,#7c5ccc)" onclick="sendCryptoFromWallet('${token}',${isPoly?maticAmt:amt},'phantom')">
           <span>👻</span> Enviar desde Phantom: ${displayAmt}
         </button>`:""}
-        ${window._wcProvider?`
-        <button class="btn-polygon" style="background:linear-gradient(135deg,#3b99fc,#1a7de0)" onclick="sendCryptoFromWallet('${token}',${isPoly?maticAmt:amt},'walletconnect')">
-          🔗 Enviar con WalletConnect: ${displayAmt}
-        </button>`:""}
       </div>`:`
       <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:4px">
         <button class="btn-polygon" onclick="connectWalletPolygon()">
@@ -3279,9 +3217,6 @@ function renderPolygonStep(amt,token){
         </button>
         <button class="btn-polygon" style="background:linear-gradient(135deg,#3375bb,#1a5fa0)" onclick="authConnectTrustWallet()">
           🛡️ Conectar Trust Wallet para enviar
-        </button>
-        <button class="btn-polygon" style="background:linear-gradient(135deg,#3b99fc,#1a7de0)" onclick="authConnectWalletConnect()">
-          🔗 Conectar con WalletConnect
         </button>
       </div>`}
     <div style="display:flex;gap:10px;margin-top:12px">
@@ -3322,13 +3257,12 @@ async function connectPhantomForDeposit(){
 
 async function sendCryptoFromWallet(token, amount, walletType){
   let provider;
-  if(walletType==="walletconnect") provider = window._wcProvider;
-  else if(walletType==="phantom")  provider = window.phantom?.ethereum || window.ethereum;
-  else                             provider = window.ethereum;
+  if(walletType==="phantom") provider = window.phantom?.ethereum || window.ethereum;
+  else                       provider = window.ethereum;
   if(!provider){notify("Wallet no detectada","error");return;}
   if(!STATE.walletConnected){notify("Conecta tu billetera primero","error");return;}
   try{
-    const walletName = walletType==="phantom"?"Phantom":walletType==="walletconnect"?"WalletConnect":walletType==="trust"?"Trust Wallet":"MetaMask";
+    const walletName = walletType==="phantom"?"Phantom":walletType==="trust"?"Trust Wallet":"MetaMask";
     notify(`Abriendo ${walletName} para confirmar…`,"info");
     const accounts = await provider.request({method:"eth_accounts"});
     const from = accounts[0];
