@@ -2427,7 +2427,7 @@ function renderAuth(){
     <div class="auth-title">${en?"Welcome to Futuros":"Bienvenido a Futuros"}</div>
     <div class="auth-sub">${en?"Connect your wallet to start investing in prediction markets.":"Conecta tu billetera para empezar a invertir en mercados de predicción."}</div>
 
-    <button class="wallet-btn" onclick="authConnectMetaMask()">
+    <button class="wallet-btn" onclick="if(isMobile()&&!isInsideWalletBrowser()){mobileDeepLink('https://metamask.app.link/dapp/'+APP_URL.replace('https://',''))}else{authConnectMetaMask()}">
       <div class="wallet-btn-icon" style="background:#f6851b1a">
         <svg width="30" height="30" viewBox="0 0 35 33" fill="none" xmlns="http://www.w3.org/2000/svg">
           <path d="M32.9 1L19.4 10.7l2.4-5.7L32.9 1z" fill="#E17726" stroke="#E17726" stroke-width=".25" stroke-linecap="round" stroke-linejoin="round"/>
@@ -2468,7 +2468,7 @@ function renderAuth(){
       <span class="wallet-btn-arrow">›</span>
     </button>
 
-    <button class="wallet-btn" onclick="authConnectPhantom()">
+    <button class="wallet-btn" onclick="if(isMobile()&&!isInsideWalletBrowser()){mobileDeepLink('https://phantom.app/ul/browse/'+encodeURIComponent(APP_URL)+'?ref='+encodeURIComponent(APP_URL))}else{authConnectPhantom()}">
       <div class="wallet-btn-icon" style="background:#ab9ff21a">
         <svg width="30" height="30" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
           <rect width="128" height="128" rx="26" fill="#AB9FF2"/>
@@ -2484,7 +2484,7 @@ function renderAuth(){
       <span class="wallet-btn-arrow">›</span>
     </button>
 
-    <button class="wallet-btn" onclick="authConnectTrustWallet()">
+    <button class="wallet-btn" onclick="if(isMobile()&&!isInsideWalletBrowser()){mobileDeepLink('https://link.trustwallet.com/open_url?coin_id=966&url='+encodeURIComponent(APP_URL))}else{authConnectTrustWallet()}">
       <div class="wallet-btn-icon" style="background:#3375bb1a">
         <svg width="30" height="30" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
           <rect width="40" height="40" rx="10" fill="#3375BB"/>
@@ -2590,13 +2590,24 @@ function isInsideWalletBrowser(){
          !!window.trustwallet || !!window.ethereum?.isTrust;
 }
 
+// Safari en iOS bloquea window.location.href en funciones async
+// Usar un <a> tag temporal es la forma más confiable
+function mobileDeepLink(url){
+  const a = document.createElement("a");
+  a.href = url;
+  a.style.display = "none";
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(()=>document.body.removeChild(a), 1000);
+}
+
 const WC_PROJECT_ID = "a74e0b17ba439a0c165308a1357367f4";
 let wcProvider = null;
 
 async function authConnectMetaMask(){
-  // En móvil fuera del browser de MetaMask → redirigir
+  // Redirección SÍNCRONA antes de cualquier await
   if(isMobile() && !isInsideWalletBrowser()){
-    window.location.href = `https://metamask.app.link/dapp/${APP_URL.replace("https://","")}`;
+    mobileDeepLink(`https://metamask.app.link/dapp/${APP_URL.replace("https://","")}`);
     return;
   }
   if(!window.ethereum){
@@ -2608,9 +2619,8 @@ async function authConnectMetaMask(){
 }
 
 async function authConnectPhantom(){
-  // En móvil fuera del browser de Phantom → redirigir
   if(isMobile() && !isInsideWalletBrowser()){
-    window.location.href = `https://phantom.app/ul/browse/${encodeURIComponent(APP_URL)}?ref=${encodeURIComponent(APP_URL)}`;
+    mobileDeepLink(`https://phantom.app/ul/browse/${encodeURIComponent(APP_URL)}?ref=${encodeURIComponent(APP_URL)}`);
     return;
   }
   const provider = window.phantom?.ethereum || window.ethereum;
@@ -2623,13 +2633,11 @@ async function authConnectPhantom(){
 }
 
 async function authConnectTrustWallet(){
-  // En móvil fuera del browser de Trust → redirigir
   if(isMobile() && !isInsideWalletBrowser()){
-    window.location.href = `https://link.trustwallet.com/open_url?coin_id=966&url=${encodeURIComponent(APP_URL)}`;
+    mobileDeepLink(`https://link.trustwallet.com/open_url?coin_id=966&url=${encodeURIComponent(APP_URL)}`);
     return;
   }
   if(!window.ethereum){
-    // Desktop sin wallet → WalletConnect
     await authConnectWalletConnect("trust");
     return;
   }
