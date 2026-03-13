@@ -2453,24 +2453,12 @@ function renderFeaturedCarousel(){
 // ─── AUTH ──────────────────────────────────────────────────────────
 function renderAuth(){
   const en=STATE.lang==="en";
-  // Debug info para diagnosticar Phantom móvil
-  const debugInfo = isMobile() ? `
-  <div style="background:#f0f0f0;border-radius:8px;padding:10px;margin-bottom:12px;font-size:11px;font-family:monospace;color:#333;word-break:break-all">
-    <strong>Debug:</strong><br>
-    wallet: ${whichWalletBrowser()||"null"}<br>
-    window.ethereum: ${!!window.ethereum}<br>
-    window.phantom: ${!!window.phantom}<br>
-    ph.ethereum: ${!!window.phantom?.ethereum}<br>
-    eth.isPhantom: ${!!window.ethereum?.isPhantom}<br>
-    eth.isMetaMask: ${!!window.ethereum?.isMetaMask}<br>
-    UA: ${navigator.userAgent.slice(0,60)}
-  </div>` : "";
   return`<div class="auth-wrap">
   <div class="auth-card fade-up">
     <div class="auth-logo">⚡</div>
     <div class="auth-title">${en?"Welcome to Futuros":"Bienvenido a Futuros"}</div>
     <div class="auth-sub">${en?"Connect your wallet to start investing in prediction markets.":"Conecta tu billetera para empezar a invertir en mercados de predicción."}</div>
-    ${debugInfo}
+
     ${(()=>{
       const mob = isMobile();
       const wallet = whichWalletBrowser(); // "phantom"|"metamask"|"trust"|"unknown"|null
@@ -2690,7 +2678,7 @@ async function authConnectTrustWallet(){
 async function _authConnectEVM(walletType,provider=window.ethereum){
   const en=STATE.lang==="en";
   try{
-    notify("Paso 1: solicitando cuentas…","info");
+    notify(en?"Connecting wallet…":"Conectando billetera…","info");
     if(!provider) throw new Error("provider es null/undefined");
 
     let accounts;
@@ -2703,7 +2691,7 @@ async function _authConnectEVM(walletType,provider=window.ethereum){
         const existing = await provider.request({method:"eth_accounts"});
         if(existing && existing.length){
           accounts = existing;
-          notify("Cuenta ya conectada ✓","info");
+        notify("Cuenta ya conectada ✓","info");
         } else {
           // Pedir permisos — esto sí dispara el popup en Phantom iOS
           await provider.request({
@@ -2721,7 +2709,7 @@ async function _authConnectEVM(walletType,provider=window.ethereum){
       accounts = await provider.request({method:"eth_requestAccounts"});
     }
     if(!accounts || !accounts.length) throw new Error("No se obtuvieron cuentas");
-    notify("Paso 2: cuentas obtenidas ✓","info");
+    
 
     // Switch to Polygon
     // Phantom móvil: isMetaMask=true pero falla silenciosamente en switchChain → omitir
@@ -2752,10 +2740,10 @@ async function _authConnectEVM(walletType,provider=window.ethereum){
     }
 
     const address=accounts[0];
-    notify("Paso 3: dirección "+address.slice(0,8)+"…","info");
+    
     // Buscar usuario existente por wallet
     let user = await dbFindUserByWallet(address);
-    notify("Paso 4: usuario DB = "+(user?"encontrado":"nuevo"),"info");
+    
     if(!user){
       const shortAddr=address.slice(0,6)+"…"+address.slice(-4);
       const newUser={
@@ -2775,7 +2763,7 @@ async function _authConnectEVM(walletType,provider=window.ethereum){
       const saved = await dbCreateUser(newUser);
       user = saved || newUser;
     }
-    notify("Paso 5: seteando sesión…","info");
+    
     // Asegurar que el usuario esté en STATE.users ANTES de navegar
     const existingIdx = STATE.users.findIndex(u=>u.id===user.id);
     if(existingIdx >= 0){
@@ -2793,7 +2781,7 @@ async function _authConnectEVM(walletType,provider=window.ethereum){
     STATE.walletAddress = address;
     localStorage.setItem("futuros_session", user.id);
     localStorage.setItem("futuros_wallet", address);
-    notify("Paso 6: navegando a home…","info");
+    
     dbStartRealtime();
     const isNewUser = !user.username || user.username === address.slice(0,6)+"…"+address.slice(-4);
     navigate("home");
