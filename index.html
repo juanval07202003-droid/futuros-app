@@ -974,6 +974,7 @@ input, select, textarea{
 </footer>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@walletconnect/ethereum-provider@2/dist/index.umd.js"></script>
 <script>
 // ═══════════════════════════════════════════════════════════════════
 // SUPABASE CONFIG
@@ -1589,6 +1590,7 @@ const STATE={
   selectedMarket:null,
   filterCat:"Todos",
   adminTab:"accounts",
+  withdrawals:[],
   // trade modal
   tradeOpen:false,tradeMarketId:null,tradeSide:"YES",tradeMode:"buy",tradeShares:"",tradeDollars:"",
   // auth form
@@ -2460,17 +2462,43 @@ function renderAuth(){
       <div class="wallet-btn-icon" style="background:#ab9ff21a">
         <svg width="30" height="30" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
           <rect width="128" height="128" rx="26" fill="#AB9FF2"/>
-          <!-- Cuerpo del fantasma inclinado -->
           <path d="M28 72 C26 52 34 32 52 26 C70 20 92 28 100 46 C108 62 104 80 94 90 C88 96 80 94 76 88 C72 82 68 82 64 88 C60 94 52 96 46 90 C36 82 30 88 28 72 Z" fill="white"/>
-          <!-- Ojo izquierdo -->
           <ellipse cx="60" cy="58" rx="6" ry="7" fill="#AB9FF2"/>
-          <!-- Ojo derecho -->
           <ellipse cx="76" cy="55" rx="6" ry="7" fill="#AB9FF2"/>
         </svg>
       </div>
       <div class="wallet-btn-text">
         <span class="wallet-btn-name">Phantom</span>
         <span class="wallet-btn-desc">${en?"Solana & multi-chain wallet":"Billetera Solana y multi-cadena"}</span>
+      </div>
+      <span class="wallet-btn-arrow">›</span>
+    </button>
+
+    <button class="wallet-btn" onclick="authConnectTrustWallet()">
+      <div class="wallet-btn-icon" style="background:#3375bb1a">
+        <svg width="30" height="30" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect width="40" height="40" rx="10" fill="#3375BB"/>
+          <path d="M20 7L9 11.5V20.5C9 26.3 13.8 31.7 20 33C26.2 31.7 31 26.3 31 20.5V11.5L20 7Z" fill="white"/>
+          <path d="M17.5 24.5L13.5 20.5L15 19L17.5 21.5L25 14L26.5 15.5L17.5 24.5Z" fill="#3375BB"/>
+        </svg>
+      </div>
+      <div class="wallet-btn-text">
+        <span class="wallet-btn-name">Trust Wallet</span>
+        <span class="wallet-btn-desc">${en?"Mobile & multi-chain wallet":"Billetera móvil multi-cadena"}</span>
+      </div>
+      <span class="wallet-btn-arrow">›</span>
+    </button>
+
+    <button class="wallet-btn" onclick="authConnectWalletConnect()">
+      <div class="wallet-btn-icon" style="background:#3b99fc1a">
+        <svg width="30" height="30" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect width="40" height="40" rx="10" fill="#3B99FC"/>
+          <path d="M12.5 18.2C16.6 14.2 23.4 14.2 27.5 18.2L28 18.7C28.2 18.9 28.2 19.2 28 19.4L26.4 21C26.3 21.1 26.1 21.1 26 21L25.3 20.3C22.4 17.5 17.6 17.5 14.7 20.3L14 21C13.9 21.1 13.7 21.1 13.6 21L12 19.4C11.8 19.2 11.8 18.9 12 18.7L12.5 18.2ZM30.8 21.5L32.2 22.9C32.4 23.1 32.4 23.4 32.2 23.6L25.7 30C25.5 30.2 25.2 30.2 25 30L20.5 25.6C20.45 25.55 20.35 25.55 20.3 25.6L15.8 30C15.6 30.2 15.3 30.2 15.1 30L8.6 23.6C8.4 23.4 8.4 23.1 8.6 22.9L10 21.5C10.2 21.3 10.5 21.3 10.7 21.5L15.2 25.9C15.25 25.95 15.35 25.95 15.4 25.9L19.9 21.5C20.1 21.3 20.4 21.3 20.6 21.5L25.1 25.9C25.15 25.95 25.25 25.95 25.3 25.9L29.8 21.5C30.1 21.3 30.6 21.3 30.8 21.5Z" fill="white"/>
+        </svg>
+      </div>
+      <div class="wallet-btn-text">
+        <span class="wallet-btn-name">WalletConnect</span>
+        <span class="wallet-btn-desc">${en?"Connect any wallet via QR":"Conecta cualquier wallet por QR"}</span>
       </div>
       <span class="wallet-btn-arrow">›</span>
     </button>
@@ -2483,10 +2511,155 @@ function renderAuth(){
   </div>
 </div>`;
 }
+function showUsernameModal(userId){
+  const existing = document.getElementById("username-modal-overlay");
+  if(existing) existing.remove();
+  const html = `
+  <div class="overlay" id="username-modal-overlay">
+    <div class="modal" onclick="event.stopPropagation()" style="max-width:380px;text-align:center">
+      <div style="font-size:36px;margin-bottom:8px">👋</div>
+      <h3 style="margin-bottom:6px;font-size:18px">¡Bienvenido a Futuros!</h3>
+      <p style="color:var(--muted);font-size:14px;margin-bottom:20px">
+        Elige un nombre de usuario para que aparezca en comentarios y el ranking.
+      </p>
+      <input
+        id="username-input"
+        type="text"
+        placeholder="Tu nombre de usuario"
+        maxlength="24"
+        style="width:100%;padding:12px 14px;border:1.5px solid var(--border);border-radius:var(--radius);
+               background:var(--bg);color:var(--text);font-size:15px;outline:none;box-sizing:border-box;margin-bottom:8px"
+        oninput="this.value=this.value.replace(/[^a-zA-Z0-9_\\-\\.]/g,'')"
+        onkeydown="if(event.key==='Enter')submitUsername('${userId}')"
+      />
+      <p style="color:var(--muted);font-size:11px;margin-bottom:16px">
+        Solo letras, números, _ y - · Máx 24 caracteres
+      </p>
+      <button class="btn-green" style="width:100%;padding:13px;font-size:15px" onclick="submitUsername('${userId}')">
+        Guardar nombre
+      </button>
+      <button class="btn-ghost" style="width:100%;padding:10px;font-size:13px;margin-top:8px" onclick="closeUsernameModal()">
+        Saltar por ahora
+      </button>
+    </div>
+  </div>`;
+  document.body.insertAdjacentHTML("beforeend", html);
+  setTimeout(()=>document.getElementById("username-input")?.focus(), 100);
+}
+
+function closeUsernameModal(){
+  const el = document.getElementById("username-modal-overlay");
+  if(el) el.remove();
+}
+
+async function submitUsername(userId){
+  const val = (document.getElementById("username-input")?.value||"").trim();
+  if(!val || val.length < 2) return notify("Mínimo 2 caracteres","error");
+  const taken = STATE.users.some(u => u.id !== userId && u.username?.toLowerCase() === val.toLowerCase());
+  if(taken) return notify("Ese nombre ya está en uso, elige otro","error");
+  const ui = STATE.users.findIndex(u => u.id === userId);
+  if(ui >= 0) STATE.users[ui] = {...STATE.users[ui], username: val};
+  const {error} = await db.from("users").update({username: val}).eq("id", userId);
+  if(error){ notify("Error guardando nombre: "+error.message,"error"); return; }
+  closeUsernameModal();
+  notify(`Nombre de usuario guardado: @${val} ✓`,"success");
+  render();
+}
+
 function bindAuth(){}
 
+function isMobile(){
+  return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+}
+
+const WC_PROJECT_ID = "a74e0b17ba439a0c165308a1357367f4";
+let wcProvider = null;
+
+async function authConnectTrustWallet(){
+  // En móvil sin Trust Wallet → deep link al browser de Trust Wallet
+  if(!window.ethereum){
+    if(isMobile()){
+      window.location.href = `https://link.trustwallet.com/open_url?coin_id=966&url=${encodeURIComponent(APP_URL)}`;
+      return;
+    }
+    // En desktop → usar WalletConnect (Trust Wallet lo soporta)
+    await authConnectWalletConnect("trust");
+    return;
+  }
+  await _authConnectEVM("trust");
+}
+
+async function authConnectWalletConnect(hint=""){
+  try{
+    notify("Iniciando WalletConnect…","info");
+    // Inicializar provider de WalletConnect v2
+    const EthereumProvider = window.EthereumProvider ||
+      window["@walletconnect/ethereum-provider"]?.EthereumProvider;
+    if(!EthereumProvider){
+      notify("WalletConnect no disponible — recarga la página","error");
+      return;
+    }
+    wcProvider = await EthereumProvider.init({
+      projectId: WC_PROJECT_ID,
+      chains: [137], // Polygon Mainnet
+      showQrModal: true,
+      qrModalOptions: {
+        themeMode: document.documentElement.getAttribute("data-theme")==="dark"?"dark":"light",
+        explorerRecommendedWalletIds: [
+          "4622a2b2d6af1c9844944291e5e7351a6aa24cd7b23099efac1b2fd875da31a0", // Trust Wallet
+          "c57ca95b47569778a828d19178114f4db188b89b763c899ba0be274e97267d96", // MetaMask
+          "1ae92b26df02f0abca6304df07debccd18262fdf5fe82daa81593582dac9a369", // Rainbow
+        ],
+      },
+    });
+
+    wcProvider.on("disconnect", ()=>{
+      wcProvider = null;
+      if(STATE.session) handleLogout();
+    });
+
+    await wcProvider.connect();
+    const accounts = await wcProvider.request({method:"eth_accounts"});
+    if(!accounts.length) throw new Error("No accounts");
+
+    // Asegurarse de estar en Polygon
+    try{
+      await wcProvider.request({method:"wallet_switchEthereumChain",params:[{chainId:"0x89"}]});
+    }catch(sw){
+      if(sw.code===4902){
+        await wcProvider.request({method:"wallet_addEthereumChain",params:[{
+          chainId:"0x89",
+          chainName:"Polygon Mainnet",
+          nativeCurrency:{name:"MATIC",symbol:"MATIC",decimals:18},
+          rpcUrls:["https://polygon-rpc.com"],
+          blockExplorerUrls:["https://polygonscan.com"],
+        }]});
+      }
+    }
+
+    // Usar el provider de WC como proveedor EVM
+    window._wcProvider = wcProvider;
+    await _authConnectEVM("walletconnect", wcProvider);
+
+  }catch(e){
+    if(e?.message?.includes("User rejected") || e?.code===4001){
+      notify("Conexión cancelada","error");
+    } else {
+      console.error("[WC]",e);
+      notify("Error WalletConnect: "+(e?.message||e),"error");
+    }
+  }
+}
+
+
 async function authConnectMetaMask(){
-  if(!window.ethereum||!window.ethereum.isMetaMask){
+  // En móvil sin MetaMask instalado → abrir en el browser de MetaMask
+  if(!window.ethereum || !window.ethereum.isMetaMask){
+    if(isMobile()){
+      // Deep link al browser integrado de MetaMask Mobile
+      window.location.href = `https://metamask.app.link/dapp/${APP_URL.replace("https://","")}`;
+      return;
+    }
     const en=STATE.lang==="en";
     notify(en?"MetaMask not detected. Install the extension first.":"MetaMask no detectado. Instala la extensión primero.","error");
     window.open("https://metamask.io/download/","_blank");
@@ -2496,9 +2669,13 @@ async function authConnectMetaMask(){
 }
 
 async function authConnectPhantom(){
-  // Phantom on EVM — also supports window.phantom.ethereum
   const provider=window.phantom?.ethereum||window.ethereum;
   if(!provider){
+    if(isMobile()){
+      // Deep link al browser integrado de Phantom Mobile
+      window.location.href = `https://phantom.app/ul/browse/${encodeURIComponent(APP_URL)}?ref=${encodeURIComponent(APP_URL)}`;
+      return;
+    }
     const en=STATE.lang==="en";
     notify(en?"Phantom not detected. Install the extension first.":"Phantom no detectado. Instala la extensión primero.","error");
     window.open("https://phantom.com/download","_blank");
@@ -2564,12 +2741,18 @@ async function _authConnectEVM(walletType,provider=window.ethereum){
     STATE.session = user.id;
     STATE.walletConnected = true;
     STATE.walletAddress = address;
-    // Persistir sesión para que sobreviva recargas
     localStorage.setItem("futuros_session", user.id);
     localStorage.setItem("futuros_wallet", address);
     // Iniciar Realtime para actualizaciones automáticas de balance
     dbStartRealtime();
-    navigate("home");
+    // Si es usuario nuevo (username es la dirección corta), pedir nombre
+    const isNewUser = user.username === address.slice(0,6)+"…"+address.slice(-4);
+    if(isNewUser){
+      navigate("home");
+      showUsernameModal(user.id);
+    } else {
+      navigate("home");
+    }
     notify(en?`Conectado: ${address.slice(0,6)}…${address.slice(-4)}`:`Conectado: ${address.slice(0,6)}…${address.slice(-4)}`);
   }catch(e){
     if(e.code===4001)notify(en?"Connection rejected by user.":"Conexión rechazada por el usuario.","error");
@@ -2953,9 +3136,14 @@ function renderDepositStep(){
 
 function renderDepositStep1(){
   const m=STATE.depositMethod;
+  const infoText = m==="polygon"
+    ?`<strong>Polygon (MATIC)</strong> — ${t("deposit_poly_info")} ${PAYMENT_CONFIG.polygon.confirmationsNeeded} ${t("deposit_poly_info2")}`
+    :m==="usdc"
+    ?`<strong>USDC en Polygon</strong> — ${t("deposit_usdc_info")}`
+    :`<strong>USDT en Polygon</strong> — Tether USD, la stablecoin más usada en Latinoamérica. Envía desde Binance, Bybit u otras exchanges seleccionando la red <strong>Polygon</strong>.`;
   return`
   <div><label class="lbl" style="margin-bottom:10px">${t("deposit_choose")}</label>
-  <div class="pay-methods">
+  <div class="pay-methods" style="grid-template-columns:repeat(3,1fr)">
     <button class="pay-method${m==="polygon"?" selected-poly":""}" onclick="selectDepositMethod('polygon')">
       <div class="pay-icon" style="font-size:24px">⬡</div>
       <div class="pay-label" style="color:#8247e5">Polygon MATIC</div>
@@ -2966,12 +3154,13 @@ function renderDepositStep1(){
       <div class="pay-label" style="color:#2775ca">USDC</div>
       <div class="pay-sublabel">${t("deposit_usdc_sub")}</div>
     </button>
+    <button class="pay-method${m==="usdt"?" selected-usdc":""}" onclick="selectDepositMethod('usdt')" style="${m==="usdt"?"border-color:#26a17b;background:rgba(38,161,123,.08)":""}">
+      <div class="pay-icon">💵</div>
+      <div class="pay-label" style="color:#26a17b">USDT</div>
+      <div class="pay-sublabel">Stablecoin · Polygon</div>
+    </button>
   </div>
-  <div class="info-box">
-    ${m==="polygon"
-      ?`<strong>Polygon (MATIC)</strong> — ${t("deposit_poly_info")} ${PAYMENT_CONFIG.polygon.confirmationsNeeded} ${t("deposit_poly_info2")}`
-      :`<strong>USDC en Polygon</strong> — ${t("deposit_usdc_info")}`}
-  </div>
+  <div class="info-box">${infoText}</div>
   <button class="btn-green" style="width:100%;padding:13px;margin-top:16px;font-size:15px" onclick="depositNextStep()">${t("deposit_continue")}</button>
   </div>`;
 }
@@ -2998,24 +3187,27 @@ function renderDepositStep2(){
 
 function renderDepositStep3(){
   const m=STATE.depositMethod,amt=STATE.depositAmount;
-  if(m==="polygon")  return renderPolygonStep(amt,"MATIC");
-  if(m==="usdc")     return renderPolygonStep(amt,"USDC");
+  if(m==="polygon") return renderPolygonStep(amt,"MATIC");
+  if(m==="usdc")    return renderPolygonStep(amt,"USDC");
+  if(m==="usdt")    return renderPolygonStep(amt,"USDT");
 }
 
 
-// ─── POLYGON / METAMASK INTEGRATION ──────────────────────────────
 function renderPolygonStep(amt,token){
   const addr=PAYMENT_CONFIG.polygon.receivingAddress;
   const isPoly=token==="MATIC";
   const isUSDC=token==="USDC";
+  const isUSDT=token==="USDT";
+  const isStable=isUSDC||isUSDT;
+  const tokenColor=isPoly?"var(--poly)":isUSDC?"#2775ca":"#26a17b";
+  const contractAddr=isUSDC?PAYMENT_CONFIG.polygon.usdcAddress:isUSDT?PAYMENT_CONFIG.polygon.usdtAddress:null;
   const maticAmt=isPoly?(amt/0.80).toFixed(4):null;
+  const displayAmt=isPoly?maticAmt+" MATIC":amt.toFixed(2)+" "+token;
   return`
   <div>
     <div style="text-align:center;margin-bottom:16px">
       <div style="font-size:12px;color:var(--muted);margin-bottom:4px">${t("deposit_send_exact")}</div>
-      <div style="font-size:34px;font-weight:900;color:${isPoly?"var(--poly)":"#2775ca"}">
-        ${isPoly?maticAmt+" MATIC":amt.toFixed(2)+" USDC"}
-      </div>
+      <div style="font-size:34px;font-weight:900;color:${tokenColor}">${displayAmt}</div>
       <div style="font-size:12px;color:var(--muted)">${t("deposit_receive")} <strong style="color:var(--yes)">${usd(amt)}</strong> ${t("deposit_credits")}</div>
     </div>
     ${!STATE.walletConnected?`
@@ -3028,18 +3220,22 @@ function renderPolygonStep(amt,token){
     <div class="info-box" style="margin-top:14px;margin-bottom:14px">
       <strong>${t("deposit_warning")}:</strong><br>
       • ${t("deposit_network")}<br>
-      • Token: <strong>${token}</strong>${isUSDC?` (${t("wallet_contract")}: <span style="font-family:monospace;font-size:10px">${PAYMENT_CONFIG.polygon.usdcAddress.slice(0,12)}…</span>)`:""}<br>
+      • Token: <strong>${token}</strong>${contractAddr?` (contrato: <span style="font-family:monospace;font-size:10px">${contractAddr.slice(0,12)}…</span>)`:""}<br>
       • ${t("deposit_confs")}: <strong>${PAYMENT_CONFIG.polygon.confirmationsNeeded}</strong><br>
       • ${t("deposit_time")}
     </div>
     ${STATE.walletConnected?`
       <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:4px">
         <button class="btn-polygon" onclick="sendCryptoFromWallet('${token}',${isPoly?maticAmt:amt},'metamask')">
-          <span>🦊</span> Enviar desde MetaMask: ${isPoly?maticAmt+" MATIC":amt+" USDC"}
+          <span>🦊</span> Enviar desde MetaMask: ${displayAmt}
         </button>
         ${window?.phantom?.ethereum?`
         <button class="btn-polygon" style="background:linear-gradient(135deg,#ab9ff2,#7c5ccc)" onclick="sendCryptoFromWallet('${token}',${isPoly?maticAmt:amt},'phantom')">
-          <span>👻</span> Enviar desde Phantom: ${isPoly?maticAmt+" MATIC":amt+" USDC"}
+          <span>👻</span> Enviar desde Phantom: ${displayAmt}
+        </button>`:""}
+        ${window._wcProvider?`
+        <button class="btn-polygon" style="background:linear-gradient(135deg,#3b99fc,#1a7de0)" onclick="sendCryptoFromWallet('${token}',${isPoly?maticAmt:amt},'walletconnect')">
+          🔗 Enviar con WalletConnect: ${displayAmt}
         </button>`:""}
       </div>`:`
       <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:4px">
@@ -3048,6 +3244,12 @@ function renderPolygonStep(amt,token){
         </button>
         <button class="btn-polygon" style="background:linear-gradient(135deg,#ab9ff2,#7c5ccc)" onclick="connectPhantomForDeposit()">
           👻 Conectar Phantom para enviar
+        </button>
+        <button class="btn-polygon" style="background:linear-gradient(135deg,#3375bb,#1a5fa0)" onclick="authConnectTrustWallet()">
+          🛡️ Conectar Trust Wallet para enviar
+        </button>
+        <button class="btn-polygon" style="background:linear-gradient(135deg,#3b99fc,#1a7de0)" onclick="authConnectWalletConnect()">
+          🔗 Conectar con WalletConnect
         </button>
       </div>`}
     <div style="display:flex;gap:10px;margin-top:12px">
@@ -3087,18 +3289,14 @@ async function connectPhantomForDeposit(){
 }
 
 async function sendCryptoFromWallet(token, amount, walletType){
-  // Detectar el provider correcto
   let provider;
-  if(walletType==="phantom"){
-    provider = window.phantom?.ethereum || window.ethereum;
-    if(!provider){notify("Phantom no detectado","error");return;}
-  } else {
-    provider = window.ethereum;
-    if(!provider){notify("MetaMask no detectado","error");return;}
-  }
+  if(walletType==="walletconnect") provider = window._wcProvider;
+  else if(walletType==="phantom")  provider = window.phantom?.ethereum || window.ethereum;
+  else                             provider = window.ethereum;
+  if(!provider){notify("Wallet no detectada","error");return;}
   if(!STATE.walletConnected){notify("Conecta tu billetera primero","error");return;}
   try{
-    const walletName = walletType==="phantom"?"Phantom":"MetaMask";
+    const walletName = walletType==="phantom"?"Phantom":walletType==="walletconnect"?"WalletConnect":walletType==="trust"?"Trust Wallet":"MetaMask";
     notify(`Abriendo ${walletName} para confirmar…`,"info");
     const accounts = await provider.request({method:"eth_accounts"});
     const from = accounts[0];
@@ -3109,13 +3307,20 @@ async function sendCryptoFromWallet(token, amount, walletType){
       notify("Tx enviada: "+txHash.slice(0,10)+"… · Pendiente de confirmación en Polygon","info");
       closeDepositModal();
     } else {
+      // ERC-20 transfer (USDC o USDT)
       const ERC20_TRANSFER="0xa9059cbb";
+      const contractAddr = token==="USDT"
+        ? PAYMENT_CONFIG.polygon.usdtAddress
+        : PAYMENT_CONFIG.polygon.usdcAddress;
+      const decimals = token==="USDT"
+        ? PAYMENT_CONFIG.polygon.usdtDecimals
+        : PAYMENT_CONFIG.polygon.usdcDecimals;
       const paddedTo=to.replace("0x","").padStart(64,"0");
-      const amtInUnits=Math.floor(amount*Math.pow(10,PAYMENT_CONFIG.polygon.usdcDecimals));
+      const amtInUnits=Math.floor(amount*Math.pow(10,decimals));
       const paddedAmt=amtInUnits.toString(16).padStart(64,"0");
       const data=ERC20_TRANSFER+paddedTo+paddedAmt;
-      const txHash=await provider.request({method:"eth_sendTransaction",params:[{from,to:PAYMENT_CONFIG.polygon.usdcAddress,data}]});
-      notify("Tx USDC enviada: "+txHash.slice(0,10)+"… · Pendiente de confirmación","info");
+      const txHash=await provider.request({method:"eth_sendTransaction",params:[{from,to:contractAddr,data}]});
+      notify(`Tx ${token} enviada: ${txHash.slice(0,10)}… · Pendiente de confirmación`,"info");
       closeDepositModal();
     }
   }catch(e){
@@ -3215,25 +3420,59 @@ function renderWithdrawModal(){
 }
 function closeWdIfBg(e){if(e.target.id==="withdraw-overlay")closeWithdrawModal();}
 
-function submitWithdraw(){
+async function submitWithdraw(){
   const u=getUser();
   const amt=parseFloat(STATE.withdrawAmount);
   if(!amt||amt<5)return notify("Monto mínimo $5","error");
   if(amt>u.balance)return notify("Saldo insuficiente","error");
-  if(!STATE.withdrawAddress||!STATE.withdrawAddress.startsWith("0x"))return notify("Dirección inválida (debe empezar por 0x)","error");
+  if(!STATE.withdrawAddress||!STATE.withdrawAddress.startsWith("0x"))
+    return notify("Dirección inválida (debe empezar por 0x)","error");
 
   const fee=parseFloat((amt*0.01).toFixed(4));
   const net=parseFloat((amt-fee).toFixed(4));
-
+  const method=STATE.withdrawMethod||"usdc";
   const ui=STATE.users.findIndex(x=>x.id===STATE.session);
-  const tx={id:"tx_"+genId(),type:"withdraw",amount:amt,network:STATE.withdrawMethod,
-    description:`Retiro ${STATE.withdrawMethod.toUpperCase()} → ${STATE.withdrawAddress.slice(0,10)}… (fee 1%: ${usd(fee)})`,
-    date:new Date().toISOString(),status:"pending"};
-  STATE.users[ui]={...STATE.users[ui],balance:STATE.users[ui].balance-amt,transactions:[...(STATE.users[ui].transactions||[]),tx]};
+
+  // Descontar balance inmediatamente
+  STATE.users[ui]={...STATE.users[ui], balance:STATE.users[ui].balance-amt};
+
+  // Crear solicitud en DB
+  const withdrawReq = {
+    id: crypto.randomUUID ? crypto.randomUUID() : "wd_"+genId(),
+    user_id: STATE.session,
+    username: u.username,
+    amount: amt,
+    fee: fee,
+    net: net,
+    method: method,
+    address: STATE.withdrawAddress,
+    status: "pending",
+    created_at: new Date().toISOString(),
+  };
+
+  try{
+    const {error} = await db.from("withdrawals").insert(withdrawReq);
+    if(error){ 
+      // Revertir balance si falla
+      STATE.users[ui]={...STATE.users[ui], balance:STATE.users[ui].balance+amt};
+      return notify("Error al crear solicitud: "+error.message,"error");
+    }
+    // Guardar balance actualizado en DB
+    await dbSaveUser(STATE.users[ui]);
+    // Guardar tx en historial
+    const tx={id:"tx_"+genId(),type:"withdraw",amount:amt,network:method,
+      description:`Retiro ${method.toUpperCase()} ${usd(net)} → ${STATE.withdrawAddress.slice(0,10)}… (fee ${usd(fee)}) · Pendiente`,
+      date:new Date().toISOString(),status:"pending"};
+    STATE.users[ui]={...STATE.users[ui],transactions:[...(STATE.users[ui].transactions||[]),tx]};
+    await dbSaveTransaction(STATE.session, tx);
+  }catch(e){
+    STATE.users[ui]={...STATE.users[ui], balance:STATE.users[ui].balance+amt};
+    return notify("Error: "+(e?.message||e),"error");
+  }
+
   closeWithdrawModal();
-  notify(`Retiro de ${usd(net)} solicitado (fee ${usd(fee)}) · Procesando…`);
-  setTimeout(()=>notify(`✓ Retiro completado: ${usd(net)} enviados a ${STATE.withdrawAddress.slice(0,10)}…`),4000);
-  if(STATE.view==="wallet"||STATE.view==="portfolio")render();
+  notify(`✅ Retiro de ${usd(net)} solicitado · El equipo lo procesará en 1-24h`,"success");
+  if(STATE.view==="wallet"||STATE.view==="portfolio") render();
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -3621,24 +3860,31 @@ async function executeTrade(){
 function renderAdmin(){
   if(!isAdmin())return`<div class="container"><p>${t("admin_access_denied")}</p></div>`;
   const featuredCount=STATE.markets.filter(m=>m.featured&&!m.resolved).length;
+  const pendingWd=(STATE.withdrawals||[]).filter(w=>w.status==="pending").length;
   const tabs=[
-    {k:"accounts",l:`👤 ${t("admin_accounts")}`,count:STATE.users.length},
-    {k:"markets", l:`📊 ${t("admin_create_market")}`},
-    {k:"featured",l:`⚡ ${t("admin_featured_tab")}`,count:featuredCount},
-    {k:"resolve", l:`🏁 ${t("admin_resolve")}`,count:STATE.markets.filter(m=>!m.resolved).length}
+    {k:"accounts", l:`👤 ${t("admin_accounts")}`,       count:STATE.users.length},
+    {k:"markets",  l:`📊 ${t("admin_create_market")}`},
+    {k:"featured", l:`⚡ ${t("admin_featured_tab")}`,   count:featuredCount},
+    {k:"resolve",  l:`🏁 ${t("admin_resolve")}`,        count:STATE.markets.filter(m=>!m.resolved).length},
+    {k:"withdrawals",l:`💸 Retiros`,                    count:pendingWd||null},
   ];
   let content="";
-  if(STATE.adminTab==="accounts")content=renderAdminAccounts();
-  if(STATE.adminTab==="markets") content=renderAdminMarkets();
-  if(STATE.adminTab==="featured")content=renderAdminFeatured();
-  if(STATE.adminTab==="resolve") content=renderAdminResolve();
+  if(STATE.adminTab==="accounts")   content=renderAdminAccounts();
+  if(STATE.adminTab==="markets")    content=renderAdminMarkets();
+  if(STATE.adminTab==="featured")   content=renderAdminFeatured();
+  if(STATE.adminTab==="resolve")    content=renderAdminResolve();
+  if(STATE.adminTab==="withdrawals")content=renderAdminWithdrawals();
   return`<div class="container">
   <div style="display:flex;align-items:center;gap:12px;margin-bottom:28px"><h2>${t("admin_title")}</h2>${mkTag("ADMIN","var(--gold)")}</div>
   <div class="admin-tabs">${tabs.map(tb=>`<button class="admin-tab${STATE.adminTab===tb.k?" active":""}" onclick="setAdminTab('${tb.k}')">${tb.l}${tb.count!=null?`<span class="tab-count">${tb.count}</span>`:""}</button>`).join("")}</div>
   ${content}
 </div>`;
 }
-function setAdminTab(tab){STATE.adminTab=tab;render();}
+function setAdminTab(tab){
+  STATE.adminTab=tab;
+  if(tab==="withdrawals") dbLoadWithdrawals();
+  else render();
+}
 
 function renderAdminAccounts(){
   const f=STATE.newAcc;
@@ -3717,6 +3963,111 @@ function renderAdminResolve(){
       </div>
     </div>`;
   }).join("")}</div>`;
+}
+
+// ── PANEL DE RETIROS ─────────────────────────────────────────────
+async function dbLoadWithdrawals(){
+  try{
+    const {data,error} = await db.from("withdrawals").select("*").order("created_at",{ascending:false});
+    if(error){ console.error("[DB] cargando retiros:", error.message); return; }
+    STATE.withdrawals = data||[];
+    render();
+  }catch(e){ console.error("[DB] excepción retiros:", e?.message||e); }
+}
+
+async function adminProcessWithdrawal(id, action){
+  // action: "completed" | "rejected"
+  const wi = STATE.withdrawals.findIndex(w=>w.id===id);
+  if(wi<0) return;
+  const wd = STATE.withdrawals[wi];
+  try{
+    const {error} = await db.from("withdrawals").update({status:action, processed_at:new Date().toISOString()}).eq("id",id);
+    if(error){ notify("Error: "+error.message,"error"); return; }
+    STATE.withdrawals[wi] = {...wd, status:action};
+    // Si se rechaza → devolver el balance al usuario
+    if(action==="rejected"){
+      const ui = STATE.users.findIndex(u=>u.id===wd.user_id);
+      if(ui>=0){
+        STATE.users[ui] = {...STATE.users[ui], balance: STATE.users[ui].balance + wd.amount};
+        await dbSaveUser(STATE.users[ui]);
+      }
+      notify(`Retiro rechazado — $${wd.amount.toFixed(2)} devueltos al usuario`,"info");
+    } else {
+      notify(`Retiro marcado como completado ✓`,"success");
+    }
+    render();
+  }catch(e){ notify("Error: "+(e?.message||e),"error"); }
+}
+
+function renderAdminWithdrawals(){
+  const wds = STATE.withdrawals||[];
+  const pending   = wds.filter(w=>w.status==="pending");
+  const processed = wds.filter(w=>w.status!=="pending");
+
+  const statusColor = s => s==="pending"?"var(--gold)":s==="completed"?"var(--yes)":"var(--no)";
+  const statusLabel = s => s==="pending"?"⏳ Pendiente":s==="completed"?"✅ Completado":"❌ Rechazado";
+
+  const renderRow = (w) => `
+    <div class="card" style="margin-bottom:10px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px">
+        <div style="flex:1;min-width:0">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap">
+            <span style="font-weight:800;font-size:15px;color:var(--yes)">${usd(w.net)}</span>
+            <span style="font-size:11px;color:var(--muted)">+ fee ${usd(w.fee)}</span>
+            <span style="background:${statusColor(w.status)}22;color:${statusColor(w.status)};border-radius:20px;padding:2px 10px;font-size:11px;font-weight:700">${statusLabel(w.status)}</span>
+          </div>
+          <div style="font-size:12px;color:var(--muted);margin-bottom:4px">
+            👤 <strong style="color:var(--text)">${escHtml(w.username||"Usuario")}</strong>
+            · ${w.method?.toUpperCase()||"USDC"}
+            · ${formatDate(w.created_at)}
+          </div>
+          <div style="font-family:monospace;font-size:11px;color:var(--muted);word-break:break-all">
+            → ${escHtml(w.address)}
+          </div>
+          ${w.processed_at?`<div style="font-size:11px;color:var(--muted);margin-top:4px">Procesado: ${formatDate(w.processed_at)}</div>`:""}
+        </div>
+        ${w.status==="pending"?`
+        <div style="display:flex;flex-direction:column;gap:6px;min-width:120px">
+          <button class="btn-green" style="padding:8px 14px;font-size:13px"
+            onclick="adminProcessWithdrawal('${w.id}','completed')">
+            ✅ Completado
+          </button>
+          <button class="btn-red-soft" style="padding:8px 14px;font-size:13px"
+            onclick="adminProcessWithdrawal('${w.id}','rejected')">
+            ❌ Rechazar
+          </button>
+        </div>`:""}
+      </div>
+    </div>`;
+
+  return`<div class="slide-in">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;flex-wrap:wrap;gap:10px">
+      <div>
+        <div style="font-weight:800;font-size:16px;margin-bottom:4px">💸 Solicitudes de Retiro</div>
+        <div style="font-size:12px;color:var(--muted)">${pending.length} pendientes · ${processed.length} procesadas</div>
+      </div>
+      <button class="btn-ghost" style="font-size:13px;padding:8px 16px" onclick="dbLoadWithdrawals()">
+        🔄 Actualizar
+      </button>
+    </div>
+
+    ${pending.length===0&&processed.length===0
+      ?`<div style="text-align:center;padding:48px 0;color:var(--muted)">
+          <div style="font-size:40px;margin-bottom:12px">💸</div>
+          <div>No hay solicitudes de retiro aún</div>
+        </div>`
+      :`${pending.length>0?`
+        <div style="font-size:12px;font-weight:700;color:var(--gold);letter-spacing:.6px;text-transform:uppercase;margin-bottom:10px">
+          ⏳ Pendientes (${pending.length})
+        </div>
+        ${pending.map(renderRow).join("")}`:""}
+        ${processed.length>0?`
+        <div style="font-size:12px;font-weight:700;color:var(--muted);letter-spacing:.6px;text-transform:uppercase;margin:20px 0 10px">
+          Historial (${processed.length})
+        </div>
+        ${processed.map(renderRow).join("")}`:""}
+      `}
+  </div>`;
 }
 
 function renderAdminFeatured(){
