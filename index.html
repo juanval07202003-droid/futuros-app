@@ -2729,9 +2729,9 @@ async function _authConnectEVM(walletType,provider=window.ethereum){
 
     const address=accounts[0];
     notify("Paso 3: dirección "+address.slice(0,8)+"…","info");
-    // Find existing user by wallet address in DB first, then local STATE
+    // Buscar usuario existente por wallet
     let user = await dbFindUserByWallet(address);
-    if(!user) user = STATE.users.find(u=>u.walletAddress&&u.walletAddress.toLowerCase()===address.toLowerCase());
+    notify("Paso 4: usuario DB = "+(user?"encontrado":"nuevo"),"info");
     if(!user){
       const shortAddr=address.slice(0,6)+"…"+address.slice(-4);
       const newUser={
@@ -2750,32 +2750,31 @@ async function _authConnectEVM(walletType,provider=window.ethereum){
       };
       const saved = await dbCreateUser(newUser);
       user = saved || newUser;
-      STATE.users.push(user);
-    } else {
-      // Ensure in local STATE
-      if(!STATE.users.find(u=>u.id===user.id)) STATE.users.push(user);
     }
-    // Load positions from DB
+    notify("Paso 5: seteando sesión…","info");
+    // Asegurar que el usuario esté en STATE.users ANTES de navegar
+    const existingIdx = STATE.users.findIndex(u=>u.id===user.id);
+    if(existingIdx >= 0){
+      STATE.users[existingIdx] = {...STATE.users[existingIdx], walletAddress:address, walletType};
+    } else {
+      STATE.users.push({...user, walletAddress:address, walletType});
+    }
+    // Cargar posiciones
     user.positions = await dbLoadPositions(user.id);
     const ui=STATE.users.findIndex(u=>u.id===user.id);
-    if(ui>=0) STATE.users[ui]={...STATE.users[ui], positions:user.positions, walletAddress:address, walletType};
-    // ── Activar sesión ANTES de navegar ──
+    if(ui>=0) STATE.users[ui]={...STATE.users[ui], positions:user.positions};
+    // Activar sesión
     STATE.session = user.id;
     STATE.walletConnected = true;
     STATE.walletAddress = address;
     localStorage.setItem("futuros_session", user.id);
     localStorage.setItem("futuros_wallet", address);
-    // Iniciar Realtime para actualizaciones automáticas de balance
+    notify("Paso 6: navegando a home…","info");
     dbStartRealtime();
-    // Si es usuario nuevo (username es la dirección corta), pedir nombre
-    const isNewUser = user.username === address.slice(0,6)+"…"+address.slice(-4);
-    if(isNewUser){
-      navigate("home");
-      showUsernameModal(user.id);
-    } else {
-      navigate("home");
-    }
-    notify(en?`Conectado: ${address.slice(0,6)}…${address.slice(-4)}`:`Conectado: ${address.slice(0,6)}…${address.slice(-4)}`);
+    const isNewUser = !user.username || user.username === address.slice(0,6)+"…"+address.slice(-4);
+    navigate("home");
+    notify(`Conectado: ${address.slice(0,6)}…${address.slice(-4)}`,"success");
+    if(isNewUser) setTimeout(()=>showUsernameModal(user.id), 500);
   }catch(e){
     const msg = e?.message || e?.code || JSON.stringify(e) || "error desconocido";
     console.error("[EVM]", e);
