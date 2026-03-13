@@ -2693,9 +2693,11 @@ async function authConnectTrustWallet(){
 async function _authConnectEVM(walletType,provider=window.ethereum){
   const en=STATE.lang==="en";
   try{
-    notify(en?"Connecting wallet…":"Conectando billetera…","info");
+    notify("Paso 1: solicitando cuentas…","info");
+    if(!provider) throw new Error("provider es null/undefined");
     const accounts=await provider.request({method:"eth_requestAccounts"});
-    if(!accounts.length)throw new Error("No accounts");
+    if(!accounts.length) throw new Error("No se obtuvieron cuentas");
+    notify("Paso 2: cuentas obtenidas ✓","info");
 
     // Switch to Polygon
     // Phantom móvil: isMetaMask=true pero falla silenciosamente en switchChain → omitir
@@ -2726,6 +2728,7 @@ async function _authConnectEVM(walletType,provider=window.ethereum){
     }
 
     const address=accounts[0];
+    notify("Paso 3: dirección "+address.slice(0,8)+"…","info");
     // Find existing user by wallet address in DB first, then local STATE
     let user = await dbFindUserByWallet(address);
     if(!user) user = STATE.users.find(u=>u.walletAddress&&u.walletAddress.toLowerCase()===address.toLowerCase());
@@ -2774,8 +2777,10 @@ async function _authConnectEVM(walletType,provider=window.ethereum){
     }
     notify(en?`Conectado: ${address.slice(0,6)}…${address.slice(-4)}`:`Conectado: ${address.slice(0,6)}…${address.slice(-4)}`);
   }catch(e){
-    if(e.code===4001)notify(en?"Connection rejected by user.":"Conexión rechazada por el usuario.","error");
-    else notify((en?"Error: ":"Error: ")+(e.message||e),"error");
+    const msg = e?.message || e?.code || JSON.stringify(e) || "error desconocido";
+    console.error("[EVM]", e);
+    if(e.code===4001) notify("Conexión rechazada por el usuario.","error");
+    else notify("Error: "+msg,"error");
   }
 }
 
