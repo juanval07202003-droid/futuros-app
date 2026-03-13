@@ -2637,17 +2637,14 @@ async function authConnectPhantom(){
     mobileDeepLink(`https://phantom.app/ul/browse/${encodeURIComponent(APP_URL)}?ref=${encodeURIComponent(APP_URL)}`);
     return;
   }
-  // Buscar Phantom específicamente
-  let provider = window.phantom?.ethereum;
-  if(!provider && window.ethereum?.providers){
-    provider = window.ethereum.providers.find(p=>p.isPhantom);
-  }
-  if(!provider && window.ethereum?.isPhantom){
-    provider = window.ethereum;
-  }
+  // Dentro del browser de Phantom, inyecta window.ethereum directamente
+  // window.phantom?.ethereum puede ser undefined en móvil — usar fallbacks
+  let provider = window.phantom?.ethereum
+    || (window.ethereum?.isPhantom ? window.ethereum : null)
+    || (window.ethereum?.providers?.find(p=>p.isPhantom))
+    || window.ethereum; // último recurso: dentro del browser de Phantom siempre hay ethereum
   if(!provider){
-    notify("Phantom no detectado. Instala la extensión primero.","error");
-    window.open("https://phantom.com/download","_blank");
+    notify("Phantom no detectado.","error");
     return;
   }
   await _authConnectEVM("phantom", provider);
@@ -2672,19 +2669,31 @@ async function _authConnectEVM(walletType,provider=window.ethereum){
     const accounts=await provider.request({method:"eth_requestAccounts"});
     if(!accounts.length)throw new Error("No accounts");
 
-    // Switch to Polygon
+    // Switch to Polygon — ignorar errores, Phantom móvil puede fallar aquí
     try{
       await provider.request({method:"wallet_switchEthereumChain",params:[{chainId:PAYMENT_CONFIG.polygon.chainId}]});
     }catch(sw){
-      if(sw.code===4902){
-        await provider.request({method:"wallet_addEthereumChain",params:[{
-          chainId:PAYMENT_CONFIG.polygon.chainId,
-          chainName:PAYMENT_CONFIG.polygon.chainName,
-          nativeCurrency:PAYMENT_CONFIG.polygon.nativeCurrency,
-          rpcUrls:[PAYMENT_CONFIG.polygon.rpcUrl],
-          blockExplorerUrls:[PAYMENT_CONFIG.polygon.explorerUrl],
-        }]});
-      }else throw sw;
+      if(sw.code===4902 || sw.code===-32603){
+        // Red no existe — intentar agregarla
+        try{
+          await provider.request({method:"wallet_addEthereumChain",params:[{
+            chainId:PAYMENT_CONFIG.polygon.chainId,
+            chainName:PAYMENT_CONFIG.polygon.chainName,
+            nativeCurrency:PAYMENT_CONFIG.polygon.nativeCurrency,
+            rpcUrls:[PAYMENT_CONFIG.polygon.rpcUrl],
+            blockExplorerUrls:[PAYMENT_CONFIG.polygon.explorerUrl],
+          }]});
+        }catch(addErr){
+          console.warn("[Chain] No se pudo agregar Polygon, continuando:", addErr.message);
+        }
+      } else if(sw.code===4001){
+        // Usuario rechazó el cambio de red
+        notify("Debes cambiar a la red Polygon para continuar.","error");
+        return;
+      } else {
+        // Cualquier otro error — continuar de todas formas (Phantom móvil)
+        console.warn("[Chain] Switch error ignorado:", sw.message||sw.code);
+      }
     }
 
     const address=accounts[0];
