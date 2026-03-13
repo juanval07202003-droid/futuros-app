@@ -2665,14 +2665,11 @@ async function authConnectPhantom(){
     mobileDeepLink(`https://phantom.app/ul/browse/${encodeURIComponent(APP_URL)}?ref=${encodeURIComponent(APP_URL)}`);
     return;
   }
-  // Dentro del browser de Phantom móvil:
-  // window.phantom puede ser undefined — Phantom inyecta window.ethereum directamente
-  const provider = window.phantom?.ethereum
-    || (window.ethereum?.isPhantom ? window.ethereum : null)
-    || (window.ethereum?.providers?.find(p=>p.isPhantom))
-    || window.ethereum; // Phantom móvil siempre inyecta window.ethereum
+  // En iOS Phantom inyecta window.phantom.ethereum como provider principal
+  // window.ethereum también existe pero puede no mostrar el popup de aprobación
+  const provider = window.phantom?.ethereum || window.ethereum;
   if(!provider){
-    notify("No se detectó proveedor Ethereum. Asegúrate de estar en el browser de Phantom.","error");
+    notify("No se detectó proveedor Ethereum.","error");
     return;
   }
   await _authConnectEVM("phantom", provider);
@@ -2695,8 +2692,22 @@ async function _authConnectEVM(walletType,provider=window.ethereum){
   try{
     notify("Paso 1: solicitando cuentas…","info");
     if(!provider) throw new Error("provider es null/undefined");
-    const accounts=await provider.request({method:"eth_requestAccounts"});
-    if(!accounts.length) throw new Error("No se obtuvieron cuentas");
+
+    let accounts;
+    // Phantom móvil: usar su método nativo para disparar el popup de aprobación
+    const isPhantomMob = isMobile() && walletType==="phantom";
+    if(isPhantomMob && window.phantom?.ethereum?.connect){
+      try{
+        const resp = await window.phantom.ethereum.connect();
+        accounts = resp?.accounts || (resp?.address ? [resp.address] : null);
+      }catch(connErr){
+        console.warn("[Phantom] .connect() falló, intentando eth_requestAccounts:", connErr.message);
+      }
+    }
+    if(!accounts || !accounts.length){
+      accounts = await provider.request({method:"eth_requestAccounts"});
+    }
+    if(!accounts || !accounts.length) throw new Error("No se obtuvieron cuentas");
     notify("Paso 2: cuentas obtenidas ✓","info");
 
     // Switch to Polygon
