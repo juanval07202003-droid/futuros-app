@@ -2697,30 +2697,31 @@ async function _authConnectEVM(walletType,provider=window.ethereum){
     const accounts=await provider.request({method:"eth_requestAccounts"});
     if(!accounts.length)throw new Error("No accounts");
 
-    // Switch to Polygon — ignorar errores, Phantom móvil puede fallar aquí
-    try{
-      await provider.request({method:"wallet_switchEthereumChain",params:[{chainId:PAYMENT_CONFIG.polygon.chainId}]});
-    }catch(sw){
-      if(sw.code===4902 || sw.code===-32603){
-        // Red no existe — intentar agregarla
-        try{
-          await provider.request({method:"wallet_addEthereumChain",params:[{
-            chainId:PAYMENT_CONFIG.polygon.chainId,
-            chainName:PAYMENT_CONFIG.polygon.chainName,
-            nativeCurrency:PAYMENT_CONFIG.polygon.nativeCurrency,
-            rpcUrls:[PAYMENT_CONFIG.polygon.rpcUrl],
-            blockExplorerUrls:[PAYMENT_CONFIG.polygon.explorerUrl],
-          }]});
-        }catch(addErr){
-          console.warn("[Chain] No se pudo agregar Polygon, continuando:", addErr.message);
+    // Switch to Polygon
+    // Phantom móvil: isMetaMask=true pero falla silenciosamente en switchChain → omitir
+    const isPhantomMobile = isMobile() && (!!window.phantom?.ethereum || !!window.ethereum?.isPhantom);
+    if(!isPhantomMobile){
+      try{
+        await provider.request({method:"wallet_switchEthereumChain",params:[{chainId:PAYMENT_CONFIG.polygon.chainId}]});
+      }catch(sw){
+        if(sw.code===4902 || sw.code===-32603){
+          try{
+            await provider.request({method:"wallet_addEthereumChain",params:[{
+              chainId:PAYMENT_CONFIG.polygon.chainId,
+              chainName:PAYMENT_CONFIG.polygon.chainName,
+              nativeCurrency:PAYMENT_CONFIG.polygon.nativeCurrency,
+              rpcUrls:[PAYMENT_CONFIG.polygon.rpcUrl],
+              blockExplorerUrls:[PAYMENT_CONFIG.polygon.explorerUrl],
+            }]});
+          }catch(addErr){
+            console.warn("[Chain] No se pudo agregar Polygon:", addErr.message);
+          }
+        } else if(sw.code===4001){
+          notify("Debes cambiar a la red Polygon para continuar.","error");
+          return;
+        } else {
+          console.warn("[Chain] Switch error ignorado:", sw.message||sw.code);
         }
-      } else if(sw.code===4001){
-        // Usuario rechazó el cambio de red
-        notify("Debes cambiar a la red Polygon para continuar.","error");
-        return;
-      } else {
-        // Cualquier otro error — continuar de todas formas (Phantom móvil)
-        console.warn("[Chain] Switch error ignorado:", sw.message||sw.code);
       }
     }
 
