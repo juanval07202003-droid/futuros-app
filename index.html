@@ -2453,13 +2453,25 @@ function renderFeaturedCarousel(){
 // ─── AUTH ──────────────────────────────────────────────────────────
 function renderAuth(){
   const en=STATE.lang==="en";
+  // Debug info para diagnosticar Phantom móvil
+  const debugInfo = isMobile() ? `
+  <div style="background:#f0f0f0;border-radius:8px;padding:10px;margin-bottom:12px;font-size:11px;font-family:monospace;color:#333;word-break:break-all">
+    <strong>Debug:</strong><br>
+    wallet: ${whichWalletBrowser()||"null"}<br>
+    window.ethereum: ${!!window.ethereum}<br>
+    window.phantom: ${!!window.phantom}<br>
+    ph.ethereum: ${!!window.phantom?.ethereum}<br>
+    eth.isPhantom: ${!!window.ethereum?.isPhantom}<br>
+    eth.isMetaMask: ${!!window.ethereum?.isMetaMask}<br>
+    UA: ${navigator.userAgent.slice(0,60)}
+  </div>` : "";
   return`<div class="auth-wrap">
   <div class="auth-card fade-up">
     <div class="auth-logo">⚡</div>
     <div class="auth-title">${en?"Welcome to Futuros":"Bienvenido a Futuros"}</div>
     <div class="auth-sub">${en?"Connect your wallet to start investing in prediction markets.":"Conecta tu billetera para empezar a invertir en mercados de predicción."}</div>
-
-        ${(()=>{
+    ${debugInfo}
+    ${(()=>{
       const mob = isMobile();
       const wallet = whichWalletBrowser(); // "phantom"|"metamask"|"trust"|"unknown"|null
 
