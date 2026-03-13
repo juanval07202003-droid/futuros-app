@@ -2614,12 +2614,23 @@ async function authConnectMetaMask(){
     mobileDeepLink(`https://metamask.app.link/dapp/${APP_URL.replace("https://","")}`);
     return;
   }
-  if(!window.ethereum){
+  // En desktop buscar MetaMask específicamente entre múltiples providers
+  let provider = null;
+  if(window.ethereum?.providers){
+    // Múltiples extensiones instaladas — buscar MetaMask
+    provider = window.ethereum.providers.find(p=>p.isMetaMask && !p.isPhantom);
+  } else if(window.ethereum?.isMetaMask){
+    provider = window.ethereum;
+  } else if(window.ethereum){
+    // Puede ser MetaMask sin flag explícito
+    provider = window.ethereum;
+  }
+  if(!provider){
     notify("MetaMask no detectado. Instala la extensión primero.","error");
     window.open("https://metamask.io/download/","_blank");
     return;
   }
-  await _authConnectEVM("metamask");
+  await _authConnectEVM("metamask", provider);
 }
 
 async function authConnectPhantom(){
@@ -2627,7 +2638,14 @@ async function authConnectPhantom(){
     mobileDeepLink(`https://phantom.app/ul/browse/${encodeURIComponent(APP_URL)}?ref=${encodeURIComponent(APP_URL)}`);
     return;
   }
-  const provider = window.phantom?.ethereum || window.ethereum;
+  // Buscar Phantom específicamente
+  let provider = window.phantom?.ethereum;
+  if(!provider && window.ethereum?.providers){
+    provider = window.ethereum.providers.find(p=>p.isPhantom);
+  }
+  if(!provider && window.ethereum?.isPhantom){
+    provider = window.ethereum;
+  }
   if(!provider){
     notify("Phantom no detectado. Instala la extensión primero.","error");
     window.open("https://phantom.com/download","_blank");
