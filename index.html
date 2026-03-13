@@ -974,7 +974,6 @@ input, select, textarea{
 </footer>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@walletconnect/ethereum-provider@2/dist/index.umd.js"></script>
 <script>
 // ═══════════════════════════════════════════════════════════════════
 // SUPABASE CONFIG
@@ -998,6 +997,15 @@ function dbErr(label, error){
 let DB_READY = false;
 
 async function dbInit(){
+  // Timeout de seguridad — si tarda más de 8s forzar render
+  const timeout = setTimeout(()=>{
+    if(!DB_READY){
+      console.warn("[DB] Timeout — forzando render");
+      DB_READY = true;
+      render();
+    }
+  }, 8000);
+
   try{
     const savedSession = localStorage.getItem("futuros_session");
     const savedWallet  = localStorage.getItem("futuros_wallet");
@@ -1016,10 +1024,12 @@ async function dbInit(){
         localStorage.removeItem("futuros_wallet");
       }
     }
+    clearTimeout(timeout);
     DB_READY = true;
-    dbStartRealtime(); // Iniciar para todos — mercados en tiempo real
+    dbStartRealtime();
     render();
   }catch(e){
+    clearTimeout(timeout);
     console.error("[DB] Error en dbInit:", e?.message||e);
     DB_READY = true;
     render();
@@ -2628,13 +2638,26 @@ async function authConnectTrustWallet(){
 
 async function authConnectWalletConnect(hint=""){
   try{
-    notify("Iniciando WalletConnect…","info");
-    const EthereumProvider = window.EthereumProvider ||
-      window["@walletconnect/ethereum-provider"]?.EthereumProvider;
+    notify("Cargando WalletConnect…","info");
+
+    // Cargar SDK dinámicamente solo cuando se necesita
+    if(!window.EthereumProvider){
+      await new Promise((resolve, reject) => {
+        const s = document.createElement("script");
+        s.src = "https://cdn.jsdelivr.net/npm/@walletconnect/ethereum-provider@2/dist/index.umd.js";
+        s.onload = resolve;
+        s.onerror = () => reject(new Error("No se pudo cargar WalletConnect"));
+        document.head.appendChild(s);
+      });
+    }
+
+    const EthereumProvider = window.EthereumProvider;
     if(!EthereumProvider){
-      notify("WalletConnect no disponible — recarga la página","error");
+      notify("WalletConnect no disponible — intenta de nuevo","error");
       return;
     }
+
+    notify("Iniciando WalletConnect…","info");
     wcProvider = await EthereumProvider.init({
       projectId: WC_PROJECT_ID,
       chains: [137],
