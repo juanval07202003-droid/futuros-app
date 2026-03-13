@@ -2694,17 +2694,30 @@ async function _authConnectEVM(walletType,provider=window.ethereum){
     if(!provider) throw new Error("provider es null/undefined");
 
     let accounts;
-    // Phantom móvil: usar su método nativo para disparar el popup de aprobación
+    // Phantom móvil iOS: eth_requestAccounts no muestra popup
+    // wallet_requestPermissions sí lo dispara correctamente
     const isPhantomMob = isMobile() && walletType==="phantom";
-    if(isPhantomMob && window.phantom?.ethereum?.connect){
+    if(isPhantomMob){
       try{
-        const resp = await window.phantom.ethereum.connect();
-        accounts = resp?.accounts || (resp?.address ? [resp.address] : null);
-      }catch(connErr){
-        console.warn("[Phantom] .connect() falló, intentando eth_requestAccounts:", connErr.message);
+        // Intentar primero sin popup (si ya fue aprobado antes)
+        const existing = await provider.request({method:"eth_accounts"});
+        if(existing && existing.length){
+          accounts = existing;
+          notify("Cuenta ya conectada ✓","info");
+        } else {
+          // Pedir permisos — esto sí dispara el popup en Phantom iOS
+          await provider.request({
+            method:"wallet_requestPermissions",
+            params:[{eth_accounts:{}}]
+          });
+          accounts = await provider.request({method:"eth_accounts"});
+        }
+      }catch(permErr){
+        if(permErr.code===4001) throw permErr; // usuario rechazó
+        // Fallback final
+        accounts = await provider.request({method:"eth_requestAccounts"});
       }
-    }
-    if(!accounts || !accounts.length){
+    } else {
       accounts = await provider.request({method:"eth_requestAccounts"});
     }
     if(!accounts || !accounts.length) throw new Error("No se obtuvieron cuentas");
