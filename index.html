@@ -2825,63 +2825,61 @@ async function sendSolanaDeposit(token, amountUSD){
       const tokenAmount = BigInt(Math.round(amountUSD * Math.pow(10, decimals)));
 
       const { PublicKey: PK, Transaction, TransactionInstruction, SystemProgram } = web3;
+      const TOKEN_PROGRAM_ID    = new PK("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+      const ASSOC_TOKEN_PROGRAM = new PK("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJe8bv");
+      const SYSVAR_RENT         = new PK("SysvarRent111111111111111111111111111111111");
+      const mintPK = new PK(mintStr);
+      const fromPK = fromPubkey;
+      const toPK   = toPubkey;
 
-      const TOKEN_PROGRAM_ID      = new PK("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
-      const ASSOC_TOKEN_PROGRAM   = new PK("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJe8bv");
-      const mintPK  = new PK(mintStr);
-      const fromPK  = fromPubkey;
-      const toPK    = toPubkey;
-
-      // Derive ATAs using findProgramAddressSync
-      function getATA(walletPK, mintPK){
-        const [ata] = PK.findProgramAddressSync(
-          [walletPK.toBuffer(), TOKEN_PROGRAM_ID.toBuffer(), mintPK.toBuffer()],
-          ASSOC_TOKEN_PROGRAM
-        );
-        return ata;
-      }
-      const fromATA = getATA(fromPK, mintPK);
-      const toATA   = getATA(toPK, mintPK);
+      // Derive ATAs
+      const [fromATA] = PK.findProgramAddressSync(
+        [fromPK.toBuffer(), TOKEN_PROGRAM_ID.toBuffer(), mintPK.toBuffer()],
+        ASSOC_TOKEN_PROGRAM
+      );
+      const [toATA] = PK.findProgramAddressSync(
+        [toPK.toBuffer(), TOKEN_PROGRAM_ID.toBuffer(), mintPK.toBuffer()],
+        ASSOC_TOKEN_PROGRAM
+      );
 
       const { blockhash } = await connection.getLatestBlockhash("confirmed");
       const tx = new Transaction();
       tx.recentBlockhash = blockhash;
       tx.feePayer = fromPK;
 
-      // SPL Token transfer — usar transferChecked (instrucción 12) que es más confiable
-      // Primero verificar que la ATA destino existe
+      // Check if destination ATA exists
       const toATAInfo = await connection.getAccountInfo(toATA);
       if(!toATAInfo){
-        // Crear ATA destino — instrucción estándar sin discriminador (data vacía)
-        const createATAKeys = [
-          {pubkey: fromPK,                   isSigner:true,  isWritable:true},
-          {pubkey: toATA,                    isSigner:false, isWritable:true},
-          {pubkey: toPK,                     isSigner:false, isWritable:false},
-          {pubkey: mintPK,                   isSigner:false, isWritable:false},
-          {pubkey: SystemProgram.programId,  isSigner:false, isWritable:false},
-          {pubkey: TOKEN_PROGRAM_ID,         isSigner:false, isWritable:false},
-        ];
+        // Create ATA with full accounts including SYSVAR_RENT (required by v1 program)
         tx.add(new TransactionInstruction({
-          keys: createATAKeys,
           programId: ASSOC_TOKEN_PROGRAM,
-          data: new Uint8Array(0) // Sin discriminador = versión original
+          keys: [
+            {pubkey: fromPK,               isSigner:true,  isWritable:true},
+            {pubkey: toATA,                isSigner:false, isWritable:true},
+            {pubkey: toPK,                 isSigner:false, isWritable:false},
+            {pubkey: mintPK,               isSigner:false, isWritable:false},
+            {pubkey: SystemProgram.programId, isSigner:false, isWritable:false},
+            {pubkey: TOKEN_PROGRAM_ID,     isSigner:false, isWritable:false},
+            {pubkey: SYSVAR_RENT,          isSigner:false, isWritable:false},
+          ],
+          data: new Uint8Array(0)
         }));
       }
 
-      // TransferChecked instruction (index 12):
-      // [12, amount u64 LE, decimals u8]
-      const transferData = new Uint8Array(10);
-      transferData[0] = 12; // TransferChecked
+      // Transfer instruction (index 3 = Transfer, simpler than TransferChecked)
+      const transferData = new Uint8Array(9);
+      transferData[0] = 3;
       let val = tokenAmount;
       for(let i=0;i<8;i++){ transferData[1+i] = Number(val & BigInt(0xff)); val >>= BigInt(8); }
-      transferData[9] = decimals; // decimals
-      const transferKeys = [
-        {pubkey: fromATA, isSigner:false, isWritable:true},
-        {pubkey: mintPK,  isSigner:false, isWritable:false}, // mint required for TransferChecked
-        {pubkey: toATA,   isSigner:false, isWritable:true},
-        {pubkey: fromPK,  isSigner:true,  isWritable:false},
-      ];
-      tx.add(new TransactionInstruction({ keys: transferKeys, programId: TOKEN_PROGRAM_ID, data: transferData }));
+      tx.add(new TransactionInstruction({
+        programId: TOKEN_PROGRAM_ID,
+        keys: [
+          {pubkey: fromATA, isSigner:false, isWritable:true},
+          {pubkey: toATA,   isSigner:false, isWritable:true},
+          {pubkey: fromPK,  isSigner:true,  isWritable:false},
+        ],
+        data: transferData
+      }));
 
       notify(`Abriendo Phantom para confirmar ${tokenName}…`,"info");
       const { signature } = await solProvider.signAndSendTransaction(tx);
