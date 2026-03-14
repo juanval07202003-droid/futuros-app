@@ -2723,17 +2723,6 @@ async function loadSolanaWeb3(){
   });
 }
 
-async function loadSplToken(){
-  if(window.splToken) return window.splToken;
-  return new Promise((resolve,reject)=>{
-    const s=document.createElement("script");
-    s.src="https://unpkg.com/@solana/spl-token@0.3.11/lib/index.iife.min.js";
-    s.onload=()=>resolve(window.splToken);
-    s.onerror=()=>reject(new Error("No se pudo cargar spl-token"));
-    document.head.appendChild(s);
-  });
-}
-
 async function sendSolanaDeposit(token, amountUSD){
   const solProvider = window.phantom?.solana || window.solana;
   if(!solProvider?.isPhantom){ notify("Phantom no detectado","error"); return; }
@@ -2775,42 +2764,61 @@ async function sendSolanaDeposit(token, amountUSD){
       return signature;
 
     } else if(token === "USDC-SOL" || token === "USDT-SOL"){
-      const spl = await loadSplToken();
-      const {
-        getAssociatedTokenAddress,
-        createAssociatedTokenAccountInstruction,
-        createTransferInstruction,
-        getAccount,
-        TOKEN_PROGRAM_ID,
-        ASSOCIATED_TOKEN_PROGRAM_ID
-      } = spl;
-
-      const mintAddress = new PublicKey(
-        token === "USDC-SOL" ? PAYMENT_CONFIG.solana.usdcMint : PAYMENT_CONFIG.solana.usdtMint
-      );
-      const decimals = 6;
-      const tokenAmount = Math.round(amountUSD * Math.pow(10, decimals));
+      const mintStr = token === "USDC-SOL" ? PAYMENT_CONFIG.solana.usdcMint : PAYMENT_CONFIG.solana.usdtMint;
       const tokenName = token === "USDC-SOL" ? "USDC" : "USDT";
+      const decimals = 6;
+      const tokenAmount = BigInt(Math.round(amountUSD * Math.pow(10, decimals)));
 
-      // ATAs
-      const fromATA = await getAssociatedTokenAddress(mintAddress, fromPubkey);
-      const toATA   = await getAssociatedTokenAddress(mintAddress, toPubkey);
+      const { PublicKey: PK, Transaction, TransactionInstruction, SystemProgram } = web3;
+
+      const TOKEN_PROGRAM_ID      = new PK("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+      const ASSOC_TOKEN_PROGRAM   = new PK("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJe8bv");
+      const mintPK  = new PK(mintStr);
+      const fromPK  = fromPubkey;
+      const toPK    = toPubkey;
+
+      // Derive ATAs using findProgramAddressSync
+      function getATA(walletPK, mintPK){
+        const [ata] = PK.findProgramAddressSync(
+          [walletPK.toBuffer(), TOKEN_PROGRAM_ID.toBuffer(), mintPK.toBuffer()],
+          ASSOC_TOKEN_PROGRAM
+        );
+        return ata;
+      }
+      const fromATA = getATA(fromPK, mintPK);
+      const toATA   = getATA(toPK, mintPK);
 
       const { blockhash } = await connection.getLatestBlockhash("confirmed");
       const tx = new Transaction();
       tx.recentBlockhash = blockhash;
-      tx.feePayer = fromPubkey;
+      tx.feePayer = fromPK;
 
-      // Crear ATA destino si no existe
-      try{ await getAccount(connection, toATA); }
-      catch(_){
-        tx.add(createAssociatedTokenAccountInstruction(
-          fromPubkey, toATA, toPubkey, mintAddress,
-          TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID
-        ));
+      // Check if destination ATA exists
+      const toATAInfo = await connection.getAccountInfo(toATA);
+      if(!toATAInfo){
+        // Create destination ATA
+        const keys = [
+          {pubkey: fromPK,          isSigner:true,  isWritable:true},
+          {pubkey: toATA,           isSigner:false, isWritable:true},
+          {pubkey: toPK,            isSigner:false, isWritable:false},
+          {pubkey: mintPK,          isSigner:false, isWritable:false},
+          {pubkey: SystemProgram.programId, isSigner:false, isWritable:false},
+          {pubkey: TOKEN_PROGRAM_ID,isSigner:false, isWritable:false},
+        ];
+        tx.add(new TransactionInstruction({ keys, programId: ASSOC_TOKEN_PROGRAM, data: Buffer.alloc(0) }));
       }
 
-      tx.add(createTransferInstruction(fromATA, toATA, fromPubkey, tokenAmount));
+      // Transfer instruction: [9 (transfer checked) not needed — use instruction 3 = transfer]
+      // Instruction index 3 = transfer, data = [3, amount as u64 LE]
+      const transferData = Buffer.alloc(9);
+      transferData.writeUInt8(3, 0); // instruction index
+      transferData.writeBigUInt64LE(tokenAmount, 1);
+      const transferKeys = [
+        {pubkey: fromATA, isSigner:false, isWritable:true},
+        {pubkey: toATA,   isSigner:false, isWritable:true},
+        {pubkey: fromPK,  isSigner:true,  isWritable:false},
+      ];
+      tx.add(new TransactionInstruction({ keys: transferKeys, programId: TOKEN_PROGRAM_ID, data: transferData }));
 
       notify(`Abriendo Phantom para confirmar ${tokenName}…`,"info");
       const { signature } = await solProvider.signAndSendTransaction(tx);
