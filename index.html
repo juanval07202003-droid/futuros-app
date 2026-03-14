@@ -2847,24 +2847,20 @@ async function sendSolanaDeposit(token, amountUSD){
       tx.recentBlockhash = blockhash;
       tx.feePayer = fromPK;
 
-      // Check if destination ATA exists
-      const toATAInfo = await connection.getAccountInfo(toATA);
-      if(!toATAInfo){
-        // Create ATA with full accounts including SYSVAR_RENT (required by v1 program)
-        tx.add(new TransactionInstruction({
-          programId: ASSOC_TOKEN_PROGRAM,
-          keys: [
-            {pubkey: fromPK,               isSigner:true,  isWritable:true},
-            {pubkey: toATA,                isSigner:false, isWritable:true},
-            {pubkey: toPK,                 isSigner:false, isWritable:false},
-            {pubkey: mintPK,               isSigner:false, isWritable:false},
-            {pubkey: SystemProgram.programId, isSigner:false, isWritable:false},
-            {pubkey: TOKEN_PROGRAM_ID,     isSigner:false, isWritable:false},
-            {pubkey: SYSVAR_RENT,          isSigner:false, isWritable:false},
-          ],
-          data: new Uint8Array(0)
-        }));
-      }
+      // Siempre incluir create ATA idempotente — no falla si ya existe
+      // Usar discriminador 1 (CreateIdempotent) que es el estándar actual
+      tx.add(new TransactionInstruction({
+        programId: ASSOC_TOKEN_PROGRAM,
+        keys: [
+          {pubkey: fromPK,                  isSigner:true,  isWritable:true},
+          {pubkey: toATA,                   isSigner:false, isWritable:true},
+          {pubkey: toPK,                    isSigner:false, isWritable:false},
+          {pubkey: mintPK,                  isSigner:false, isWritable:false},
+          {pubkey: SystemProgram.programId, isSigner:false, isWritable:false},
+          {pubkey: TOKEN_PROGRAM_ID,        isSigner:false, isWritable:false},
+        ],
+        data: new Uint8Array([1]) // 1 = CreateIdempotent
+      }));
 
       // Transfer instruction (index 3 = Transfer, simpler than TransferChecked)
       const transferData = new Uint8Array(9);
