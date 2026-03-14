@@ -2848,11 +2848,11 @@ async function sendSolanaDeposit(token, amountUSD){
       tx.recentBlockhash = blockhash;
       tx.feePayer = fromPK;
 
-      // Check if destination ATA exists — if not, include create instruction
+      // SPL Token transfer — usar transferChecked (instrucción 12) que es más confiable
+      // Primero verificar que la ATA destino existe
       const toATAInfo = await connection.getAccountInfo(toATA);
       if(!toATAInfo){
-        // Create ATA instruction — ASSOC_TOKEN_PROGRAM discriminator = 0 (idempotent = 1)
-        // Use idempotent variant (discriminator=1) to avoid errors if account exists
+        // Crear ATA destino — instrucción estándar sin discriminador (data vacía)
         const createATAKeys = [
           {pubkey: fromPK,                   isSigner:true,  isWritable:true},
           {pubkey: toATA,                    isSigner:false, isWritable:true},
@@ -2861,21 +2861,23 @@ async function sendSolanaDeposit(token, amountUSD){
           {pubkey: SystemProgram.programId,  isSigner:false, isWritable:false},
           {pubkey: TOKEN_PROGRAM_ID,         isSigner:false, isWritable:false},
         ];
-        // discriminator 1 = create idempotent (won't fail if already exists)
         tx.add(new TransactionInstruction({
           keys: createATAKeys,
           programId: ASSOC_TOKEN_PROGRAM,
-          data: new Uint8Array([1])
+          data: new Uint8Array(0) // Sin discriminador = versión original
         }));
       }
 
-      // SPL Token transfer instruction (index 3 = Transfer)
-      const transferData = new Uint8Array(9);
-      transferData[0] = 3; // Transfer instruction
+      // TransferChecked instruction (index 12):
+      // [12, amount u64 LE, decimals u8]
+      const transferData = new Uint8Array(10);
+      transferData[0] = 12; // TransferChecked
       let val = tokenAmount;
       for(let i=0;i<8;i++){ transferData[1+i] = Number(val & BigInt(0xff)); val >>= BigInt(8); }
+      transferData[9] = decimals; // decimals
       const transferKeys = [
         {pubkey: fromATA, isSigner:false, isWritable:true},
+        {pubkey: mintPK,  isSigner:false, isWritable:false}, // mint required for TransferChecked
         {pubkey: toATA,   isSigner:false, isWritable:true},
         {pubkey: fromPK,  isSigner:true,  isWritable:false},
       ];
