@@ -2712,82 +2712,117 @@ async function authConnectSolana(){
   }
 }
 
+async function loadSolanaWeb3(){
+  if(window.solanaWeb3) return window.solanaWeb3;
+  return new Promise((resolve,reject)=>{
+    const s=document.createElement("script");
+    s.src="https://unpkg.com/@solana/web3.js@latest/lib/index.iife.min.js";
+    s.onload=()=>resolve(window.solanaWeb3);
+    s.onerror=()=>reject(new Error("No se pudo cargar @solana/web3.js"));
+    document.head.appendChild(s);
+  });
+}
+
+async function loadSplToken(){
+  if(window.splToken) return window.splToken;
+  return new Promise((resolve,reject)=>{
+    const s=document.createElement("script");
+    s.src="https://unpkg.com/@solana/spl-token@0.3.11/lib/index.iife.min.js";
+    s.onload=()=>resolve(window.splToken);
+    s.onerror=()=>reject(new Error("No se pudo cargar spl-token"));
+    document.head.appendChild(s);
+  });
+}
+
 async function sendSolanaDeposit(token, amountUSD){
   const solProvider = window.phantom?.solana || window.solana;
   if(!solProvider?.isPhantom){ notify("Phantom no detectado","error"); return; }
+  if(!solProvider.publicKey){ notify("Conecta tu wallet Solana primero","error"); return; }
 
   try{
-    notify("Preparando transacción Solana…","info");
-    // Obtener precio SOL si es nativo
-    const toAddress = PAYMENT_CONFIG.solana.receivingAddress;
+    notify("Cargando librería Solana…","info");
+    const web3 = await loadSolanaWeb3();
+    const { Connection, PublicKey, Transaction, SystemProgram, LAMPORTS_PER_SOL } = web3;
+
+    const connection = new Connection(PAYMENT_CONFIG.solana.rpcUrl, "confirmed");
+    const toAddress  = PAYMENT_CONFIG.solana.receivingAddress;
+    const fromPubkey = solProvider.publicKey;
+    const toPubkey   = new PublicKey(toAddress);
+
+    notify("Preparando transacción…","info");
 
     if(token === "SOL"){
-      // Transferencia nativa SOL
+      // Precio SOL
       let solPrice = 140;
       try{
         const r = await fetch("https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd");
         const d = await r.json();
         solPrice = d?.solana?.usd || 140;
       }catch(_){}
-      const lamports = Math.round((amountUSD / solPrice) * 1e9);
+      const lamports = Math.round((amountUSD / solPrice) * LAMPORTS_PER_SOL);
 
-      // Construir tx SOL nativa usando RPC
-      const rpc = PAYMENT_CONFIG.solana.rpcUrl;
-      // Obtener blockhash reciente
-      const bhResp = await fetch(rpc, {
-        method:"POST", headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({jsonrpc:"2.0",id:1,method:"getLatestBlockhash",params:[{"commitment":"confirmed"}]})
-      });
-      const bhData = await bhResp.json();
-      const recentBlockhash = bhData.result?.value?.blockhash;
-      if(!recentBlockhash) throw new Error("No se pudo obtener blockhash");
+      const { blockhash } = await connection.getLatestBlockhash("confirmed");
+      const tx = new Transaction().add(
+        SystemProgram.transfer({ fromPubkey, toPubkey, lamports })
+      );
+      tx.recentBlockhash = blockhash;
+      tx.feePayer = fromPubkey;
 
-      // Usar @solana/web3.js si está disponible, o método manual
-      if(window.solanaWeb3){
-        const { Transaction, SystemProgram, PublicKey, Connection } = window.solanaWeb3;
-        const fromPubkey = new PublicKey(solProvider.publicKey.toString());
-        const toPubkey   = new PublicKey(toAddress);
-        const tx = new Transaction().add(
-          SystemProgram.transfer({ fromPubkey, toPubkey, lamports })
-        );
-        tx.recentBlockhash = recentBlockhash;
-        tx.feePayer = fromPubkey;
-        const signed = await solProvider.signAndSendTransaction(tx);
-        notify(`SOL enviado · tx: ${signed.signature.slice(0,16)}…`,"success");
-        notify("Depósito pendiente de confirmación…","info");
-        return signed.signature;
-      } else {
-        // Sin web3.js — usar método de transferencia via signAndSendTransaction con buffer manual
-        notify("Abriendo Phantom para confirmar…","info");
-        // Instrucción SystemProgram.transfer serializada manualmente
-        const from = solProvider.publicKey;
-        const to   = toAddress;
-        // Serialización manual básica de una tx SOL
-        const txPayload = buildSolTransferTx(from.toString(), to, lamports, recentBlockhash);
-        if(!txPayload){ notify("Error construyendo tx SOL","error"); return; }
-        const result = await solProvider.request({
-          method: "signAndSendTransaction",
-          params: { message: txPayload }
-        });
-        const sig = result?.signature || result;
-        notify(`SOL enviado · ${String(sig).slice(0,16)}…`,"success");
-        return sig;
-      }
+      notify("Abriendo Phantom para confirmar…","info");
+      const { signature } = await solProvider.signAndSendTransaction(tx);
+      notify(`✅ SOL enviado · ${signature.slice(0,16)}…`,"success");
+      notify("Tu balance se acreditará en unos segundos","info");
+      return signature;
 
     } else if(token === "USDC-SOL" || token === "USDT-SOL"){
-      // SPL Token transfer
-      const mint = token === "USDC-SOL"
-        ? PAYMENT_CONFIG.solana.usdcMint
-        : PAYMENT_CONFIG.solana.usdtMint;
-      // Llamar a Phantom directamente con la instrucción SPL
-      notify(`Transfiere ${amountUSD} ${token.replace("-SOL","")} a:\n${toAddress}\n\nEn Phantom: Send → pega la dirección → confirma`, "info");
-      // Por ahora mostrar instrucciones manuales para SPL
-      showSolanaManualDepositModal(token, amountUSD, toAddress);
-      return;
+      const spl = await loadSplToken();
+      const {
+        getAssociatedTokenAddress,
+        createAssociatedTokenAccountInstruction,
+        createTransferInstruction,
+        getAccount,
+        TOKEN_PROGRAM_ID,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      } = spl;
+
+      const mintAddress = new PublicKey(
+        token === "USDC-SOL" ? PAYMENT_CONFIG.solana.usdcMint : PAYMENT_CONFIG.solana.usdtMint
+      );
+      const decimals = 6;
+      const tokenAmount = Math.round(amountUSD * Math.pow(10, decimals));
+      const tokenName = token === "USDC-SOL" ? "USDC" : "USDT";
+
+      // ATAs
+      const fromATA = await getAssociatedTokenAddress(mintAddress, fromPubkey);
+      const toATA   = await getAssociatedTokenAddress(mintAddress, toPubkey);
+
+      const { blockhash } = await connection.getLatestBlockhash("confirmed");
+      const tx = new Transaction();
+      tx.recentBlockhash = blockhash;
+      tx.feePayer = fromPubkey;
+
+      // Crear ATA destino si no existe
+      try{ await getAccount(connection, toATA); }
+      catch(_){
+        tx.add(createAssociatedTokenAccountInstruction(
+          fromPubkey, toATA, toPubkey, mintAddress,
+          TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID
+        ));
+      }
+
+      tx.add(createTransferInstruction(fromATA, toATA, fromPubkey, tokenAmount));
+
+      notify(`Abriendo Phantom para confirmar ${tokenName}…`,"info");
+      const { signature } = await solProvider.signAndSendTransaction(tx);
+      notify(`✅ ${tokenName} enviado · ${signature.slice(0,16)}…`,"success");
+      notify("Tu balance se acreditará en unos segundos","info");
+      return signature;
     }
+
   }catch(e){
-    if(e.code===4001) notify("Transacción rechazada.","error");
+    if(e.code===4001 || e.message?.includes("rejected")) notify("Transacción rechazada por el usuario.","error");
     else notify("Error: "+(e.message||e),"error");
+    console.error("[Solana deposit]", e);
   }
 }
 
@@ -3531,13 +3566,18 @@ function renderSolanaStep(amt, token){
       <div style="font-size:12px;color:var(--muted)">Recibirás <strong style="color:var(--yes)">$${amt.toFixed(2)}</strong> en tu balance</div>
     </div>
 
-    ${!isSolanaWallet?`
-    <button class="btn-polygon" style="background:linear-gradient(135deg,#9945ff,#7c3aed);margin-bottom:14px;width:100%" onclick="connectSolanaForDeposit()">
-      <span>👻</span> Conectar Phantom (Solana)
-    </button>`:`
-    <button class="btn-polygon" style="background:linear-gradient(135deg,#9945ff,#7c3aed);margin-bottom:14px;width:100%" onclick="sendSolanaDeposit('${token}',${amt})">
-      <span>◎</span> Enviar ${tokenName} desde Phantom
-    </button>`}
+    <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px">
+      ${isSolanaWallet?`
+      <button class="btn-polygon" style="background:linear-gradient(135deg,#9945ff,#7c3aed);width:100%" onclick="sendSolanaDeposit('${token}',${amt})">
+        <span>◎</span> Enviar ${tokenName} desde Phantom
+      </button>`:`
+      <button class="btn-polygon" style="background:linear-gradient(135deg,#9945ff,#7c3aed);width:100%" onclick="connectSolanaForDeposit().then(()=>{const sc=document.getElementById('deposit-step-content');if(sc)sc.innerHTML=renderDepositStep();})">
+        <span>👻</span> Conectar Phantom · Solana
+      </button>`}
+      <button class="btn-polygon" style="background:linear-gradient(135deg,#6b7280,#4b5563);width:100%" onclick="sendSolanaDeposit('${token}',${amt})">
+        <span>◎</span> Enviar directamente (wallet ya conectada)
+      </button>
+    </div>
 
     <div class="lbl">Dirección Solana de la plataforma</div>
     <div class="crypto-addr-box" style="font-size:11px">${addr}</div>
