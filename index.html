@@ -3635,18 +3635,9 @@ function renderSolanaStep(amt, token){
       <div style="font-size:12px;color:var(--muted)">Recibirás <strong style="color:var(--yes)">$${amt.toFixed(2)}</strong> en tu balance</div>
     </div>
 
-    <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px">
-      ${isSolanaWallet?`
-      <button class="btn-polygon" style="background:linear-gradient(135deg,#9945ff,#7c3aed);width:100%" onclick="sendSolanaDeposit('${token}',${amt})">
-        <span>◎</span> Enviar ${tokenName} desde Phantom
-      </button>`:`
-      <button class="btn-polygon" style="background:linear-gradient(135deg,#9945ff,#7c3aed);width:100%" onclick="connectSolanaForDeposit().then(()=>{const sc=document.getElementById('deposit-step-content');if(sc)sc.innerHTML=renderDepositStep();})">
-        <span>👻</span> Conectar Phantom · Solana
-      </button>`}
-      <button class="btn-polygon" style="background:linear-gradient(135deg,#6b7280,#4b5563);width:100%" onclick="sendSolanaDeposit('${token}',${amt})">
-        <span>◎</span> Enviar directamente (wallet ya conectada)
-      </button>
-    </div>
+    <button class="btn-polygon" style="background:linear-gradient(135deg,#9945ff,#7c3aed);width:100%;margin-bottom:14px" onclick="sendSolanaDeposit('${token}',${amt})">
+      <span>◎</span> Enviar ${tokenName} desde Phantom
+    </button>
 
     <div class="lbl">Dirección Solana de la plataforma</div>
     <div class="crypto-addr-box" style="font-size:11px">${addr}</div>
