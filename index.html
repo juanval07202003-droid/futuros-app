@@ -2763,6 +2763,20 @@ async function loadSolanaWeb3(){
   });
 }
 
+
+function splLog(msg){
+  console.log("[SPL]", msg);
+  let panel = document.getElementById("spl-debug-panel");
+  if(!panel){
+    panel = document.createElement("div");
+    panel.id = "spl-debug-panel";
+    panel.style.cssText = "position:fixed;bottom:80px;left:10px;right:10px;background:#1a1a2e;color:#00e5a0;font-family:monospace;font-size:11px;padding:10px;border-radius:10px;z-index:9999;max-height:200px;overflow-y:auto;word-break:break-all";
+    document.body.appendChild(panel);
+  }
+  panel.innerHTML += msg + "<br>";
+  panel.scrollTop = panel.scrollHeight;
+}
+
 async function sendSolanaDeposit(token, amountUSD){
   const solProvider = window.phantom?.solana || window.solana;
   if(!solProvider?.isPhantom){ notify("Phantom no detectado","error"); return; }
@@ -2819,69 +2833,10 @@ async function sendSolanaDeposit(token, amountUSD){
       return signature;
 
     } else if(token === "USDC-SOL" || token === "USDT-SOL"){
-      const mintStr = token === "USDC-SOL" ? PAYMENT_CONFIG.solana.usdcMint : PAYMENT_CONFIG.solana.usdtMint;
       const tokenName = token === "USDC-SOL" ? "USDC" : "USDT";
-      const decimals = 6;
-      const tokenAmount = BigInt(Math.round(amountUSD * Math.pow(10, decimals)));
-
-      const { PublicKey: PK, Transaction, TransactionInstruction, SystemProgram } = web3;
-      const TOKEN_PROGRAM_ID    = new PK("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
-      const ASSOC_TOKEN_PROGRAM = new PK("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJe8bv");
-      const SYSVAR_RENT         = new PK("SysvarRent111111111111111111111111111111111");
-      const mintPK = new PK(mintStr);
-      const fromPK = fromPubkey;
-      const toPK   = toPubkey;
-
-      // Derive ATAs
-      const [fromATA] = PK.findProgramAddressSync(
-        [fromPK.toBuffer(), TOKEN_PROGRAM_ID.toBuffer(), mintPK.toBuffer()],
-        ASSOC_TOKEN_PROGRAM
-      );
-      const [toATA] = PK.findProgramAddressSync(
-        [toPK.toBuffer(), TOKEN_PROGRAM_ID.toBuffer(), mintPK.toBuffer()],
-        ASSOC_TOKEN_PROGRAM
-      );
-
-      const { blockhash } = await connection.getLatestBlockhash("confirmed");
-      const tx = new Transaction();
-      tx.recentBlockhash = blockhash;
-      tx.feePayer = fromPK;
-
-      // Siempre incluir create ATA idempotente — no falla si ya existe
-      // Usar discriminador 1 (CreateIdempotent) que es el estándar actual
-      tx.add(new TransactionInstruction({
-        programId: ASSOC_TOKEN_PROGRAM,
-        keys: [
-          {pubkey: fromPK,                  isSigner:true,  isWritable:true},
-          {pubkey: toATA,                   isSigner:false, isWritable:true},
-          {pubkey: toPK,                    isSigner:false, isWritable:false},
-          {pubkey: mintPK,                  isSigner:false, isWritable:false},
-          {pubkey: SystemProgram.programId, isSigner:false, isWritable:false},
-          {pubkey: TOKEN_PROGRAM_ID,        isSigner:false, isWritable:false},
-        ],
-        data: new Uint8Array([1]) // 1 = CreateIdempotent
-      }));
-
-      // Transfer instruction (index 3 = Transfer, simpler than TransferChecked)
-      const transferData = new Uint8Array(9);
-      transferData[0] = 3;
-      let val = tokenAmount;
-      for(let i=0;i<8;i++){ transferData[1+i] = Number(val & BigInt(0xff)); val >>= BigInt(8); }
-      tx.add(new TransactionInstruction({
-        programId: TOKEN_PROGRAM_ID,
-        keys: [
-          {pubkey: fromATA, isSigner:false, isWritable:true},
-          {pubkey: toATA,   isSigner:false, isWritable:true},
-          {pubkey: fromPK,  isSigner:true,  isWritable:false},
-        ],
-        data: transferData
-      }));
-
-      notify(`Abriendo Phantom para confirmar ${tokenName}…`,"info");
-      const { signature } = await solProvider.signAndSendTransaction(tx);
-      notify(`✅ ${tokenName} enviado · ${signature.slice(0,16)}…`,"success");
-      notify("Tu balance se acreditará en unos segundos","info");
-      return signature;
+      const addr = PAYMENT_CONFIG.solana.receivingAddress;
+      showSolanaPaymentInstructions(tokenName, amountUSD, addr);
+      return;
     }
 
   }catch(e){
@@ -2889,6 +2844,40 @@ async function sendSolanaDeposit(token, amountUSD){
     else notify("Error: "+(e.message||e),"error");
     console.error("[Solana deposit]", e);
   }
+}
+
+
+function showSolanaPaymentInstructions(tokenName, amount, address){
+  const existing = document.getElementById("sol-pay-modal");
+  if(existing) existing.remove();
+  const html = `
+  <div class="overlay" id="sol-pay-modal" onclick="event.target===this&&this.remove()">
+    <div class="modal" onclick="event.stopPropagation()" style="max-width:420px;text-align:center">
+      <div style="font-size:40px;margin-bottom:8px">◎</div>
+      <h3 style="margin-bottom:4px">Envía ${tokenName} en Solana</h3>
+      <p style="color:var(--muted);font-size:13px;margin-bottom:20px">
+        Abre <strong>Phantom → Send</strong> y envía exactamente:
+      </p>
+      <div style="background:linear-gradient(135deg,#9945ff15,#9945ff08);border:2px solid #9945ff33;border-radius:14px;padding:16px;margin-bottom:16px">
+        <div style="font-size:36px;font-weight:900;color:#9945ff">${amount.toFixed(2)} ${tokenName}</div>
+        <div style="font-size:12px;color:var(--muted);margin-top:4px">Red Solana únicamente</div>
+      </div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:6px;font-weight:600;letter-spacing:.5px">DIRECCIÓN DESTINO</div>
+      <div style="background:#f5f6fa;border-radius:10px;padding:12px;font-family:monospace;font-size:11px;word-break:break-all;cursor:pointer;margin-bottom:8px" onclick="copyText('${address}');this.style.background='#e8f8f2'">
+        ${address}
+        <div style="color:var(--accent);font-size:11px;margin-top:6px">📋 Toca para copiar</div>
+      </div>
+      <div style="background:#fff8e6;border-radius:10px;padding:12px;font-size:12px;color:#b36000;margin-bottom:16px;text-align:left">
+        <strong>⚠️ Importante:</strong><br>
+        • Abre Phantom app → toca <strong>Send</strong><br>
+        • Selecciona <strong>${tokenName}</strong> en red <strong>Solana</strong><br>
+        • Pega la dirección de arriba<br>
+        • Tu balance se acreditará en ~30 segundos
+      </div>
+      <button class="btn-primary" onclick="document.getElementById('sol-pay-modal').remove()" style="width:100%">Entendido</button>
+    </div>
+  </div>`;
+  document.body.insertAdjacentHTML("beforeend", html);
 }
 
 function showSolanaManualDepositModal(token, amount, address){
