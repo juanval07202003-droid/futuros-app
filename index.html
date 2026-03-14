@@ -1518,19 +1518,20 @@ function calcPayoutPerShare(mkt, winSide){
 const PAYMENT_CONFIG = {
   polygon: {
     receivingAddress: "0xB715A691A5ab505e492eEB6DeFd66F750d9199E3",
-    chainId: "0x89",
-    chainIdInt: 137,
-    chainName: "Polygon Mainnet",
-    rpcUrl: "https://polygon-rpc.com",
-    explorerUrl: "https://polygonscan.com",
+    chainId: "0x89", chainIdInt: 137, chainName: "Polygon Mainnet",
+    rpcUrl: "https://polygon-rpc.com", explorerUrl: "https://polygonscan.com",
     nativeCurrency: { name:"MATIC", symbol:"MATIC", decimals:18 },
-    // USDC contract on Polygon
-    usdcAddress: "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
-    usdcDecimals: 6,
-    // USDT contract on Polygon
-    usdtAddress: "0xc2132D05D31c914a87C6611C10748AEb04B58e8F",
-    usdtDecimals: 6,
+    usdcAddress: "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174", usdcDecimals: 6,
+    usdtAddress: "0xc2132D05D31c914a87C6611C10748AEb04B58e8F", usdtDecimals: 6,
     confirmationsNeeded: 3
+  },
+  solana: {
+    receivingAddress: "8nb7zhT7F3ScEquCzhaQu2uQzgLtj4edgyXiATZyaUcN",
+    rpcUrl: "https://api.mainnet-beta.solana.com",
+    explorerUrl: "https://solscan.io",
+    usdcMint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    usdtMint: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+    confirmationsNeeded: 1
   },
   depositPresets: [10, 25, 50, 100, 250, 500]
 };
@@ -1613,12 +1614,14 @@ const STATE={
   // deposit/withdraw modal
   depositOpen:false,
   depositMethod:"polygon",   // polygon | usdc
+  depositNetwork:"polygon",  // polygon | solana
   depositAmount:50,        // USD
   depositStep:1,           // 1=method 2=amount 3=process
   depositCopAmount:0,
   // crypto state
   walletConnected:false,
   walletAddress:null,
+  walletType:null,
   walletChainId:null,
   // withdraw modal
   withdrawOpen:false,
@@ -2481,11 +2484,18 @@ function renderAuth(){
       <span class="wallet-btn-arrow">›</span>
     </a>`;
 
-      // 2. Dentro del browser de Phantom → conectar directo con Phantom
+      // 2. Dentro del browser de Phantom → ofrecer EVM y Solana
       if(wallet === "phantom") return `
+    <button class="wallet-btn" onclick="authConnectSolana()">
+      <div class="wallet-btn-icon" style="background:#9945ff1a">
+        <svg width="30" height="30" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg"><rect width="128" height="128" rx="26" fill="#9945FF"/><text x="50%" y="58%" dominant-baseline="middle" text-anchor="middle" font-size="64" fill="white">◎</text></svg>
+      </div>
+      <div class="wallet-btn-text"><span class="wallet-btn-name">Phantom · Solana</span><span class="wallet-btn-desc">Conectar cuenta Solana</span></div>
+      <span class="wallet-btn-arrow">›</span>
+    </button>
     <button class="wallet-btn" onclick="authConnectPhantom()">
       <div class="wallet-btn-icon" style="background:#ab9ff21a"><svg width="30" height="30" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg"><rect width="128" height="128" rx="26" fill="#AB9FF2"/><path d="M28 72 C26 52 34 32 52 26 C70 20 92 28 100 46 C108 62 104 80 94 90 C88 96 80 94 76 88 C72 82 68 82 64 88 C60 94 52 96 46 90 C36 82 30 88 28 72 Z" fill="white"/><ellipse cx="60" cy="58" rx="6" ry="7" fill="#AB9FF2"/><ellipse cx="76" cy="55" rx="6" ry="7" fill="#AB9FF2"/></svg></div>
-      <div class="wallet-btn-text"><span class="wallet-btn-name">Phantom</span><span class="wallet-btn-desc">Conectar con Phantom</span></div>
+      <div class="wallet-btn-text"><span class="wallet-btn-name">Phantom · Ethereum</span><span class="wallet-btn-desc">Conectar cuenta EVM/Polygon</span></div>
       <span class="wallet-btn-arrow">›</span>
     </button>`;
 
@@ -2673,6 +2683,172 @@ async function authConnectTrustWallet(){
     return;
   }
   await _authConnectEVM("trust");
+}
+
+
+// ═══════════════════════════════════════════════════════════════════
+// SOLANA WALLET — Login y Depósitos
+// ═══════════════════════════════════════════════════════════════════
+
+async function authConnectSolana(){
+  if(isMobile() && !isInsideWalletBrowser()){
+    mobileDeepLink(`https://phantom.app/ul/browse/${encodeURIComponent(APP_URL)}?ref=${encodeURIComponent(APP_URL)}`);
+    return;
+  }
+  const solProvider = window.phantom?.solana || window.solana;
+  if(!solProvider?.isPhantom){
+    notify("Phantom no detectado.","error");
+    return;
+  }
+  try{
+    notify("Conectando con Solana…","info");
+    const resp = await solProvider.connect();
+    const address = resp.publicKey.toString();
+    notify("Conectado: "+address.slice(0,6)+"…","info");
+    await _authConnectFinish("phantom-solana", address);
+  }catch(e){
+    if(e.code===4001) notify("Conexión rechazada.","error");
+    else notify("Error Solana: "+(e.message||e),"error");
+  }
+}
+
+async function sendSolanaDeposit(token, amountUSD){
+  const solProvider = window.phantom?.solana || window.solana;
+  if(!solProvider?.isPhantom){ notify("Phantom no detectado","error"); return; }
+
+  try{
+    notify("Preparando transacción Solana…","info");
+    // Obtener precio SOL si es nativo
+    const toAddress = PAYMENT_CONFIG.solana.receivingAddress;
+
+    if(token === "SOL"){
+      // Transferencia nativa SOL
+      let solPrice = 140;
+      try{
+        const r = await fetch("https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd");
+        const d = await r.json();
+        solPrice = d?.solana?.usd || 140;
+      }catch(_){}
+      const lamports = Math.round((amountUSD / solPrice) * 1e9);
+
+      // Construir tx SOL nativa usando RPC
+      const rpc = PAYMENT_CONFIG.solana.rpcUrl;
+      // Obtener blockhash reciente
+      const bhResp = await fetch(rpc, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({jsonrpc:"2.0",id:1,method:"getLatestBlockhash",params:[{"commitment":"confirmed"}]})
+      });
+      const bhData = await bhResp.json();
+      const recentBlockhash = bhData.result?.value?.blockhash;
+      if(!recentBlockhash) throw new Error("No se pudo obtener blockhash");
+
+      // Usar @solana/web3.js si está disponible, o método manual
+      if(window.solanaWeb3){
+        const { Transaction, SystemProgram, PublicKey, Connection } = window.solanaWeb3;
+        const fromPubkey = new PublicKey(solProvider.publicKey.toString());
+        const toPubkey   = new PublicKey(toAddress);
+        const tx = new Transaction().add(
+          SystemProgram.transfer({ fromPubkey, toPubkey, lamports })
+        );
+        tx.recentBlockhash = recentBlockhash;
+        tx.feePayer = fromPubkey;
+        const signed = await solProvider.signAndSendTransaction(tx);
+        notify(`SOL enviado · tx: ${signed.signature.slice(0,16)}…`,"success");
+        notify("Depósito pendiente de confirmación…","info");
+        return signed.signature;
+      } else {
+        // Sin web3.js — usar método de transferencia via signAndSendTransaction con buffer manual
+        notify("Abriendo Phantom para confirmar…","info");
+        // Instrucción SystemProgram.transfer serializada manualmente
+        const from = solProvider.publicKey;
+        const to   = toAddress;
+        // Serialización manual básica de una tx SOL
+        const txPayload = buildSolTransferTx(from.toString(), to, lamports, recentBlockhash);
+        if(!txPayload){ notify("Error construyendo tx SOL","error"); return; }
+        const result = await solProvider.request({
+          method: "signAndSendTransaction",
+          params: { message: txPayload }
+        });
+        const sig = result?.signature || result;
+        notify(`SOL enviado · ${String(sig).slice(0,16)}…`,"success");
+        return sig;
+      }
+
+    } else if(token === "USDC-SOL" || token === "USDT-SOL"){
+      // SPL Token transfer
+      const mint = token === "USDC-SOL"
+        ? PAYMENT_CONFIG.solana.usdcMint
+        : PAYMENT_CONFIG.solana.usdtMint;
+      // Llamar a Phantom directamente con la instrucción SPL
+      notify(`Transfiere ${amountUSD} ${token.replace("-SOL","")} a:\n${toAddress}\n\nEn Phantom: Send → pega la dirección → confirma`, "info");
+      // Por ahora mostrar instrucciones manuales para SPL
+      showSolanaManualDepositModal(token, amountUSD, toAddress);
+      return;
+    }
+  }catch(e){
+    if(e.code===4001) notify("Transacción rechazada.","error");
+    else notify("Error: "+(e.message||e),"error");
+  }
+}
+
+function showSolanaManualDepositModal(token, amount, address){
+  const existing = document.getElementById("sol-manual-modal");
+  if(existing) existing.remove();
+  const tokenName = token.replace("-SOL","");
+  const html = `
+  <div class="overlay" id="sol-manual-modal" onclick="this.remove()">
+    <div class="modal" onclick="event.stopPropagation()" style="max-width:400px;text-align:center">
+      <div style="font-size:32px;margin-bottom:8px">🟣</div>
+      <h3 style="margin-bottom:6px">Depósito ${tokenName} (Solana)</h3>
+      <p style="color:var(--muted);font-size:13px;margin-bottom:16px">
+        Envía exactamente <strong>$${amount} ${tokenName}</strong> a esta dirección en la red Solana:
+      </p>
+      <div style="background:#f5f6fa;border-radius:10px;padding:12px;margin-bottom:16px;font-family:monospace;font-size:12px;word-break:break-all;cursor:pointer" onclick="copyText('${address}')">
+        ${address}
+        <div style="color:var(--accent);font-size:11px;margin-top:4px">Toca para copiar</div>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:16px">
+        ⚠️ Solo envía ${tokenName} en la red <strong>Solana</strong>. Tu balance se acreditará automáticamente.
+      </p>
+      <button class="btn-primary" onclick="document.getElementById('sol-manual-modal').remove()">Entendido</button>
+    </div>
+  </div>`;
+  document.body.insertAdjacentHTML("beforeend", html);
+}
+
+// Finalizar autenticación (compartido entre EVM y Solana)
+async function _authConnectFinish(walletType, address){
+  let user = await dbFindUserByWallet(address);
+  if(!user){
+    const shortAddr = address.slice(0,6)+"…"+address.slice(-4);
+    const newUser = {
+      id: crypto.randomUUID ? crypto.randomUUID() : "u_"+genId(),
+      username: shortAddr, email:"", password:"", role:"user",
+      balance:0, positions:{}, transactions:[],
+      walletAddress: address, walletType,
+      createdAt: new Date().toISOString(), active:true
+    };
+    const saved = await dbCreateUser(newUser);
+    user = saved || newUser;
+  }
+  const existingIdx = STATE.users.findIndex(u=>u.id===user.id);
+  if(existingIdx>=0) STATE.users[existingIdx]={...STATE.users[existingIdx], walletAddress:address, walletType};
+  else STATE.users.push({...user, walletAddress:address, walletType});
+  user.positions = await dbLoadPositions(user.id);
+  const ui = STATE.users.findIndex(u=>u.id===user.id);
+  if(ui>=0) STATE.users[ui]={...STATE.users[ui], positions:user.positions};
+  STATE.session = user.id;
+  STATE.walletConnected = true;
+  STATE.walletAddress = address;
+  STATE.walletType = walletType;
+  localStorage.setItem("futuros_session", user.id);
+  localStorage.setItem("futuros_wallet", address);
+  localStorage.setItem("futuros_wallet_type", walletType);
+  dbStartRealtime();
+  navigate("home");
+  notify(`Conectado: ${address.slice(0,6)}…${address.slice(-4)}`,"success");
+  const isNewUser = !user.username || user.username===address.slice(0,6)+"…"+address.slice(-4);
+  if(isNewUser) setTimeout(()=>showUsernameModal(user.id), 500);
 }
 
 async function _authConnectEVM(walletType,provider=window.ethereum){
@@ -3171,32 +3347,76 @@ function renderDepositStep(){
 
 function renderDepositStep1(){
   const m=STATE.depositMethod;
+  const net=STATE.depositNetwork||"polygon";
   const infoText = m==="polygon"
-    ?`<strong>Polygon (MATIC)</strong> — ${t("deposit_poly_info")} ${PAYMENT_CONFIG.polygon.confirmationsNeeded} ${t("deposit_poly_info2")}`
+    ?`<strong>Polygon (MATIC)</strong> — Rápido y barato. Confirma en ~${PAYMENT_CONFIG.polygon.confirmationsNeeded} bloques.`
     :m==="usdc"
-    ?`<strong>USDC en Polygon</strong> — ${t("deposit_usdc_info")}`
-    :`<strong>USDT en Polygon</strong> — Tether USD, la stablecoin más usada en Latinoamérica. Envía desde Binance, Bybit u otras exchanges seleccionando la red <strong>Polygon</strong>.`;
+    ?`<strong>USDC en Polygon</strong> — USD Coin, stablecoin de Coinbase. Envía desde cualquier exchange en red Polygon.`
+    :m==="usdt"
+    ?`<strong>USDT en Polygon</strong> — Tether USD, stablecoin más usada en LATAM. Selecciona red <strong>Polygon</strong> al enviar.`
+    :m==="sol"
+    ?`<strong>SOL (Solana)</strong> — Transferencia nativa en Solana. Rápido y muy barato.`
+    :m==="usdc-sol"
+    ?`<strong>USDC en Solana</strong> — USD Coin en la red Solana. Envía desde Phantom o cualquier exchange con red Solana.`
+    :`<strong>USDT en Solana</strong> — Tether USD en red Solana. Selecciona red <strong>Solana</strong> al enviar.`;
+
+  const polygonActive = net==="polygon";
+  const solanaActive  = net==="solana";
+
   return`
-  <div><label class="lbl" style="margin-bottom:10px">${t("deposit_choose")}</label>
-  <div class="pay-methods" style="grid-template-columns:repeat(3,1fr)">
-    <button class="pay-method${m==="polygon"?" selected-poly":""}" onclick="selectDepositMethod('polygon')">
-      <div class="pay-icon" style="font-size:24px">⬡</div>
-      <div class="pay-label" style="color:#8247e5">Polygon MATIC</div>
-      <div class="pay-sublabel">${t("deposit_poly_sub")}</div>
-    </button>
-    <button class="pay-method${m==="usdc"?" selected-usdc":""}" onclick="selectDepositMethod('usdc')">
-      <div class="pay-icon">💲</div>
-      <div class="pay-label" style="color:#2775ca">USDC</div>
-      <div class="pay-sublabel">${t("deposit_usdc_sub")}</div>
-    </button>
-    <button class="pay-method${m==="usdt"?" selected-usdc":""}" onclick="selectDepositMethod('usdt')" style="${m==="usdt"?"border-color:#26a17b;background:rgba(38,161,123,.08)":""}">
-      <div class="pay-icon">💵</div>
-      <div class="pay-label" style="color:#26a17b">USDT</div>
-      <div class="pay-sublabel">Stablecoin · Polygon</div>
-    </button>
-  </div>
-  <div class="info-box">${infoText}</div>
-  <button class="btn-green" style="width:100%;padding:13px;margin-top:16px;font-size:15px" onclick="depositNextStep()">${t("deposit_continue")}</button>
+  <div>
+    <label class="lbl" style="margin-bottom:8px">Red de pago</label>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px">
+      <button onclick="STATE.depositNetwork='polygon';STATE.depositMethod='polygon';document.getElementById('deposit-step-content').innerHTML=renderDepositStep1()"
+        style="padding:10px;border-radius:10px;border:2px solid ${polygonActive?"#8247e5":"var(--border)"};background:${polygonActive?"#f0eafa":"var(--card)"};font-weight:600;font-size:13px;cursor:pointer;color:${polygonActive?"#8247e5":"var(--muted)"}">
+        ⬡ Polygon
+      </button>
+      <button onclick="STATE.depositNetwork='solana';STATE.depositMethod='sol';document.getElementById('deposit-step-content').innerHTML=renderDepositStep1()"
+        style="padding:10px;border-radius:10px;border:2px solid ${solanaActive?"#9945ff":"var(--border)"};background:${solanaActive?"#f5f0ff":"var(--card)"};font-weight:600;font-size:13px;cursor:pointer;color:${solanaActive?"#9945ff":"var(--muted)"}">
+        ◎ Solana
+      </button>
+    </div>
+
+    <label class="lbl" style="margin-bottom:10px">Token</label>
+    ${polygonActive?`
+    <div class="pay-methods" style="grid-template-columns:repeat(3,1fr)">
+      <button class="pay-method${m==="polygon"?" selected-poly":""}" onclick="selectDepositMethod('polygon')">
+        <div class="pay-icon" style="font-size:22px">⬡</div>
+        <div class="pay-label" style="color:#8247e5">MATIC</div>
+        <div class="pay-sublabel">Nativo Polygon</div>
+      </button>
+      <button class="pay-method${m==="usdc"?" selected-usdc":""}" onclick="selectDepositMethod('usdc')">
+        <div class="pay-icon">💲</div>
+        <div class="pay-label" style="color:#2775ca">USDC</div>
+        <div class="pay-sublabel">Stablecoin</div>
+      </button>
+      <button class="pay-method${m==="usdt"?" selected-usdc":""}" onclick="selectDepositMethod('usdt')" style="${m==="usdt"?"border-color:#26a17b;background:rgba(38,161,123,.08)":""}">
+        <div class="pay-icon">💵</div>
+        <div class="pay-label" style="color:#26a17b">USDT</div>
+        <div class="pay-sublabel">Stablecoin</div>
+      </button>
+    </div>`:``}
+    ${solanaActive?`
+    <div class="pay-methods" style="grid-template-columns:repeat(3,1fr)">
+      <button class="pay-method${m==="sol"?" selected-poly":""}" onclick="selectDepositMethod('sol')" style="${m==="sol"?"border-color:#9945ff;background:rgba(153,69,255,.08)":""}">
+        <div class="pay-icon" style="font-size:22px">◎</div>
+        <div class="pay-label" style="color:#9945ff">SOL</div>
+        <div class="pay-sublabel">Nativo Solana</div>
+      </button>
+      <button class="pay-method${m==="usdc-sol"?" selected-usdc":""}" onclick="selectDepositMethod('usdc-sol')">
+        <div class="pay-icon">💲</div>
+        <div class="pay-label" style="color:#2775ca">USDC</div>
+        <div class="pay-sublabel">Solana</div>
+      </button>
+      <button class="pay-method${m==="usdt-sol"?" selected-usdc":""}" onclick="selectDepositMethod('usdt-sol')" style="${m==="usdt-sol"?"border-color:#26a17b;background:rgba(38,161,123,.08)":""}">
+        <div class="pay-icon">💵</div>
+        <div class="pay-label" style="color:#26a17b">USDT</div>
+        <div class="pay-sublabel">Solana</div>
+      </button>
+    </div>`:``}
+
+    <div class="info-box">${infoText}</div>
+    <button class="btn-green" style="width:100%;padding:13px;margin-top:16px;font-size:15px" onclick="depositNextStep()">Continuar →</button>
   </div>`;
 }
 
@@ -3225,6 +3445,10 @@ function renderDepositStep3(){
   if(m==="polygon") return renderPolygonStep(amt,"MATIC");
   if(m==="usdc")    return renderPolygonStep(amt,"USDC");
   if(m==="usdt")    return renderPolygonStep(amt,"USDT");
+  if(m==="sol")     return renderSolanaStep(amt,"SOL");
+  if(m==="usdc-sol")return renderSolanaStep(amt,"USDC-SOL");
+  if(m==="usdt-sol")return renderSolanaStep(amt,"USDT-SOL");
+  return renderPolygonStep(amt,"MATIC");
 }
 
 
@@ -3285,6 +3509,59 @@ function renderPolygonStep(amt,token){
     </div>
     <div class="hint" style="text-align:center;margin-top:8px">${t("deposit_onchain")}</div>
   </div>`;
+}
+
+
+function renderSolanaStep(amt, token){
+  const addr = PAYMENT_CONFIG.solana.receivingAddress;
+  const isSOL = token==="SOL";
+  const isUSDC = token==="USDC-SOL";
+  const isUSDT = token==="USDT-SOL";
+  const tokenColor = isSOL?"#9945ff":isUSDC?"#2775ca":"#26a17b";
+  const tokenName = isSOL?"SOL":isUSDC?"USDC":"USDT";
+  const displayToken = isSOL?"SOL (Solana)":tokenName+" (Solana)";
+  const mintAddr = isUSDC?PAYMENT_CONFIG.solana.usdcMint:isUSDT?PAYMENT_CONFIG.solana.usdtMint:null;
+  const isSolanaWallet = STATE.walletType==="phantom-solana";
+
+  return`
+  <div>
+    <div style="text-align:center;margin-bottom:16px">
+      <div style="font-size:12px;color:var(--muted);margin-bottom:4px">Envía exactamente</div>
+      <div style="font-size:34px;font-weight:900;color:${tokenColor}">$${amt.toFixed(2)} ${tokenName}</div>
+      <div style="font-size:12px;color:var(--muted)">Recibirás <strong style="color:var(--yes)">$${amt.toFixed(2)}</strong> en tu balance</div>
+    </div>
+
+    ${!isSolanaWallet?`
+    <button class="btn-polygon" style="background:linear-gradient(135deg,#9945ff,#7c3aed);margin-bottom:14px;width:100%" onclick="connectSolanaForDeposit()">
+      <span>👻</span> Conectar Phantom (Solana)
+    </button>`:`
+    <button class="btn-polygon" style="background:linear-gradient(135deg,#9945ff,#7c3aed);margin-bottom:14px;width:100%" onclick="sendSolanaDeposit('${token}',${amt})">
+      <span>◎</span> Enviar ${tokenName} desde Phantom
+    </button>`}
+
+    <div class="lbl">Dirección Solana de la plataforma</div>
+    <div class="crypto-addr-box" style="font-size:11px">${addr}</div>
+    <button class="copy-btn" onclick="copyText('${addr}')">📋 Copiar dirección</button>
+
+    <div class="info-box" style="margin-top:14px;margin-bottom:14px">
+      <strong>⚠️ Importante:</strong><br>
+      • Red: <strong>Solana</strong> únicamente<br>
+      • Token: <strong>${displayToken}</strong>${mintAddr?`<br>• Mint: <span style="font-family:monospace;font-size:10px">${mintAddr.slice(0,16)}…</span>`:""}<br>
+      • Confirmaciones: <strong>${PAYMENT_CONFIG.solana.confirmationsNeeded}</strong><br>
+      • No envíes desde red Ethereum o Polygon
+    </div>
+
+    <div style="display:flex;gap:10px;margin-top:12px">
+      <button class="btn-ghost" style="flex:1;padding:11px" onclick="depositPrevStep()">← Atrás</button>
+    </div>
+    <div class="hint" style="text-align:center;margin-top:8px">Tu balance se acreditará automáticamente tras la confirmación</div>
+  </div>`;
+}
+
+async function connectSolanaForDeposit(){
+  await authConnectSolana();
+  const sc=document.getElementById("deposit-step-content");
+  if(sc) sc.innerHTML=renderDepositStep();
 }
 
 function selectDepositMethod(m){STATE.depositMethod=m;document.getElementById("deposit-step-content").innerHTML=renderDepositStep();}
