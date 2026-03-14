@@ -2848,25 +2848,30 @@ async function sendSolanaDeposit(token, amountUSD){
       tx.recentBlockhash = blockhash;
       tx.feePayer = fromPK;
 
-      // Check if destination ATA exists
+      // Check if destination ATA exists — if not, include create instruction
       const toATAInfo = await connection.getAccountInfo(toATA);
       if(!toATAInfo){
-        // Create destination ATA
-        const keys = [
-          {pubkey: fromPK,          isSigner:true,  isWritable:true},
-          {pubkey: toATA,           isSigner:false, isWritable:true},
-          {pubkey: toPK,            isSigner:false, isWritable:false},
-          {pubkey: mintPK,          isSigner:false, isWritable:false},
-          {pubkey: SystemProgram.programId, isSigner:false, isWritable:false},
-          {pubkey: TOKEN_PROGRAM_ID,isSigner:false, isWritable:false},
+        // Create ATA instruction — ASSOC_TOKEN_PROGRAM discriminator = 0 (idempotent = 1)
+        // Use idempotent variant (discriminator=1) to avoid errors if account exists
+        const createATAKeys = [
+          {pubkey: fromPK,                   isSigner:true,  isWritable:true},
+          {pubkey: toATA,                    isSigner:false, isWritable:true},
+          {pubkey: toPK,                     isSigner:false, isWritable:false},
+          {pubkey: mintPK,                   isSigner:false, isWritable:false},
+          {pubkey: SystemProgram.programId,  isSigner:false, isWritable:false},
+          {pubkey: TOKEN_PROGRAM_ID,         isSigner:false, isWritable:false},
         ];
-        tx.add(new TransactionInstruction({ keys, programId: ASSOC_TOKEN_PROGRAM, data: new Uint8Array(0) }));
+        // discriminator 1 = create idempotent (won't fail if already exists)
+        tx.add(new TransactionInstruction({
+          keys: createATAKeys,
+          programId: ASSOC_TOKEN_PROGRAM,
+          data: new Uint8Array([1])
+        }));
       }
 
-      // Transfer instruction index 3 = transfer, data = [3, amount as u64 LE]
+      // SPL Token transfer instruction (index 3 = Transfer)
       const transferData = new Uint8Array(9);
-      transferData[0] = 3; // instruction index
-      // Write tokenAmount as u64 little-endian
+      transferData[0] = 3; // Transfer instruction
       let val = tokenAmount;
       for(let i=0;i<8;i++){ transferData[1+i] = Number(val & BigInt(0xff)); val >>= BigInt(8); }
       const transferKeys = [
