@@ -2484,18 +2484,11 @@ function renderAuth(){
       <span class="wallet-btn-arrow">›</span>
     </a>`;
 
-      // 2. Dentro del browser de Phantom → ofrecer EVM y Solana
+      // 2. Dentro del browser de Phantom → un solo botón que conecta ambas redes
       if(wallet === "phantom") return `
-    <button class="wallet-btn" onclick="authConnectSolana()">
-      <div class="wallet-btn-icon" style="background:#9945ff1a">
-        <svg width="30" height="30" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg"><rect width="128" height="128" rx="26" fill="#9945FF"/><text x="50%" y="58%" dominant-baseline="middle" text-anchor="middle" font-size="64" fill="white">◎</text></svg>
-      </div>
-      <div class="wallet-btn-text"><span class="wallet-btn-name">Phantom · Solana</span><span class="wallet-btn-desc">Conectar cuenta Solana</span></div>
-      <span class="wallet-btn-arrow">›</span>
-    </button>
-    <button class="wallet-btn" onclick="authConnectPhantom()">
+    <button class="wallet-btn" onclick="authConnectPhantomFull()">
       <div class="wallet-btn-icon" style="background:#ab9ff21a"><svg width="30" height="30" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg"><rect width="128" height="128" rx="26" fill="#AB9FF2"/><path d="M28 72 C26 52 34 32 52 26 C70 20 92 28 100 46 C108 62 104 80 94 90 C88 96 80 94 76 88 C72 82 68 82 64 88 C60 94 52 96 46 90 C36 82 30 88 28 72 Z" fill="white"/><ellipse cx="60" cy="58" rx="6" ry="7" fill="#AB9FF2"/><ellipse cx="76" cy="55" rx="6" ry="7" fill="#AB9FF2"/></svg></div>
-      <div class="wallet-btn-text"><span class="wallet-btn-name">Phantom · Ethereum</span><span class="wallet-btn-desc">Conectar cuenta EVM/Polygon</span></div>
+      <div class="wallet-btn-text"><span class="wallet-btn-name">Phantom</span><span class="wallet-btn-desc">Conectar billetera Phantom</span></div>
       <span class="wallet-btn-arrow">›</span>
     </button>`;
 
@@ -2656,6 +2649,53 @@ async function authConnectMetaMask(){
     return;
   }
   await _authConnectEVM("metamask", provider);
+}
+
+async function authConnectPhantomFull(){
+  // Conecta Phantom obteniendo ambas direcciones: Solana + EVM
+  // La sesión se identifica por la dirección Solana (más confiable en móvil)
+  // pero guardamos también la EVM para depósitos Polygon
+  try{
+    notify("Conectando Phantom…","info");
+
+    // 1. Conectar Solana (siempre disponible en Phantom)
+    const solProvider = window.phantom?.solana || window.solana;
+    let solAddress = null;
+    if(solProvider?.isPhantom){
+      try{
+        const resp = await solProvider.connect();
+        solAddress = resp.publicKey.toString();
+      }catch(e){ console.warn("[Phantom] Solana connect error:", e.message); }
+    }
+
+    // 2. Conectar EVM (para depósitos Polygon)
+    let evmAddress = null;
+    const evmProvider = window.phantom?.ethereum || window.ethereum;
+    if(evmProvider){
+      try{
+        const existing = await evmProvider.request({method:"eth_accounts"});
+        if(existing?.length){
+          evmAddress = existing[0];
+        } else {
+          await evmProvider.request({method:"wallet_requestPermissions",params:[{eth_accounts:{}}]});
+          const accs = await evmProvider.request({method:"eth_accounts"});
+          evmAddress = accs?.[0] || null;
+        }
+      }catch(e){ console.warn("[Phantom] EVM connect error:", e.message); }
+    }
+
+    // Usar Solana como dirección principal, EVM como secundaria
+    const primaryAddress = solAddress || evmAddress;
+    if(!primaryAddress) throw new Error("No se pudo obtener ninguna dirección");
+
+    // Guardar ambas en el usuario
+    const walletType = solAddress ? "phantom-solana" : "phantom";
+    await _authConnectFinish(walletType, primaryAddress, evmAddress);
+
+  }catch(e){
+    if(e.code===4001) notify("Conexión rechazada.","error");
+    else notify("Error: "+(e.message||e),"error");
+  }
 }
 
 async function authConnectPhantom(){
@@ -2876,8 +2916,10 @@ function showSolanaManualDepositModal(token, amount, address){
 }
 
 // Finalizar autenticación (compartido entre EVM y Solana)
-async function _authConnectFinish(walletType, address){
+async function _authConnectFinish(walletType, address, evmAddress=null){
   let user = await dbFindUserByWallet(address);
+  // También buscar por EVM si no encontró por Solana
+  if(!user && evmAddress) user = await dbFindUserByWallet(evmAddress);
   if(!user){
     const shortAddr = address.slice(0,6)+"…"+address.slice(-4);
     const newUser = {
@@ -2900,9 +2942,12 @@ async function _authConnectFinish(walletType, address){
   STATE.walletConnected = true;
   STATE.walletAddress = address;
   STATE.walletType = walletType;
+  // Guardar EVM secundaria para depósitos Polygon
+  if(evmAddress) STATE.evmAddress = evmAddress;
   localStorage.setItem("futuros_session", user.id);
   localStorage.setItem("futuros_wallet", address);
   localStorage.setItem("futuros_wallet_type", walletType);
+  if(evmAddress) localStorage.setItem("futuros_evm_address", evmAddress);
   dbStartRealtime();
   navigate("home");
   notify(`Conectado: ${address.slice(0,6)}…${address.slice(-4)}`,"success");
