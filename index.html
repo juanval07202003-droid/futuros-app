@@ -3573,10 +3573,9 @@ function renderPolygonStep(amt,token){
       <div style="font-size:34px;font-weight:900;color:${tokenColor}">${displayAmt}</div>
       <div style="font-size:12px;color:var(--muted)">${t("deposit_receive")} <strong style="color:var(--yes)">${usd(amt)}</strong> ${t("deposit_credits")}</div>
     </div>
-    ${!STATE.walletConnected?`
-      <button class="btn-metamask" style="margin-bottom:14px" onclick="connectWalletPolygon()">
-        <span style="font-size:18px">🦊</span> ${t("deposit_connect_mm")}
-      </button>`:""}
+    <button class="btn-polygon" style="margin-bottom:14px" onclick="sendPolygonDeposit('${token}',${isPoly?maticAmt:amt})">
+      <span>⬡</span> Enviar ${displayAmt} desde mi wallet
+    </button>
     <div class="lbl">${t("deposit_address")}</div>
     <div class="crypto-addr-box">${addr}</div>
     <button class="copy-btn" onclick="copyText('${addr}')">${t("deposit_copy")}</button>
@@ -3587,27 +3586,6 @@ function renderPolygonStep(amt,token){
       • ${t("deposit_confs")}: <strong>${PAYMENT_CONFIG.polygon.confirmationsNeeded}</strong><br>
       • ${t("deposit_time")}
     </div>
-    ${STATE.walletConnected?`
-      <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:4px">
-        <button class="btn-polygon" onclick="sendCryptoFromWallet('${token}',${isPoly?maticAmt:amt},'metamask')">
-          <span>🦊</span> Enviar desde MetaMask: ${displayAmt}
-        </button>
-        ${window?.phantom?.ethereum?`
-        <button class="btn-polygon" style="background:linear-gradient(135deg,#ab9ff2,#7c5ccc)" onclick="sendCryptoFromWallet('${token}',${isPoly?maticAmt:amt},'phantom')">
-          <span>👻</span> Enviar desde Phantom: ${displayAmt}
-        </button>`:""}
-      </div>`:`
-      <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:4px">
-        <button class="btn-polygon" onclick="connectWalletPolygon()">
-          🦊 Conectar MetaMask para enviar
-        </button>
-        <button class="btn-polygon" style="background:linear-gradient(135deg,#ab9ff2,#7c5ccc)" onclick="connectPhantomForDeposit()">
-          👻 Conectar Phantom para enviar
-        </button>
-        <button class="btn-polygon" style="background:linear-gradient(135deg,#3375bb,#1a5fa0)" onclick="authConnectTrustWallet()">
-          🛡️ Conectar Trust Wallet para enviar
-        </button>
-      </div>`}
     <div style="display:flex;gap:10px;margin-top:12px">
       <button class="btn-ghost" style="flex:1;padding:11px" onclick="depositPrevStep()">${t("deposit_back")}</button>
     </div>
@@ -3672,6 +3650,43 @@ function updateDepositAmountDisplay(){
 }
 function depositNextStep(){if(STATE.depositStep<3){STATE.depositStep++;document.getElementById("deposit-step-content").innerHTML=renderDepositStep();}}
 function depositPrevStep(){if(STATE.depositStep>1){STATE.depositStep--;document.getElementById("deposit-step-content").innerHTML=renderDepositStep();}}
+
+async function sendPolygonDeposit(token, amount){
+  // Detectar wallet disponible automáticamente
+  let walletType = STATE.walletType;
+  let provider = null;
+
+  if(walletType==="phantom" || walletType==="phantom-solana" || window.phantom?.ethereum){
+    provider = window.phantom?.ethereum || window.ethereum;
+    walletType = "phantom";
+  } else if(window.ethereum?.isTrust || window.trustwallet){
+    provider = window.ethereum;
+    walletType = "trust";
+  } else if(window.ethereum){
+    provider = window.ethereum;
+    walletType = "metamask";
+  }
+
+  if(!provider){
+    notify("No se detectó ninguna wallet. Instala MetaMask o Phantom.","error");
+    return;
+  }
+
+  // Si no está conectado, conectar primero
+  if(!STATE.walletConnected){
+    notify("Conectando wallet…","info");
+    try{
+      const accounts = await provider.request({method:"eth_requestAccounts"});
+      if(!accounts?.length){ notify("No se obtuvo cuenta","error"); return; }
+    }catch(e){
+      notify("Conexión rechazada","error"); return;
+    }
+  }
+
+  await sendCryptoFromWallet(token, amount, walletType);
+  const sc = document.getElementById("deposit-step-content");
+  if(sc) sc.innerHTML = renderDepositStep();
+}
 
 async function connectWalletPolygon(){
   await _authConnectEVM("metamask");
