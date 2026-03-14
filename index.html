@@ -2820,14 +2820,15 @@ async function sendSolanaDeposit(token, amountUSD){
           {pubkey: SystemProgram.programId, isSigner:false, isWritable:false},
           {pubkey: TOKEN_PROGRAM_ID,isSigner:false, isWritable:false},
         ];
-        tx.add(new TransactionInstruction({ keys, programId: ASSOC_TOKEN_PROGRAM, data: Buffer.alloc(0) }));
+        tx.add(new TransactionInstruction({ keys, programId: ASSOC_TOKEN_PROGRAM, data: new Uint8Array(0) }));
       }
 
-      // Transfer instruction: [9 (transfer checked) not needed — use instruction 3 = transfer]
-      // Instruction index 3 = transfer, data = [3, amount as u64 LE]
-      const transferData = Buffer.alloc(9);
-      transferData.writeUInt8(3, 0); // instruction index
-      transferData.writeBigUInt64LE(tokenAmount, 1);
+      // Transfer instruction index 3 = transfer, data = [3, amount as u64 LE]
+      const transferData = new Uint8Array(9);
+      transferData[0] = 3; // instruction index
+      // Write tokenAmount as u64 little-endian
+      let val = tokenAmount;
+      for(let i=0;i<8;i++){ transferData[1+i] = Number(val & BigInt(0xff)); val >>= BigInt(8); }
       const transferKeys = [
         {pubkey: fromATA, isSigner:false, isWritable:true},
         {pubkey: toATA,   isSigner:false, isWritable:true},
