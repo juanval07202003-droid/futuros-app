@@ -98,14 +98,19 @@ async function creditUser(fromAddress, amountUSD, symbol, hash, network) {
     return;
   }
 
-  // Buscar usuario por wallet
-  const { data: user, error: userErr } = await db
-    .from("users")
-    .select("*")
-    .ilike("wallet_address", fromAddress)
-    .maybeSingle();
+  // Buscar usuario por wallet_address (Solana) O evm_address (EVM/Polygon)
+  let user = null;
 
-  if (userErr) console.error("[Webhook] Error buscando usuario:", userErr.message);
+  const { data: byWallet } = await db
+    .from("users").select("*").ilike("wallet_address", fromAddress).maybeSingle();
+  user = byWallet;
+
+  if (!user) {
+    const { data: byEvm } = await db
+      .from("users").select("*").ilike("evm_address", fromAddress).maybeSingle();
+    user = byEvm;
+    if (user) console.log(`[Webhook] Encontrado por evm_address: ${user.username}`);
+  }
 
   const roundedUSD = Math.round(amountUSD * 100) / 100;
   const txData = {
