@@ -213,12 +213,58 @@ exports.handler = async (event) => {
       const fromAddress = accountKeys[0] || "";
       const solAmount   = lamportsDiff / 1e9;
 
-      console.log(`[Webhook] Solana nativo: from=${fromAddress} lamports=${lamportsDiff} SOL=${solAmount.toFixed(6)} sig=${signature.slice(0,20)}`);
+      // Leer memo para identificar usuario por userId
+      const logMessages = meta.log_messages || [];
+      const instructions = txData.message?.[0]?.instructions || [];
+      let memoUserId = null;
+
+      // Buscar memo en log_messages (formato: "Program log: futuros:userId")
+      for (const log of logMessages) {
+        const match = log.match(/futuros:([a-zA-Z0-9\-_]+)/);
+        if (match) { memoUserId = match[1]; break; }
+      }
+
+      // Si no hay memo, buscar en los datos de instrucciones
+      if (!memoUserId) {
+        for (const ix of instructions) {
+          if (ix.data) {
+            try {
+              const decoded = Buffer.from(ix.data, "base64").toString("utf8");
+              const match = decoded.match(/futuros:([a-zA-Z0-9\-_]+)/);
+              if (match) { memoUserId = match[1]; break; }
+            } catch(_) {}
+          }
+        }
+      }
+
+      console.log(`[Webhook] Solana nativo: from=${fromAddress} lamports=${lamportsDiff} SOL=${solAmount.toFixed(6)} memo=${memoUserId || "ninguno"} sig=${signature.slice(0,20)}`);
 
       const usd = await toUSD("SOL", solAmount);
       console.log(`[Webhook] SOL ${solAmount.toFixed(6)} → $${usd.toFixed(4)}`);
       if (usd < 0.01) continue;
 
+      // Si hay memo con userId, buscar directamente por ID
+      if (memoUserId) {
+        const { data: userById } = await db.from("users").select("*").eq("id", memoUserId).maybeSingle();
+        if (userById) {
+          // Dedup
+          const { data: existingTx } = await db.from("transactions").select("id").ilike("description", `%${signature}%`).maybeSingle();
+          if (existingTx) { console.log(`[Webhook] Ya procesado: ${signature}`); continue; }
+
+          const rounded = Math.round(usd * 100) / 100;
+          const newBalance = Math.round(((userById.balance || 0) + rounded) * 100) / 100;
+          await db.from("users").update({ balance: newBalance }).eq("id", userById.id);
+          await db.from("transactions").insert({
+            user_id: userById.id, type: "deposit", amount: rounded, network: "solana",
+            description: `Depósito SOL +$${rounded.toFixed(2)} · tx:${signature}`,
+            status: "confirmed", created_at: new Date().toISOString(),
+          });
+          console.log(`[Webhook] ✅ +$${rounded.toFixed(2)} SOL → ${userById.username} (por memo) balance: $${newBalance.toFixed(2)}`);
+          continue;
+        }
+      }
+
+      // Sin memo o userId no encontrado → buscar por fromAddress
       await creditUser(fromAddress, usd, "SOL", signature, "solana");
     }
 
