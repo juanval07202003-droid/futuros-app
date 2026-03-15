@@ -1521,7 +1521,8 @@ const PAYMENT_CONFIG = {
     chainId: "0x89", chainIdInt: 137, chainName: "Polygon Mainnet",
     rpcUrl: "https://polygon-rpc.com", explorerUrl: "https://polygonscan.com",
     nativeCurrency: { name:"MATIC", symbol:"MATIC", decimals:18 },
-    usdcAddress: "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174", usdcDecimals: 6,
+    usdcAddress: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359", usdcDecimals: 6,
+    usdcAddressLegacy: "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174", // USDC.e bridged (legacy)
     usdtAddress: "0xc2132D05D31c914a87C6611C10748AEb04B58e8F", usdtDecimals: 6,
     confirmationsNeeded: 3
   },
@@ -3554,6 +3555,7 @@ function renderPolygonStep(amt,token){
   const isStable=isUSDC||isUSDT;
   const tokenColor=isPoly?"var(--poly)":isUSDC?"#2775ca":"#26a17b";
   const contractAddr=isUSDC?PAYMENT_CONFIG.polygon.usdcAddress:isUSDT?PAYMENT_CONFIG.polygon.usdtAddress:null;
+  const contractAddrLegacy=isUSDC?PAYMENT_CONFIG.polygon.usdcAddressLegacy:null;
   const maticAmt=isPoly?(amt/0.80).toFixed(4):null;
   const displayAmt=isPoly?maticAmt+" MATIC":amt.toFixed(2)+" "+token;
   return`
@@ -3572,7 +3574,7 @@ function renderPolygonStep(amt,token){
     <div class="info-box" style="margin-top:14px;margin-bottom:14px">
       <strong>${t("deposit_warning")}:</strong><br>
       • ${t("deposit_network")}<br>
-      • Token: <strong>${token}</strong>${contractAddr?` (contrato: <span style="font-family:monospace;font-size:10px">${contractAddr.slice(0,12)}…</span>)`:""}<br>
+      2022 Token: <strong>${token}</strong>${contractAddr?` (contrato: <span style="font-family:monospace;font-size:10px">${contractAddr.slice(0,12)}2026</span>${contractAddrLegacy?" 00b7 o USDC.e <span style=\"font-family:monospace;font-size:10px\">"+contractAddrLegacy.slice(0,12)+"2026</span>":""})`:""}<br>
       • ${t("deposit_confs")}: <strong>${PAYMENT_CONFIG.polygon.confirmationsNeeded}</strong><br>
       • ${t("deposit_time")}
     </div>
@@ -3750,17 +3752,33 @@ async function sendCryptoFromWallet(token, amount, walletType){
     } else {
       // ERC-20 transfer (USDC o USDT)
       const ERC20_TRANSFER="0xa9059cbb";
-      const contractAddr = token==="USDT"
-        ? PAYMENT_CONFIG.polygon.usdtAddress
-        : PAYMENT_CONFIG.polygon.usdcAddress;
-      const decimals = token==="USDT"
-        ? PAYMENT_CONFIG.polygon.usdtDecimals
-        : PAYMENT_CONFIG.polygon.usdcDecimals;
+      let contractAddr, decimals;
+      if(token==="USDT"){
+        contractAddr = PAYMENT_CONFIG.polygon.usdtAddress;
+        decimals = PAYMENT_CONFIG.polygon.usdtDecimals;
+      } else {
+        // USDC: intentar nativo primero, luego legacy (USDC.e / Wormhole)
+        contractAddr = PAYMENT_CONFIG.polygon.usdcAddress;
+        decimals = PAYMENT_CONFIG.polygon.usdcDecimals;
+      }
       const paddedTo=to.replace("0x","").padStart(64,"0");
       const amtInUnits=Math.floor(amount*Math.pow(10,decimals));
       const paddedAmt=amtInUnits.toString(16).padStart(64,"0");
       const data=ERC20_TRANSFER+paddedTo+paddedAmt;
-      const txHash=await provider.request({method:"eth_sendTransaction",params:[{from,to:contractAddr,data,chainId:PAYMENT_CONFIG.polygon.chainId}]});
+
+      let txHash;
+      try{
+        txHash=await provider.request({method:"eth_sendTransaction",params:[{from,to:contractAddr,data,chainId:PAYMENT_CONFIG.polygon.chainId}]});
+      }catch(e1){
+        // Si falla por balance insuficiente Y es USDC, intentar con contrato legacy (USDC.e)
+        if(token==="USDC" && PAYMENT_CONFIG.polygon.usdcAddressLegacy && (e1.message||"").toLowerCase().includes("balance")){
+          notify("Intentando con USDC.e (bridged)…","info");
+          const legacyData=ERC20_TRANSFER+paddedTo+paddedAmt;
+          txHash=await provider.request({method:"eth_sendTransaction",params:[{from,to:PAYMENT_CONFIG.polygon.usdcAddressLegacy,data:legacyData,chainId:PAYMENT_CONFIG.polygon.chainId}]});
+        } else {
+          throw e1;
+        }
+      }
       notify(`Tx ${token} enviada: ${txHash.slice(0,10)}… · Pendiente de confirmación`,"info");
       closeDepositModal();
     }
