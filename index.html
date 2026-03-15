@@ -1615,6 +1615,7 @@ const STATE={
   // deposit/withdraw modal
   depositOpen:false,
   depositMethod:"polygon",   // polygon | usdc
+  maticPrice: null,          // precio MATIC/POL en USD, se fetch al abrir modal
   depositNetwork:"polygon",  // polygon | solana
   depositAmount:50,        // USD
   depositStep:1,           // 1=method 2=amount 3=process
@@ -3403,6 +3404,26 @@ function openDeposit(){
   if(!getUser()){navigate("auth");return;}
   STATE.depositOpen=true;STATE.depositStep=1;STATE.depositMethod="polygon";STATE.depositAmount=50;
   renderDepositModal();
+  // Fetch precio MATIC/POL en tiempo real
+  fetchMaticPrice();
+}
+
+async function fetchMaticPrice(){
+  try{
+    const r = await fetch("https://api.coingecko.com/api/v3/simple/price?ids=matic-network&vs_currencies=usd");
+    const d = await r.json();
+    const price = d?.["matic-network"]?.usd;
+    if(price && price > 0){
+      STATE.maticPrice = price;
+      // Refrescar el step si ya está en el paso de pago con MATIC
+      if(STATE.depositMethod==="polygon" && STATE.depositStep===2){
+        const sc=document.getElementById("deposit-step-content");
+        if(sc) sc.innerHTML=renderDepositStep();
+      }
+    }
+  }catch(e){
+    console.warn("[MATIC price] fetch fallido:", e.message);
+  }
 }
 function closeDepositModal(){
   STATE.depositOpen=false;
@@ -3556,8 +3577,13 @@ function renderPolygonStep(amt,token){
   const tokenColor=isPoly?"var(--poly)":isUSDC?"#2775ca":"#26a17b";
   const contractAddr=isUSDC?PAYMENT_CONFIG.polygon.usdcAddress:isUSDT?PAYMENT_CONFIG.polygon.usdtAddress:null;
   const contractAddrLegacy=isUSDC?PAYMENT_CONFIG.polygon.usdcAddressLegacy:null;
-  const maticAmt=isPoly?(amt/0.80).toFixed(4):null;
-  const displayAmt=isPoly?maticAmt+" MATIC":amt.toFixed(2)+" "+token;
+  const maticPrice = STATE.maticPrice || null;
+  const maticAmt = isPoly
+    ? (maticPrice ? (amt/maticPrice).toFixed(4) : null)
+    : null;
+  const displayAmt = isPoly
+    ? (maticAmt ? maticAmt+" MATIC" : "Cargando precio…")
+    : amt.toFixed(2)+" "+token;
   return`
   <div>
     <div style="text-align:center;margin-bottom:16px">
@@ -3565,8 +3591,8 @@ function renderPolygonStep(amt,token){
       <div style="font-size:34px;font-weight:900;color:${tokenColor}">${displayAmt}</div>
       <div style="font-size:12px;color:var(--muted)">${t("deposit_receive")} <strong style="color:var(--yes)">${usd(amt)}</strong> ${t("deposit_credits")}</div>
     </div>
-    <button class="btn-polygon" style="margin-bottom:14px" onclick="sendPolygonDeposit('${token}',${isPoly?maticAmt:amt})">
-      <span>⬡</span> Enviar ${displayAmt} desde mi wallet
+    <button class="btn-polygon" style="margin-bottom:14px" onclick="sendPolygonDeposit('${token}',${isPoly?(maticAmt||0):amt})" ${isPoly&&!maticAmt?"disabled style='opacity:.5;cursor:not-allowed'":""}>
+      <span>⬡</span> ${isPoly&&!maticAmt?"Obteniendo precio…":"Enviar "+displayAmt+" desde mi wallet"}
     </button>
     <div class="lbl">${t("deposit_address")}</div>
     <div class="crypto-addr-box">${addr}</div>
