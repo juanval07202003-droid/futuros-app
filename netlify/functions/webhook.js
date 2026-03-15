@@ -63,6 +63,7 @@ async function toUSD(symbol, amount) {
 
   const coinId = symbol === "SOL" ? "solana" : "matic-network";
   const fallback = symbol === "SOL" ? 130 : 0.10;
+  const maxReasonable = symbol === "SOL" ? 10000 : 100; // sanity cap
 
   // Intentar múltiples fuentes de precio
   const sources = [
@@ -77,7 +78,7 @@ async function toUSD(symbol, amount) {
   for (const source of sources) {
     try {
       const price = await source();
-      if (price && price > 0) return amount * price;
+      if (price && price > 0 && price < maxReasonable) return amount * price;
     } catch (_) {}
   }
 
@@ -112,6 +113,11 @@ async function creditUser(fromAddress, amountUSD, symbol, hash, network) {
     if (user) console.log(`[Webhook] Encontrado por evm_address: ${user.username}`);
   }
 
+  // Cap máximo por transacción — previene errores de precio y ataques
+  if (amountUSD > 50000) {
+    console.warn(`[Webhook] Monto excesivo $${amountUSD} — rechazado`);
+    return;
+  }
   const roundedUSD = Math.round(amountUSD * 100) / 100;
   const txData = {
     type:        "deposit",
@@ -142,6 +148,26 @@ async function creditUser(fromAddress, amountUSD, symbol, hash, network) {
 exports.handler = async (event) => {
   if (event.httpMethod !== "POST")
     return { statusCode: 405, body: "Method Not Allowed" };
+
+  // ── Validar tamaño del payload (max 1MB) ─────────────────────
+  const bodySize = Buffer.byteLength(event.body || "", "utf8");
+  if (bodySize > 1024 * 1024) {
+    console.warn("[Webhook] Payload demasiado grande:", bodySize);
+    return { statusCode: 413, body: "Payload Too Large" };
+  }
+
+  // ── Verificar que viene de Alchemy (signing key) ──────────────
+  // Si tienes el signing key de Alchemy, descomenta y configura:
+  // const signingKey = process.env.ALCHEMY_SIGNING_KEY;
+  // if (signingKey) {
+  //   const signature = event.headers["x-alchemy-signature"] || "";
+  //   const hmac = require("crypto").createHmac("sha256", signingKey);
+  //   const expected = hmac.update(event.body).digest("hex");
+  //   if (signature !== expected) {
+  //     console.warn("[Webhook] Firma inválida — posible ataque");
+  //     return { statusCode: 401, body: "Unauthorized" };
+  //   }
+  // }
 
   try {
     const body = JSON.parse(event.body || "{}");
