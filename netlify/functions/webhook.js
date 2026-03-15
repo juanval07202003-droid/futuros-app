@@ -148,11 +148,8 @@ exports.handler = async (event) => {
     console.log("[Webhook] Recibido:", JSON.stringify(body).slice(0, 500));
 
     const activities = body?.event?.activity || [];
-    console.log(`[Webhook] Actividades: ${activities.length}`);
-    // Log completo para debug de formato Solana
-    if(activities.length === 0){
-      console.log("[Webhook] PAYLOAD COMPLETO:", JSON.stringify(body).slice(0, 2000));
-    }
+    const solanaTransactions = body?.event?.transaction || [];
+    console.log(`[Webhook] Actividades: ${activities.length} | Solana txs: ${solanaTransactions.length}`);
 
     for (const activity of activities) {
       const toAddress   = (activity.toAddress   || "").toLowerCase().trim();
@@ -189,6 +186,40 @@ exports.handler = async (event) => {
       }
 
       console.log(`[Webhook] Skip — destino no reconocido: ${toAddress}`);
+    }
+
+    // ── Solana formato nativo (event.transaction) ────────────────
+    for (const solTx of solanaTransactions) {
+      const signature = solTx.signature || "";
+      const txData    = solTx.transaction?.[0];
+      const meta      = solTx.meta?.[0];
+      if (!txData || !meta) { console.log("[Webhook] Solana tx sin datos, skip"); continue; }
+
+      const accountKeys  = txData.message?.[0]?.account_keys || [];
+      const preBalances  = meta.pre_balances  || [];
+      const postBalances = meta.post_balances || [];
+
+      // Encontrar índice de la wallet de la plataforma
+      const platformIdx = accountKeys.indexOf(PLATFORM_SOLANA);
+      if (platformIdx === -1) { console.log("[Webhook] Plataforma no encontrada en account_keys"); continue; }
+
+      // Verificar que recibió fondos
+      const pre  = preBalances[platformIdx]  || 0;
+      const post = postBalances[platformIdx] || 0;
+      const lamportsDiff = post - pre;
+      if (lamportsDiff <= 0) { console.log(`[Webhook] Sin ingreso a plataforma (diff=${lamportsDiff})`); continue; }
+
+      // fromAddress = account_keys[0] (el que firma/envía)
+      const fromAddress = accountKeys[0] || "";
+      const solAmount   = lamportsDiff / 1e9;
+
+      console.log(`[Webhook] Solana nativo: from=${fromAddress} lamports=${lamportsDiff} SOL=${solAmount.toFixed(6)} sig=${signature.slice(0,20)}`);
+
+      const usd = await toUSD("SOL", solAmount);
+      console.log(`[Webhook] SOL ${solAmount.toFixed(6)} → $${usd.toFixed(4)}`);
+      if (usd < 0.01) continue;
+
+      await creditUser(fromAddress, usd, "SOL", signature, "solana");
     }
 
     return { statusCode: 200, body: JSON.stringify({ ok: true }) };
