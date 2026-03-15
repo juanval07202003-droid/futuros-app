@@ -3572,11 +3572,7 @@ function renderDepositStep1(){
     ?`<strong>USDC en Polygon</strong> — USD Coin, stablecoin de Coinbase. Envía desde cualquier exchange en red Polygon.`
     :m==="usdt"
     ?`<strong>USDT en Polygon</strong> — Tether USD, stablecoin más usada en LATAM. Selecciona red <strong>Polygon</strong> al enviar.`
-    :m==="sol"
-    ?`<strong>SOL (Solana)</strong> — Transferencia nativa en Solana. Rápido y muy barato.`
-    :m==="usdc-sol"
-    ?`<strong>USDC en Solana</strong> — USD Coin en la red Solana. Envía desde Phantom o cualquier exchange con red Solana.`
-    :`<strong>USDT en Solana</strong> — Tether USD en red Solana. Selecciona red <strong>Solana</strong> al enviar.`;
+    :`<strong>SOL (Solana)</strong> — Transferencia nativa en Solana. Rápido y muy barato.`;
 
   const polygonActive = net==="polygon";
   const solanaActive  = net==="solana";
@@ -3616,22 +3612,12 @@ function renderDepositStep1(){
       </button>
     </div>`:``}
     ${solanaActive?`
-    <div class="pay-methods" style="grid-template-columns:repeat(3,1fr)">
+    <div class="pay-methods" style="grid-template-columns:1fr;max-width:200px;margin:0 auto">
       <button class="pay-method${m==="sol"?" selected-poly":""}" onclick="selectDepositMethod('sol')" style="position:relative;${m==="sol"?"border-color:#9945ff;background:rgba(153,69,255,.08)":""}">
         <div style="position:absolute;top:-8px;left:50%;transform:translateX(-50%);background:#9945ff;color:#fff;font-size:9px;font-weight:800;padding:2px 7px;border-radius:20px;white-space:nowrap">⭐ RECOMENDADO</div>
         <div class="pay-icon" style="font-size:22px">◎</div>
         <div class="pay-label" style="color:#9945ff">SOL</div>
         <div class="pay-sublabel">Nativo Solana</div>
-      </button>
-      <button class="pay-method${m==="usdc-sol"?" selected-usdc":""}" onclick="selectDepositMethod('usdc-sol')">
-        <div class="pay-icon">💲</div>
-        <div class="pay-label" style="color:#2775ca">USDC</div>
-        <div class="pay-sublabel">Solana</div>
-      </button>
-      <button class="pay-method${m==="usdt-sol"?" selected-usdc":""}" onclick="selectDepositMethod('usdt-sol')" style="${m==="usdt-sol"?"border-color:#26a17b;background:rgba(38,161,123,.08)":""}">
-        <div class="pay-icon">💵</div>
-        <div class="pay-label" style="color:#26a17b">USDT</div>
-        <div class="pay-sublabel">Solana</div>
       </button>
     </div>`:``}
 
