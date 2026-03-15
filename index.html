@@ -2865,8 +2865,18 @@ async function sendSolanaDeposit(token, amountUSD){
       const lamports = Math.round((amountUSD / solPrice) * LAMPORTS_PER_SOL);
 
       const { blockhash } = await connection.getLatestBlockhash("confirmed");
+
+      // Agregar memo con userId para identificar al usuario aunque envíe desde otra wallet
+      const userId = STATE.session || "";
+      const memoIx = {
+        keys: [],
+        programId: new PublicKey("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"),
+        data: Buffer.from(`futuros:${userId}`, "utf8"),
+      };
+
       const tx = new Transaction().add(
-        SystemProgram.transfer({ fromPubkey, toPubkey, lamports })
+        SystemProgram.transfer({ fromPubkey, toPubkey, lamports }),
+        memoIx
       );
       tx.recentBlockhash = blockhash;
       tx.feePayer = fromPubkey;
@@ -2879,8 +2889,10 @@ async function sendSolanaDeposit(token, amountUSD){
 
     } else if(token === "USDC-SOL" || token === "USDT-SOL"){
       const tokenName = token === "USDC-SOL" ? "USDC" : "USDT";
-      const addr = PAYMENT_CONFIG.solana.receivingAddress;
-      showSolanaPaymentInstructions(tokenName, amountUSD, addr);
+      const userId = STATE.session || "";
+      const user = getUser();
+      const username = user?.username || userId.slice(0,8);
+      showSolanaPaymentInstructions(tokenName, amountUSD, PAYMENT_CONFIG.solana.receivingAddress, userId, username);
       return;
     }
 
@@ -2892,9 +2904,10 @@ async function sendSolanaDeposit(token, amountUSD){
 }
 
 
-function showSolanaPaymentInstructions(tokenName, amount, address){
+function showSolanaPaymentInstructions(tokenName, amount, address, userId, username){
   const existing = document.getElementById("sol-pay-modal");
   if(existing) existing.remove();
+  const memo = `futuros:${userId}`;
   const html = `
   <div class="overlay" id="sol-pay-modal" onclick="event.target===this&&this.remove()">
     <div class="modal" onclick="event.stopPropagation()" style="max-width:420px;text-align:center">
@@ -2908,15 +2921,28 @@ function showSolanaPaymentInstructions(tokenName, amount, address){
         <div style="font-size:12px;color:var(--muted);margin-top:4px">Red Solana únicamente</div>
       </div>
       <div style="font-size:12px;color:var(--muted);margin-bottom:6px;font-weight:600;letter-spacing:.5px">DIRECCIÓN DESTINO</div>
-      <div style="background:#f5f6fa;border-radius:10px;padding:12px;font-family:monospace;font-size:11px;word-break:break-all;cursor:pointer;margin-bottom:8px" onclick="copyText('${address}');this.style.background='#e8f8f2'">
+      <div style="background:#f5f6fa;border-radius:10px;padding:12px;font-family:monospace;font-size:11px;word-break:break-all;cursor:pointer;margin-bottom:12px" onclick="copyText('${address}');this.style.background='#e8f8f2'">
         ${address}
         <div style="color:var(--accent);font-size:11px;margin-top:6px">📋 Toca para copiar</div>
       </div>
+
+      <div style="background:#f0eafa;border:2px solid #9945ff44;border-radius:12px;padding:14px;margin-bottom:14px;text-align:left">
+        <div style="font-size:12px;font-weight:800;color:#9945ff;margin-bottom:8px">🔑 MEMO OBLIGATORIO — para acreditar automáticamente</div>
+        <div style="background:white;border-radius:8px;padding:10px;font-family:monospace;font-size:13px;font-weight:700;color:#1a1a2e;word-break:break-all;cursor:pointer;margin-bottom:6px" onclick="copyText('${memo}');this.style.background='#e8f8f2'">
+          ${memo}
+          <div style="color:var(--accent);font-size:11px;margin-top:4px;font-weight:400">📋 Toca para copiar</div>
+        </div>
+        <div style="font-size:11px;color:#6b21a8">
+          En Phantom: <strong>Send → campo "Memo/Reference"</strong> → pega este texto exacto
+        </div>
+      </div>
+
       <div style="background:#fff8e6;border-radius:10px;padding:12px;font-size:12px;color:#b36000;margin-bottom:16px;text-align:left">
-        <strong>⚠️ Importante:</strong><br>
-        • Abre Phantom app → toca <strong>Send</strong><br>
+        <strong>⚠️ Sin el memo, el depósito NO se acreditará automáticamente.</strong><br><br>
+        • Abre Phantom → <strong>Send</strong><br>
         • Selecciona <strong>${tokenName}</strong> en red <strong>Solana</strong><br>
-        • Pega la dirección de arriba<br>
+        • Pega la dirección destino<br>
+        • Busca el campo <strong>Memo</strong> y pega el código de arriba<br>
         • Tu balance se acreditará en ~30 segundos
       </div>
       <button class="btn-primary" onclick="document.getElementById('sol-pay-modal').remove()" style="width:100%">Entendido</button>
