@@ -251,7 +251,7 @@ button:active{transform:scale(.97);}
 
 
 /* ─── PAYMENT METHOD SELECTOR ────────────────── */
-.pay-methods{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:20px;}
+.pay-methods{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:20px;margin-top:12px;}
 .pay-method{
   border:2px solid var(--border);border-radius:12px;padding:14px 10px;
   cursor:pointer;text-align:center;transition:all .2s;background:transparent;
@@ -1616,6 +1616,7 @@ const STATE={
   depositOpen:false,
   depositMethod:"polygon",   // polygon | usdc
   maticPrice: null,          // precio MATIC/POL en USD, se fetch al abrir modal
+  solPrice: null,            // precio SOL en USD, se fetch al abrir modal
   depositNetwork:"polygon",  // polygon | solana
   depositAmount:50,        // USD
   depositStep:1,           // 1=method 2=amount 3=process
@@ -2812,13 +2813,16 @@ async function sendSolanaDeposit(token, amountUSD){
     notify("Preparando transacción…","info");
 
     if(token === "SOL"){
-      // Precio SOL
-      let solPrice = 140;
-      try{
-        const r = await fetch("https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd");
-        const d = await r.json();
-        solPrice = d?.solana?.usd || 140;
-      }catch(_){}
+      // Precio SOL — usar el ya cacheado en STATE, o fetchear si no está
+      let solPrice = STATE.solPrice || 0;
+      if(!solPrice){
+        try{
+          const r = await fetch("https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd");
+          const d = await r.json();
+          solPrice = d?.solana?.usd || 130;
+          STATE.solPrice = solPrice;
+        }catch(_){ solPrice = 130; }
+      }
       const lamports = Math.round((amountUSD / solPrice) * LAMPORTS_PER_SOL);
 
       const { blockhash } = await connection.getLatestBlockhash("confirmed");
@@ -3402,27 +3406,27 @@ function renderWallet(){
 // ═══════════════════════════════════════════════════════════════════
 function openDeposit(){
   if(!getUser()){navigate("auth");return;}
-  STATE.depositOpen=true;STATE.depositStep=1;STATE.depositMethod="polygon";STATE.depositAmount=50;
+  STATE.depositOpen=true;STATE.depositStep=1;STATE.depositMethod="usdc";STATE.depositAmount=50;
   renderDepositModal();
   // Fetch precio MATIC/POL en tiempo real
-  fetchMaticPrice();
+  fetchCryptoPrices();
 }
 
-async function fetchMaticPrice(){
+async function fetchCryptoPrices(){
   try{
-    const r = await fetch("https://api.coingecko.com/api/v3/simple/price?ids=matic-network&vs_currencies=usd");
+    const r = await fetch("https://api.coingecko.com/api/v3/simple/price?ids=matic-network,solana&vs_currencies=usd");
     const d = await r.json();
-    const price = d?.["matic-network"]?.usd;
-    if(price && price > 0){
-      STATE.maticPrice = price;
-      // Refrescar el step si ya está en el paso de pago con MATIC
-      if(STATE.depositMethod==="polygon" && STATE.depositStep===2){
-        const sc=document.getElementById("deposit-step-content");
-        if(sc) sc.innerHTML=renderDepositStep();
-      }
+    const matic = d?.["matic-network"]?.usd;
+    const sol   = d?.["solana"]?.usd;
+    if(matic && matic > 0) STATE.maticPrice = matic;
+    if(sol   && sol   > 0) STATE.solPrice   = sol;
+    // Refrescar el modal si está abierto en el paso de pago
+    if(STATE.depositOpen && STATE.depositStep===2){
+      const sc=document.getElementById("deposit-step-content");
+      if(sc) sc.innerHTML=renderDepositStep();
     }
   }catch(e){
-    console.warn("[MATIC price] fetch fallido:", e.message);
+    console.warn("[Prices] fetch fallido:", e.message);
   }
 }
 function closeDepositModal(){
@@ -3483,7 +3487,7 @@ function renderDepositStep1(){
   <div>
     <label class="lbl" style="margin-bottom:8px">Red de pago</label>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px">
-      <button onclick="STATE.depositNetwork='polygon';STATE.depositMethod='polygon';document.getElementById('deposit-step-content').innerHTML=renderDepositStep1()"
+      <button onclick="STATE.depositNetwork='polygon';STATE.depositMethod='usdc';document.getElementById('deposit-step-content').innerHTML=renderDepositStep1()"
         style="padding:10px;border-radius:10px;border:2px solid ${polygonActive?"#8247e5":"var(--border)"};background:${polygonActive?"#f0eafa":"var(--card)"};font-weight:600;font-size:13px;cursor:pointer;color:${polygonActive?"#8247e5":"var(--muted)"}">
         ⬡ Polygon
       </button>
@@ -3496,12 +3500,8 @@ function renderDepositStep1(){
     <label class="lbl" style="margin-bottom:10px">Token</label>
     ${polygonActive?`
     <div class="pay-methods" style="grid-template-columns:repeat(3,1fr)">
-      <button class="pay-method${m==="polygon"?" selected-poly":""}" onclick="selectDepositMethod('polygon')">
-        <div class="pay-icon" style="font-size:22px">⬡</div>
-        <div class="pay-label" style="color:#8247e5">MATIC</div>
-        <div class="pay-sublabel">Nativo Polygon</div>
-      </button>
-      <button class="pay-method${m==="usdc"?" selected-usdc":""}" onclick="selectDepositMethod('usdc')">
+      <button class="pay-method${m==="usdc"?" selected-usdc":""}" onclick="selectDepositMethod('usdc')" style="position:relative;${m==="usdc"?"border-color:#2775ca;background:rgba(39,117,202,.08)":""}">
+        <div style="position:absolute;top:-8px;left:50%;transform:translateX(-50%);background:#2775ca;color:#fff;font-size:9px;font-weight:800;padding:2px 7px;border-radius:20px;white-space:nowrap">⭐ RECOMENDADO</div>
         <div class="pay-icon">💲</div>
         <div class="pay-label" style="color:#2775ca">USDC</div>
         <div class="pay-sublabel">Stablecoin</div>
@@ -3511,10 +3511,16 @@ function renderDepositStep1(){
         <div class="pay-label" style="color:#26a17b">USDT</div>
         <div class="pay-sublabel">Stablecoin</div>
       </button>
+      <button class="pay-method${m==="polygon"?" selected-poly":""}" onclick="selectDepositMethod('polygon')">
+        <div class="pay-icon" style="font-size:22px">⬡</div>
+        <div class="pay-label" style="color:#8247e5">MATIC</div>
+        <div class="pay-sublabel">Nativo Polygon</div>
+      </button>
     </div>`:``}
     ${solanaActive?`
     <div class="pay-methods" style="grid-template-columns:repeat(3,1fr)">
-      <button class="pay-method${m==="sol"?" selected-poly":""}" onclick="selectDepositMethod('sol')" style="${m==="sol"?"border-color:#9945ff;background:rgba(153,69,255,.08)":""}">
+      <button class="pay-method${m==="sol"?" selected-poly":""}" onclick="selectDepositMethod('sol')" style="position:relative;${m==="sol"?"border-color:#9945ff;background:rgba(153,69,255,.08)":""}">
+        <div style="position:absolute;top:-8px;left:50%;transform:translateX(-50%);background:#9945ff;color:#fff;font-size:9px;font-weight:800;padding:2px 7px;border-radius:20px;white-space:nowrap">⭐ RECOMENDADO</div>
         <div class="pay-icon" style="font-size:22px">◎</div>
         <div class="pay-label" style="color:#9945ff">SOL</div>
         <div class="pay-sublabel">Nativo Solana</div>
@@ -3623,16 +3629,23 @@ function renderSolanaStep(amt, token){
   const mintAddr = isUSDC?PAYMENT_CONFIG.solana.usdcMint:isUSDT?PAYMENT_CONFIG.solana.usdtMint:null;
   const isSolanaWallet = STATE.walletType==="phantom-solana";
 
+  // Calcular cantidad SOL con precio real
+  const solPrice = STATE.solPrice || null;
+  const solAmt = isSOL ? (solPrice ? (amt/solPrice).toFixed(4) : null) : null;
+  const displayAmt = isSOL
+    ? (solAmt ? solAmt+" SOL" : "Cargando precio…")
+    : amt.toFixed(2)+" "+tokenName;
+
   return`
   <div>
     <div style="text-align:center;margin-bottom:16px">
       <div style="font-size:12px;color:var(--muted);margin-bottom:4px">Envía exactamente</div>
-      <div style="font-size:34px;font-weight:900;color:${tokenColor}">$${amt.toFixed(2)} ${tokenName}</div>
+      <div style="font-size:34px;font-weight:900;color:${tokenColor}">${displayAmt}</div>
       <div style="font-size:12px;color:var(--muted)">Recibirás <strong style="color:var(--yes)">$${amt.toFixed(2)}</strong> en tu balance</div>
     </div>
 
-    <button class="btn-polygon" style="background:linear-gradient(135deg,#9945ff,#7c3aed);width:100%;margin-bottom:14px" onclick="sendSolanaDeposit('${token}',${amt})">
-      <span>◎</span> Enviar ${tokenName} desde Phantom
+    <button class="btn-polygon" style="background:linear-gradient(135deg,#9945ff,#7c3aed);width:100%;margin-bottom:14px" onclick="sendSolanaDeposit('${token}',${amt})" ${isSOL&&!solAmt?"disabled style='opacity:.5;cursor:not-allowed'":""}>
+      <span>◎</span> ${isSOL&&!solAmt?"Obteniendo precio…":"Enviar "+displayAmt+" desde Phantom"}
     </button>
 
     <div class="lbl">Dirección Solana de la plataforma</div>
