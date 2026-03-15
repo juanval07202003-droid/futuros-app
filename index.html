@@ -1218,6 +1218,7 @@ function dbRowToUser(row){
     transactions: [],
     walletAddress: row.wallet_address||null,
     walletType: row.wallet_type||null,
+    evmAddress: row.evm_address||null,
     createdAt: row.created_at,
     active: row.active!==false,
   };
@@ -1232,6 +1233,7 @@ function userToDbRow(u){
     balance: u.balance||0,
     wallet_address: u.walletAddress||null,
     wallet_type: u.walletType||null,
+    evm_address: u.evmAddress||null,
     active: u.active!==false,
     created_at: u.createdAt||new Date().toISOString(),
   };
@@ -2542,12 +2544,12 @@ function showUsernameModal(userId){
   const existing = document.getElementById("username-modal-overlay");
   if(existing) existing.remove();
   const html = `
-  <div class="overlay" id="username-modal-overlay">
+  <div class="overlay" id="username-modal-overlay" style="z-index:9999">
     <div class="modal" onclick="event.stopPropagation()" style="max-width:380px;text-align:center">
       <div style="font-size:36px;margin-bottom:8px">👋</div>
       <h3 style="margin-bottom:6px;font-size:18px">¡Bienvenido a Futuros!</h3>
       <p style="color:var(--muted);font-size:14px;margin-bottom:20px">
-        Elige un nombre de usuario para que aparezca en comentarios y el ranking.
+        Elige un nombre de usuario único. Aparecerá en comentarios y el ranking, y te identificará para acreditar depósitos.
       </p>
       <input
         id="username-input"
@@ -2556,40 +2558,77 @@ function showUsernameModal(userId){
         maxlength="24"
         style="width:100%;padding:12px 14px;border:1.5px solid var(--border);border-radius:var(--radius);
                background:var(--bg);color:var(--text);font-size:15px;outline:none;box-sizing:border-box;margin-bottom:8px"
-        oninput="this.value=this.value.replace(/[^a-zA-Z0-9_\\-\\.]/g,'')"
+        oninput="this.value=this.value.replace(/[^a-zA-Z0-9_\\-\\.]/g,'');checkUsernameAvailable('${userId}')"
         onkeydown="if(event.key==='Enter')submitUsername('${userId}')"
       />
-      <p style="color:var(--muted);font-size:11px;margin-bottom:16px">
+      <div id="username-status" style="font-size:12px;margin-bottom:12px;min-height:16px;color:var(--muted)">
         Solo letras, números, _ y - · Máx 24 caracteres
-      </p>
+      </div>
       <button class="btn-green" style="width:100%;padding:13px;font-size:15px" onclick="submitUsername('${userId}')">
-        Guardar nombre
+        Guardar nombre →
       </button>
-      <button class="btn-ghost" style="width:100%;padding:10px;font-size:13px;margin-top:8px" onclick="closeUsernameModal()">
-        Saltar por ahora
-      </button>
+      <p style="color:var(--muted);font-size:11px;margin-top:12px">
+        🔒 Este paso es obligatorio para usar la plataforma
+      </p>
     </div>
   </div>`;
   document.body.insertAdjacentHTML("beforeend", html);
+  history.pushState(null, "", window.location.href);
+  window.addEventListener("popstate", _blockBack);
   setTimeout(()=>document.getElementById("username-input")?.focus(), 100);
 }
 
+function _blockBack(){
+  history.pushState(null, "", window.location.href);
+}
+
 function closeUsernameModal(){
+  const user = getUser();
+  const hasRealUsername = user && user.username &&
+    !user.username.includes("…") && user.username.length >= 2;
+  if(!hasRealUsername){
+    notify("Debes elegir un nombre de usuario para continuar","error");
+    return;
+  }
   const el = document.getElementById("username-modal-overlay");
   if(el) el.remove();
+  window.removeEventListener("popstate", _blockBack);
+}
+
+let _usernameCheckTimeout = null;
+async function checkUsernameAvailable(userId){
+  const val = (document.getElementById("username-input")?.value||"").trim();
+  const statusEl = document.getElementById("username-status");
+  if(!statusEl) return;
+  if(val.length < 2){
+    statusEl.innerHTML = `<span style="color:var(--muted)">Mínimo 2 caracteres</span>`;
+    return;
+  }
+  statusEl.innerHTML = `<span style="color:var(--muted)">Verificando…</span>`;
+  clearTimeout(_usernameCheckTimeout);
+  _usernameCheckTimeout = setTimeout(async ()=>{
+    const takenLocal = STATE.users.some(u => u.id !== userId && u.username?.toLowerCase() === val.toLowerCase());
+    if(takenLocal){ statusEl.innerHTML = `<span style="color:var(--no)">❌ Ese nombre ya está en uso</span>`; return; }
+    const { data } = await db.from("users").select("id").ilike("username", val).neq("id", userId).maybeSingle();
+    if(data){ statusEl.innerHTML = `<span style="color:var(--no)">❌ Ese nombre ya está en uso</span>`; }
+    else     { statusEl.innerHTML = `<span style="color:var(--yes)">✅ Nombre disponible</span>`; }
+  }, 400);
 }
 
 async function submitUsername(userId){
   const val = (document.getElementById("username-input")?.value||"").trim();
-  if(!val || val.length < 2) return notify("Mínimo 2 caracteres","error");
-  const taken = STATE.users.some(u => u.id !== userId && u.username?.toLowerCase() === val.toLowerCase());
-  if(taken) return notify("Ese nombre ya está en uso, elige otro","error");
+  if(!val || val.length < 2){ notify("Mínimo 2 caracteres","error"); return; }
+  if(val.length > 24){ notify("Máximo 24 caracteres","error"); return; }
+  const { data: existing } = await db.from("users").select("id").ilike("username", val).neq("id", userId).maybeSingle();
+  if(existing){ notify("Ese nombre ya está en uso, elige otro","error"); return; }
   const ui = STATE.users.findIndex(u => u.id === userId);
   if(ui >= 0) STATE.users[ui] = {...STATE.users[ui], username: val};
   const {error} = await db.from("users").update({username: val}).eq("id", userId);
   if(error){ notify("Error guardando nombre: "+error.message,"error"); return; }
-  closeUsernameModal();
-  notify(`Nombre de usuario guardado: @${val} ✓`,"success");
+  const el = document.getElementById("username-modal-overlay");
+  if(el) el.remove();
+  window.removeEventListener("popstate", _blockBack);
+  notify(`✅ ¡Bienvenido @${val}!`,"success");
   render();
 }
 
@@ -2923,14 +2962,19 @@ async function _authConnectFinish(walletType, address, evmAddress=null){
       username: shortAddr, email:"", password:"", role:"user",
       balance:0, positions:{}, transactions:[],
       walletAddress: address, walletType,
+      evmAddress: evmAddress||null,
       createdAt: new Date().toISOString(), active:true
     };
     const saved = await dbCreateUser(newUser);
     user = saved || newUser;
+  } else if(evmAddress && !user.evmAddress) {
+    // Actualizar evmAddress si no estaba guardado
+    user.evmAddress = evmAddress;
+    await db.from("users").update({evm_address: evmAddress}).eq("id", user.id);
   }
   const existingIdx = STATE.users.findIndex(u=>u.id===user.id);
-  if(existingIdx>=0) STATE.users[existingIdx]={...STATE.users[existingIdx], walletAddress:address, walletType};
-  else STATE.users.push({...user, walletAddress:address, walletType});
+  if(existingIdx>=0) STATE.users[existingIdx]={...STATE.users[existingIdx], walletAddress:address, walletType, evmAddress:evmAddress||STATE.users[existingIdx].evmAddress};
+  else STATE.users.push({...user, walletAddress:address, walletType, evmAddress:evmAddress||null});
   user.positions = await dbLoadPositions(user.id);
   const ui = STATE.users.findIndex(u=>u.id===user.id);
   if(ui>=0) STATE.users[ui]={...STATE.users[ui], positions:user.positions};
@@ -2947,8 +2991,8 @@ async function _authConnectFinish(walletType, address, evmAddress=null){
   dbStartRealtime();
   navigate("home");
   notify(`Conectado: ${address.slice(0,6)}…${address.slice(-4)}`,"success");
-  const isNewUser = !user.username || user.username===address.slice(0,6)+"…"+address.slice(-4);
-  if(isNewUser) setTimeout(()=>showUsernameModal(user.id), 500);
+  const needsUsername = !user.username || user.username.includes("…") || user.username.length < 2;
+  if(needsUsername) setTimeout(()=>showUsernameModal(user.id), 500);
 }
 
 async function _authConnectEVM(walletType,provider=window.ethereum){
@@ -3059,10 +3103,10 @@ async function _authConnectEVM(walletType,provider=window.ethereum){
     localStorage.setItem("futuros_wallet", address);
     
     dbStartRealtime();
-    const isNewUser = !user.username || user.username === address.slice(0,6)+"…"+address.slice(-4);
+    const needsUsername = !user.username || user.username.includes("…") || user.username.length < 2;
     navigate("home");
     notify(`Conectado: ${address.slice(0,6)}…${address.slice(-4)}`,"success");
-    if(isNewUser) setTimeout(()=>showUsernameModal(user.id), 500);
+    if(needsUsername) setTimeout(()=>showUsernameModal(user.id), 500);
   }catch(e){
     const msg = e?.message || e?.code || JSON.stringify(e) || "error desconocido";
     console.error("[EVM]", e);
@@ -4387,12 +4431,14 @@ function renderAdmin(){
   if(!isAdmin())return`<div class="container"><p>${t("admin_access_denied")}</p></div>`;
   const featuredCount=STATE.markets.filter(m=>m.featured&&!m.resolved).length;
   const pendingWd=(STATE.withdrawals||[]).filter(w=>w.status==="pending").length;
+  const pendingDep=(STATE.pendingDeposits||[]).length;
   const tabs=[
     {k:"accounts", l:`👤 ${t("admin_accounts")}`,       count:STATE.users.length},
     {k:"markets",  l:`📊 ${t("admin_create_market")}`},
     {k:"featured", l:`⚡ ${t("admin_featured_tab")}`,   count:featuredCount},
     {k:"resolve",  l:`🏁 ${t("admin_resolve")}`,        count:STATE.markets.filter(m=>!m.resolved).length},
     {k:"withdrawals",l:`💸 Retiros`,                    count:pendingWd||null},
+    {k:"deposits", l:`💰 Depósitos`,                    count:pendingDep||null},
   ];
   let content="";
   if(STATE.adminTab==="accounts")   content=renderAdminAccounts();
@@ -4400,6 +4446,7 @@ function renderAdmin(){
   if(STATE.adminTab==="featured")   content=renderAdminFeatured();
   if(STATE.adminTab==="resolve")    content=renderAdminResolve();
   if(STATE.adminTab==="withdrawals")content=renderAdminWithdrawals();
+  if(STATE.adminTab==="deposits")   content=renderAdminDeposits();
   return`<div class="container">
   <div style="display:flex;align-items:center;gap:12px;margin-bottom:28px"><h2>${t("admin_title")}</h2>${mkTag("ADMIN","var(--gold)")}</div>
   <div class="admin-tabs">${tabs.map(tb=>`<button class="admin-tab${STATE.adminTab===tb.k?" active":""}" onclick="setAdminTab('${tb.k}')">${tb.l}${tb.count!=null?`<span class="tab-count">${tb.count}</span>`:""}</button>`).join("")}</div>
@@ -4594,6 +4641,163 @@ function renderAdminWithdrawals(){
         ${processed.map(renderRow).join("")}`:""}
       `}
   </div>`;
+}
+
+function renderAdminDeposits(){
+  const deps = STATE.pendingDeposits || [];
+
+  const loadDeposits = async () => {
+    const { data } = await db.from("transactions")
+      .select("*")
+      .eq("status","pending_assignment")
+      .order("created_at",{ascending:false})
+      .limit(50);
+    STATE.pendingDeposits = data || [];
+    render();
+  };
+
+  // Cargar si no están en STATE
+  if(!STATE.pendingDeposits) { STATE.pendingDeposits=[]; loadDeposits(); }
+
+  const renderRow = (dep) => {
+    const wallet = (dep.description||"").match(/wallet:([^\s·]+)/)?.[1] || "—";
+    const hash   = (dep.description||"").match(/tx:([^\s·]+)/)?.[1] || "";
+    const date   = dep.created_at ? formatDate(dep.created_at) : "—";
+    return`
+    <div class="card" style="margin-bottom:10px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px">
+        <div style="flex:1;min-width:0">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap">
+            <span style="font-weight:900;font-size:16px;color:var(--yes)">+${usd(dep.amount)}</span>
+            <span style="background:var(--gold-bg);color:var(--gold);border-radius:20px;padding:2px 10px;font-size:11px;font-weight:700">⏳ Sin asignar</span>
+            <span style="font-size:11px;color:var(--muted)">${dep.network?.toUpperCase()||""}</span>
+          </div>
+          <div style="font-size:12px;color:var(--muted);margin-bottom:4px">📅 ${date}</div>
+          <div style="font-family:monospace;font-size:11px;color:var(--muted);word-break:break-all;margin-bottom:4px">
+            💳 Wallet: <strong style="color:var(--text)">${wallet}</strong>
+          </div>
+          ${hash?`<div style="font-family:monospace;font-size:10px;color:var(--muted);word-break:break-all">🔗 ${hash.slice(0,40)}…</div>`:""}
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px;min-width:130px">
+          <select id="sel-user-${dep.id}" style="padding:7px;border-radius:8px;border:1px solid var(--border);font-size:12px;background:var(--card);color:var(--text);width:100%">
+            <option value="">— Seleccionar usuario —</option>
+            ${STATE.users.filter(u=>u.role!=="admin").map(u=>`<option value="${u.id}">${escHtml(u.username||u.id.slice(0,8))}</option>`).join("")}
+          </select>
+          <button class="btn-green" style="padding:8px 14px;font-size:13px"
+            onclick="adminCreditDeposit('${dep.id}', ${dep.amount}, '${dep.network||"polygon"}')">
+            ✅ Acreditar
+          </button>
+        </div>
+      </div>
+    </div>`;
+  };
+
+  return`<div class="slide-in">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;flex-wrap:wrap;gap:10px">
+      <div>
+        <div style="font-weight:800;font-size:16px;margin-bottom:4px">💰 Depósitos pendientes</div>
+        <div style="font-size:12px;color:var(--muted)">${deps.length} sin asignar a usuario</div>
+      </div>
+      <button class="btn-ghost" style="font-size:13px;padding:8px 16px" onclick="adminReloadDeposits()">
+        🔄 Actualizar
+      </button>
+    </div>
+
+    <div class="card" style="margin-bottom:16px;background:var(--accent-bg);border-color:var(--accent)">
+      <div style="font-size:13px;font-weight:700;margin-bottom:6px;color:var(--accent)">➕ Acreditar depósito manual</div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end">
+        <div style="flex:1;min-width:140px">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Usuario</div>
+          <select id="manual-user" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border);font-size:13px;background:var(--card);color:var(--text)">
+            <option value="">— Seleccionar —</option>
+            ${STATE.users.filter(u=>u.role!=="admin").map(u=>`<option value="${u.id}">${escHtml(u.username||u.id.slice(0,8))}</option>`).join("")}
+          </select>
+        </div>
+        <div style="min-width:100px">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Monto USD</div>
+          <input id="manual-amount" type="number" step="0.01" min="0.01" placeholder="0.00"
+            style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border);font-size:13px;background:var(--card);color:var(--text)"/>
+        </div>
+        <div style="min-width:110px">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Red</div>
+          <select id="manual-network" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border);font-size:13px;background:var(--card);color:var(--text)">
+            <option value="polygon">Polygon</option>
+            <option value="solana">Solana</option>
+            <option value="internal">Internal</option>
+          </select>
+        </div>
+        <button class="btn-green" style="padding:9px 18px;font-size:13px;white-space:nowrap" onclick="adminManualCredit()">
+          ✅ Acreditar
+        </button>
+      </div>
+    </div>
+
+    ${deps.length===0
+      ?`<div style="text-align:center;padding:48px 0;color:var(--muted)">
+          <div style="font-size:40px;margin-bottom:12px">✅</div>
+          <div>No hay depósitos pendientes de asignación</div>
+        </div>`
+      :deps.map(renderRow).join("")}
+  </div>`;
+}
+
+async function adminReloadDeposits(){
+  STATE.pendingDeposits = null;
+  render();
+}
+
+async function adminCreditDeposit(txId, amount, network){
+  const userId = document.getElementById(`sel-user-${txId}`)?.value;
+  if(!userId){ notify("Selecciona un usuario primero","error"); return; }
+  const user = STATE.users.find(u=>u.id===userId);
+  if(!user){ notify("Usuario no encontrado","error"); return; }
+
+  const rounded = Math.round(amount*100)/100;
+  const newBalance = Math.round(((user.balance||0)+rounded)*100)/100;
+
+  await db.from("users").update({balance:newBalance}).eq("id",userId);
+  await db.from("transactions").update({user_id:userId, status:"confirmed"}).eq("id",txId);
+
+  // Actualizar STATE
+  const ui = STATE.users.findIndex(u=>u.id===userId);
+  if(ui>=0) STATE.users[ui] = {...STATE.users[ui], balance:newBalance};
+  STATE.pendingDeposits = (STATE.pendingDeposits||[]).filter(d=>d.id!==txId);
+
+  notify(`✅ +${usd(rounded)} acreditados a ${user.username}`,"success");
+  render();
+}
+
+async function adminManualCredit(){
+  const userId  = document.getElementById("manual-user")?.value;
+  const amount  = parseFloat(document.getElementById("manual-amount")?.value||"0");
+  const network = document.getElementById("manual-network")?.value||"polygon";
+
+  if(!userId){ notify("Selecciona un usuario","error"); return; }
+  if(!amount || amount<0.01){ notify("Monto inválido","error"); return; }
+
+  const user = STATE.users.find(u=>u.id===userId);
+  if(!user){ notify("Usuario no encontrado","error"); return; }
+
+  const rounded = Math.round(amount*100)/100;
+  const newBalance = Math.round(((user.balance||0)+rounded)*100)/100;
+
+  await db.from("users").update({balance:newBalance}).eq("id",userId);
+  await db.from("transactions").insert({
+    user_id:    userId,
+    type:       "deposit",
+    amount:     rounded,
+    network,
+    description:`Depósito manual +${usd(rounded)} · admin`,
+    status:     "confirmed",
+    created_at: new Date().toISOString(),
+  });
+
+  const ui = STATE.users.findIndex(u=>u.id===userId);
+  if(ui>=0) STATE.users[ui] = {...STATE.users[ui], balance:newBalance};
+
+  notify(`✅ +${usd(rounded)} acreditados manualmente a ${user.username}`,"success");
+  document.getElementById("manual-amount").value="";
+  render();
 }
 
 function renderAdminFeatured(){
