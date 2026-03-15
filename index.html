@@ -3413,20 +3413,48 @@ function openDeposit(){
 }
 
 async function fetchCryptoPrices(){
-  try{
-    const r = await fetch("https://api.coingecko.com/api/v3/simple/price?ids=matic-network,solana&vs_currencies=usd");
-    const d = await r.json();
-    const matic = d?.["matic-network"]?.usd;
-    const sol   = d?.["solana"]?.usd;
-    if(matic && matic > 0) STATE.maticPrice = matic;
-    if(sol   && sol   > 0) STATE.solPrice   = sol;
-    // Refrescar el modal si está abierto en el paso de pago
-    if(STATE.depositOpen && STATE.depositStep===2){
-      const sc=document.getElementById("deposit-step-content");
-      if(sc) sc.innerHTML=renderDepositStep();
+  // Intentar múltiples fuentes en orden
+  const sources = [
+    async () => {
+      const r = await fetch("https://api.coingecko.com/api/v3/simple/price?ids=matic-network,solana&vs_currencies=usd",{signal:AbortSignal.timeout(4000)});
+      const d = await r.json();
+      return { matic: d?.["matic-network"]?.usd, sol: d?.["solana"]?.usd };
+    },
+    async () => {
+      const [rm, rs] = await Promise.all([
+        fetch("https://price.jup.ag/v6/price?ids=SOL",{signal:AbortSignal.timeout(4000)}),
+        fetch("https://api.binance.com/api/v3/ticker/price?symbol=MATICUSDT",{signal:AbortSignal.timeout(4000)})
+      ]);
+      const sol = (await rm.json())?.data?.SOL?.price;
+      const matic = parseFloat((await rs.json())?.price);
+      return { matic, sol };
+    },
+    async () => {
+      const r = await fetch("https://min-api.cryptocompare.com/data/pricemulti?fsyms=MATIC,SOL&tsyms=USD",{signal:AbortSignal.timeout(4000)});
+      const d = await r.json();
+      return { matic: d?.MATIC?.USD, sol: d?.SOL?.USD };
     }
-  }catch(e){
-    console.warn("[Prices] fetch fallido:", e.message);
+  ];
+
+  for(const source of sources){
+    try{
+      const { matic, sol } = await source();
+      if(matic && matic > 0) STATE.maticPrice = matic;
+      if(sol   && sol   > 0) STATE.solPrice   = sol;
+      if(STATE.maticPrice && STATE.solPrice) break; // ambos obtenidos
+    }catch(e){
+      console.warn("[Prices] fuente fallida, intentando siguiente…", e.message);
+    }
+  }
+
+  // Fallback si todas las fuentes fallaron
+  if(!STATE.maticPrice) STATE.maticPrice = 0.10;
+  if(!STATE.solPrice)   STATE.solPrice   = 130;
+
+  // Refrescar el modal si está abierto en el paso de pago
+  if(STATE.depositOpen && STATE.depositStep===2){
+    const sc=document.getElementById("deposit-step-content");
+    if(sc) sc.innerHTML=renderDepositStep();
   }
 }
 function closeDepositModal(){
@@ -3606,7 +3634,7 @@ function renderPolygonStep(amt,token){
     <div class="info-box" style="margin-top:14px;margin-bottom:14px">
       <strong>${t("deposit_warning")}:</strong><br>
       • ${t("deposit_network")}<br>
-      2022 Token: <strong>${token}</strong>${contractAddr?` (contrato: <span style="font-family:monospace;font-size:10px">${contractAddr.slice(0,12)}2026</span>${contractAddrLegacy?" 00b7 o USDC.e <span style=\"font-family:monospace;font-size:10px\">"+contractAddrLegacy.slice(0,12)+"2026</span>":""})`:""}<br>
+      • Token: <strong>${token}</strong>${contractAddr?` (contrato: <code style="font-size:10px">${contractAddr.slice(0,12)}2026</code>${contractAddrLegacy?" 00b7 USDC.e <code style=\"font-size:10px\">"+contractAddrLegacy.slice(0,12)+"2026</code>":""})`:"" }<br>
       • ${t("deposit_confs")}: <strong>${PAYMENT_CONFIG.polygon.confirmationsNeeded}</strong><br>
       • ${t("deposit_time")}
     </div>
