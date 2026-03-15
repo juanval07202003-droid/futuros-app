@@ -2904,6 +2904,116 @@ async function sendSolanaDeposit(token, amountUSD){
 }
 
 
+function showQRModal(token, amountUSD, platformAddr){
+  const existing = document.getElementById("qr-deposit-modal");
+  if(existing) existing.remove();
+
+  const userId   = STATE.session || "";
+  const user     = getUser();
+  const username = user?.username || "usuario";
+
+  // Contrato del token
+  const contractAddr = token === "USDC"
+    ? PAYMENT_CONFIG.polygon.usdcAddress
+    : PAYMENT_CONFIG.polygon.usdtAddress;
+  const decimals = 6;
+  const amountRaw = Math.floor(amountUSD * Math.pow(10, decimals));
+
+  // EIP-681 URI — estándar para pagos ERC-20 en Polygon
+  // ethereum:<contract>@137/transfer?address=<to>&uint256=<amount>
+  const eip681 = `ethereum:${contractAddr}@137/transfer?address=${platformAddr}&uint256=${amountRaw}`;
+
+  // Referencia única para identificar la tx
+  const ref = `futuros-${userId.slice(0,8)}-${Date.now().toString(36)}`;
+
+  const html = `
+  <div class="overlay" id="qr-deposit-modal" onclick="event.target===this&&closeQRModal()" style="z-index:200">
+    <div class="modal" onclick="event.stopPropagation()" style="max-width:400px;text-align:center;padding:28px 24px">
+
+      <button onclick="closeQRModal()" style="position:absolute;top:14px;right:16px;background:none;border:none;font-size:20px;cursor:pointer;color:var(--muted)">×</button>
+
+      <div style="font-size:36px;margin-bottom:6px">📷</div>
+      <h3 style="margin-bottom:4px;font-size:18px">Pagar ${amountUSD.toFixed(2)} ${token}</h3>
+      <p style="color:var(--muted);font-size:13px;margin-bottom:20px">
+        Escanea con cualquier wallet compatible con Polygon
+      </p>
+
+      <!-- QR generado dinámicamente -->
+      <div id="qr-canvas-wrap" style="display:flex;justify-content:center;margin-bottom:16px">
+        <div style="background:white;padding:16px;border-radius:16px;border:2px solid var(--border);display:inline-block">
+          <canvas id="qr-canvas" width="200" height="200"></canvas>
+        </div>
+      </div>
+
+      <!-- Referencia única -->
+      <div style="background:var(--card2);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:var(--muted)">
+        <div style="font-weight:700;color:var(--text);margin-bottom:4px">🔑 Tu código de referencia</div>
+        <div style="font-family:monospace;font-size:13px;font-weight:800;color:var(--accent);cursor:pointer" onclick="copyText('${ref}');this.style.color='var(--yes)'">${ref} <span style="font-size:10px">📋</span></div>
+        <div style="font-size:11px;margin-top:4px">Incluye este código en el campo <strong>Memo</strong> si tu wallet lo permite</div>
+      </div>
+
+      <!-- Info wallets compatibles -->
+      <div style="background:#f0eafa;border-radius:10px;padding:12px 14px;font-size:12px;color:#6c32cc;margin-bottom:16px;text-align:left">
+        <strong>✅ Wallets compatibles:</strong> Trust Wallet, MetaMask Mobile, Binance App, Coinbase Wallet, Rainbow<br>
+        <strong style="color:var(--no)">⚠️ Phantom</strong> puede no leer QR con contrato ERC-20 — usa el botón de arriba
+      </div>
+
+      <!-- Detalles de la tx -->
+      <div style="background:var(--card2);border-radius:10px;padding:10px 14px;font-size:12px;text-align:left;margin-bottom:16px">
+        <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+          <span style="color:var(--muted)">Red</span>
+          <strong>Polygon Mainnet (137)</strong>
+        </div>
+        <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+          <span style="color:var(--muted)">Token</span>
+          <strong>${token}</strong>
+        </div>
+        <div style="display:flex;justify-content:space-between">
+          <span style="color:var(--muted)">Monto</span>
+          <strong style="color:var(--yes)">${amountUSD.toFixed(2)} ${token}</strong>
+        </div>
+      </div>
+
+      <button class="btn-ghost" style="width:100%;padding:11px" onclick="closeQRModal()">Cerrar</button>
+    </div>
+  </div>`;
+
+  document.body.insertAdjacentHTML("beforeend", html);
+
+  // Generar QR con la librería qrcode.js desde CDN
+  const script = document.createElement("script");
+  script.src = "https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js";
+  script.onload = () => {
+    const canvas = document.getElementById("qr-canvas");
+    if(!canvas) return;
+    // Usar QRCode.js para dibujar en el canvas
+    new QRCode(canvas.parentElement, {
+      text: eip681,
+      width: 200,
+      height: 200,
+      colorDark: "#1a1a2e",
+      colorLight: "#ffffff",
+      correctLevel: QRCode.CorrectLevel.M,
+    });
+    // Remover el canvas placeholder
+    canvas.remove();
+  };
+  script.onerror = () => {
+    // Fallback: mostrar URI como texto copiable
+    const wrap = document.getElementById("qr-canvas-wrap");
+    if(wrap) wrap.innerHTML = `
+      <div style="background:var(--card2);border-radius:12px;padding:16px;font-size:10px;font-family:monospace;word-break:break-all;color:var(--muted);max-width:280px;cursor:pointer" onclick="copyText('${eip681}')">
+        ${eip681}<br><br><span style="color:var(--accent)">📋 Toca para copiar URI</span>
+      </div>`;
+  };
+  document.head.appendChild(script);
+}
+
+function closeQRModal(){
+  const el = document.getElementById("qr-deposit-modal");
+  if(el) el.remove();
+}
+
 function showSolanaPaymentInstructions(tokenName, amount, address, userId, username){
   const existing = document.getElementById("sol-pay-modal");
   if(existing) existing.remove();
@@ -3681,12 +3791,13 @@ function renderPolygonStep(amt,token){
       <div style="font-size:34px;font-weight:900;color:${tokenColor}">${displayAmt}</div>
       <div style="font-size:12px;color:var(--muted)">${t("deposit_receive")} <strong style="color:var(--yes)">${usd(amt)}</strong> ${t("deposit_credits")}</div>
     </div>
-    <button class="btn-polygon" style="margin-bottom:14px" onclick="sendPolygonDeposit('${token}',${isPoly?(maticAmt||0):amt})" ${isPoly&&!maticAmt?"disabled style='opacity:.5;cursor:not-allowed'":""}>
+    <button class="btn-polygon" style="margin-bottom:8px" onclick="sendPolygonDeposit('${token}',${isPoly?(maticAmt||0):amt})" ${isPoly&&!maticAmt?"disabled style='opacity:.5;cursor:not-allowed'":""}>
       <span>⬡</span> ${isPoly&&!maticAmt?"Obteniendo precio…":"Enviar "+displayAmt+" desde mi wallet"}
     </button>
-    <div class="lbl">${t("deposit_address")}</div>
-    <div class="crypto-addr-box">${addr}</div>
-    <button class="copy-btn" onclick="copyText('${addr}')">${t("deposit_copy")}</button>
+    ${isStable?`
+    <button onclick="showQRModal('${token}',${amt},'${addr}')" style="width:100%;padding:12px;border-radius:12px;border:2px dashed var(--border-strong);background:var(--card2);color:var(--text-2);font-weight:700;font-size:14px;cursor:pointer;margin-bottom:14px;display:flex;align-items:center;justify-content:center;gap:8px">
+      <span style="font-size:18px">📷</span> Pagar con QR desde otra wallet
+    </button>`:``}
     <div class="info-box" style="margin-top:14px;margin-bottom:10px">
       <strong>${t("deposit_warning")}:</strong><br>
       • ${t("deposit_network")}<br>
