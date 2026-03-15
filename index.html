@@ -3708,34 +3708,34 @@ async function sendCryptoFromWallet(token, amount, walletType){
     const walletName = walletType==="phantom"?"Phantom":walletType==="trust"?"Trust Wallet":"MetaMask";
     notify(`Abriendo ${walletName} para confirmar…`,"info");
 
-    // ── Asegurar red Polygon ANTES de enviar ──────────────────────
+    // ── Switch de red solo en MetaMask/Trust (NO en Phantom móvil) ─
+    const isPhantomProvider = !!(window.phantom?.ethereum || window.ethereum?.isPhantom);
     const targetChainId = PAYMENT_CONFIG.polygon.chainId; // "0x89"
-    try{
-      const currentChain = await provider.request({method:"eth_chainId"});
-      if(currentChain !== targetChainId){
-        notify("Cambiando a red Polygon…","info");
-        try{
-          await provider.request({method:"wallet_switchEthereumChain",params:[{chainId:targetChainId}]});
-        }catch(sw){
-          if(sw.code===4902 || sw.code===-32603){
-            await provider.request({method:"wallet_addEthereumChain",params:[{
-              chainId: PAYMENT_CONFIG.polygon.chainId,
-              chainName: PAYMENT_CONFIG.polygon.chainName,
-              nativeCurrency: PAYMENT_CONFIG.polygon.nativeCurrency,
-              rpcUrls:[PAYMENT_CONFIG.polygon.rpcUrl],
-              blockExplorerUrls:[PAYMENT_CONFIG.polygon.explorerUrl],
-            }]});
-          } else if(sw.code===4001){
-            notify("Debes cambiar a la red Polygon para continuar.","error");
-            return;
-          } else {
-            console.warn("[Chain] Switch ignorado:", sw.message||sw.code);
+    if(!isPhantomProvider){
+      try{
+        const currentChain = await provider.request({method:"eth_chainId"});
+        if(currentChain !== targetChainId){
+          try{
+            await provider.request({method:"wallet_switchEthereumChain",params:[{chainId:targetChainId}]});
+          }catch(sw){
+            if(sw.code===4902 || sw.code===-32603){
+              await provider.request({method:"wallet_addEthereumChain",params:[{
+                chainId: PAYMENT_CONFIG.polygon.chainId,
+                chainName: PAYMENT_CONFIG.polygon.chainName,
+                nativeCurrency: PAYMENT_CONFIG.polygon.nativeCurrency,
+                rpcUrls:[PAYMENT_CONFIG.polygon.rpcUrl],
+                blockExplorerUrls:[PAYMENT_CONFIG.polygon.explorerUrl],
+              }]});
+            } else if(sw.code===4001){
+              notify("Debes cambiar a la red Polygon para continuar.","error");
+              return;
+            }
           }
+          await new Promise(r=>setTimeout(r,300));
         }
-        await new Promise(r=>setTimeout(r,400));
+      }catch(chainErr){
+        console.warn("[Chain] switch error:", chainErr.message||chainErr);
       }
-    }catch(chainErr){
-      console.warn("[Chain] No se pudo verificar/cambiar red:", chainErr.message||chainErr);
     }
     // ─────────────────────────────────────────────────────────────
 
@@ -3744,7 +3744,7 @@ async function sendCryptoFromWallet(token, amount, walletType){
     const to = PAYMENT_CONFIG.polygon.receivingAddress;
     if(token==="MATIC"){
       const amtWei="0x"+Math.floor(amount*1e18).toString(16);
-      const txHash=await provider.request({method:"eth_sendTransaction",params:[{from,to,value:amtWei}]});
+      const txHash=await provider.request({method:"eth_sendTransaction",params:[{from,to,value:amtWei,chainId:PAYMENT_CONFIG.polygon.chainId}]});
       notify("Tx enviada: "+txHash.slice(0,10)+"… · Pendiente de confirmación en Polygon","info");
       closeDepositModal();
     } else {
@@ -3760,7 +3760,7 @@ async function sendCryptoFromWallet(token, amount, walletType){
       const amtInUnits=Math.floor(amount*Math.pow(10,decimals));
       const paddedAmt=amtInUnits.toString(16).padStart(64,"0");
       const data=ERC20_TRANSFER+paddedTo+paddedAmt;
-      const txHash=await provider.request({method:"eth_sendTransaction",params:[{from,to:contractAddr,data}]});
+      const txHash=await provider.request({method:"eth_sendTransaction",params:[{from,to:contractAddr,data,chainId:PAYMENT_CONFIG.polygon.chainId}]});
       notify(`Tx ${token} enviada: ${txHash.slice(0,10)}… · Pendiente de confirmación`,"info");
       closeDepositModal();
     }
