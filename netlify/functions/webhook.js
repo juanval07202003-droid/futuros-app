@@ -149,6 +149,10 @@ exports.handler = async (event) => {
 
     const activities = body?.event?.activity || [];
     console.log(`[Webhook] Actividades: ${activities.length}`);
+    // Log completo para debug de formato Solana
+    if(activities.length === 0){
+      console.log("[Webhook] PAYLOAD COMPLETO:", JSON.stringify(body).slice(0, 2000));
+    }
 
     for (const activity of activities) {
       const toAddress   = (activity.toAddress   || "").toLowerCase().trim();
