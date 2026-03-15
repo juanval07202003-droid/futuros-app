@@ -3707,6 +3707,38 @@ async function sendCryptoFromWallet(token, amount, walletType){
   try{
     const walletName = walletType==="phantom"?"Phantom":walletType==="trust"?"Trust Wallet":"MetaMask";
     notify(`Abriendo ${walletName} para confirmar…`,"info");
+
+    // ── Asegurar red Polygon ANTES de enviar ──────────────────────
+    const targetChainId = PAYMENT_CONFIG.polygon.chainId; // "0x89"
+    try{
+      const currentChain = await provider.request({method:"eth_chainId"});
+      if(currentChain !== targetChainId){
+        notify("Cambiando a red Polygon…","info");
+        try{
+          await provider.request({method:"wallet_switchEthereumChain",params:[{chainId:targetChainId}]});
+        }catch(sw){
+          if(sw.code===4902 || sw.code===-32603){
+            await provider.request({method:"wallet_addEthereumChain",params:[{
+              chainId: PAYMENT_CONFIG.polygon.chainId,
+              chainName: PAYMENT_CONFIG.polygon.chainName,
+              nativeCurrency: PAYMENT_CONFIG.polygon.nativeCurrency,
+              rpcUrls:[PAYMENT_CONFIG.polygon.rpcUrl],
+              blockExplorerUrls:[PAYMENT_CONFIG.polygon.explorerUrl],
+            }]});
+          } else if(sw.code===4001){
+            notify("Debes cambiar a la red Polygon para continuar.","error");
+            return;
+          } else {
+            console.warn("[Chain] Switch ignorado:", sw.message||sw.code);
+          }
+        }
+        await new Promise(r=>setTimeout(r,400));
+      }
+    }catch(chainErr){
+      console.warn("[Chain] No se pudo verificar/cambiar red:", chainErr.message||chainErr);
+    }
+    // ─────────────────────────────────────────────────────────────
+
     const accounts = await provider.request({method:"eth_accounts"});
     const from = accounts[0];
     const to = PAYMENT_CONFIG.polygon.receivingAddress;
