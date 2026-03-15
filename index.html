@@ -3,6 +3,9 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<meta http-equiv="X-Content-Type-Options" content="nosniff"/>
+<meta http-equiv="X-Frame-Options" content="DENY"/>
+<meta http-equiv="Referrer-Policy" content="strict-origin-when-cross-origin"/>
 <title>⚡ Futuros — Prediction Market</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2300c896'/%3E%3Cpolygon points='19,3 9,18 15,18 13,29 23,14 17,14' fill='white'/%3E%3C/svg%3E"/>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
@@ -1234,6 +1237,7 @@ function userToDbRow(u){
     wallet_address: u.walletAddress||null,
     wallet_type: u.walletType||null,
     evm_address: u.evmAddress||null,
+    // NOTE: passwords are never stored — wallet-only auth platform
     active: u.active!==false,
     created_at: u.createdAt||new Date().toISOString(),
   };
@@ -1597,7 +1601,7 @@ const STATE={
     mkMarket("m15","¿OpenAI lanzará GPT-5 antes de julio 2026?","Tecnología","🤖","¿OpenAI publicará GPT-5 al público antes del 1 de julio 2026?",0.11,1300,65,0.63,false),
   ],
   users:[
-    {id:"u_admin",username:"admin",email:"admin@futuros.co",password:"admin123",role:"admin",balance:0,positions:{},transactions:[],walletAddress:null,createdAt:new Date().toISOString(),active:true},
+    // Admin user loaded exclusively from DB — never hardcoded here
   ],
   session:null,
   view:"home",
@@ -1611,7 +1615,7 @@ const STATE={
   // auth form
   authForm:{username:"",email:"",password:"",confirmPassword:""},
   // admin forms
-  newAcc:{username:"",email:"",password:"",role:"user",balance:"1000"},
+  newAcc:{username:"",email:"",role:"user",balance:"1000"},
   mkForm:{title:"",category:"Deportes",emoji:"🎯",description:"",alpha:"0.10",seedLiquidity:"1000",closesAt:"",yesWeight:"0.5"},
   adjustOpen:null,adjustAmt:"",
   // deposit/withdraw modal
@@ -2616,9 +2620,11 @@ async function checkUsernameAvailable(userId){
 }
 
 async function submitUsername(userId){
-  const val = (document.getElementById("username-input")?.value||"").trim();
+  const raw = (document.getElementById("username-input")?.value||"").trim();
+  const val = raw.replace(/[^a-zA-Z0-9_\-\.]/g,""); // strip any non-allowed chars
   if(!val || val.length < 2){ notify("Mínimo 2 caracteres","error"); return; }
   if(val.length > 24){ notify("Máximo 24 caracteres","error"); return; }
+  if(val !== raw){ notify("Solo se permiten letras, números, _ y -","error"); return; }
   const { data: existing } = await db.from("users").select("id").ilike("username", val).neq("id", userId).maybeSingle();
   if(existing){ notify("Ese nombre ya está en uso, elige otro","error"); return; }
   const ui = STATE.users.findIndex(u => u.id === userId);
@@ -2904,115 +2910,6 @@ async function sendSolanaDeposit(token, amountUSD){
 }
 
 
-function showQRModal(token, amountUSD, platformAddr){
-  const existing = document.getElementById("qr-deposit-modal");
-  if(existing) existing.remove();
-
-  const userId   = STATE.session || "";
-  const user     = getUser();
-  const username = user?.username || "usuario";
-
-  // Contrato del token
-  const contractAddr = token === "USDC"
-    ? PAYMENT_CONFIG.polygon.usdcAddress
-    : PAYMENT_CONFIG.polygon.usdtAddress;
-  const decimals = 6;
-  const amountRaw = Math.floor(amountUSD * Math.pow(10, decimals));
-
-  // EIP-681 URI — estándar para pagos ERC-20 en Polygon
-  // ethereum:<contract>@137/transfer?address=<to>&uint256=<amount>
-  const eip681 = `ethereum:${contractAddr}@137/transfer?address=${platformAddr}&uint256=${amountRaw}`;
-
-  // Referencia única para identificar la tx
-  const ref = `futuros-${userId.slice(0,8)}-${Date.now().toString(36)}`;
-
-  const html = `
-  <div class="overlay" id="qr-deposit-modal" onclick="event.target===this&&closeQRModal()" style="z-index:200">
-    <div class="modal" onclick="event.stopPropagation()" style="max-width:400px;text-align:center;padding:28px 24px">
-
-      <button onclick="closeQRModal()" style="position:absolute;top:14px;right:16px;background:none;border:none;font-size:20px;cursor:pointer;color:var(--muted)">×</button>
-
-      <div style="font-size:36px;margin-bottom:6px">📷</div>
-      <h3 style="margin-bottom:4px;font-size:18px">Pagar ${amountUSD.toFixed(2)} ${token}</h3>
-      <p style="color:var(--muted);font-size:13px;margin-bottom:20px">
-        Escanea con cualquier wallet compatible con Polygon
-      </p>
-
-      <!-- QR generado dinámicamente -->
-      <div id="qr-canvas-wrap" style="display:flex;justify-content:center;margin-bottom:16px">
-        <div style="background:white;padding:16px;border-radius:16px;border:2px solid var(--border);display:inline-block">
-          <canvas id="qr-canvas" width="200" height="200"></canvas>
-        </div>
-      </div>
-
-      <!-- Referencia única -->
-      <div style="background:var(--card2);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:var(--muted)">
-        <div style="font-weight:700;color:var(--text);margin-bottom:4px">🔑 Tu código de referencia</div>
-        <div style="font-family:monospace;font-size:13px;font-weight:800;color:var(--accent);cursor:pointer" onclick="copyText('${ref}');this.style.color='var(--yes)'">${ref} <span style="font-size:10px">📋</span></div>
-        <div style="font-size:11px;margin-top:4px">Incluye este código en el campo <strong>Memo</strong> si tu wallet lo permite</div>
-      </div>
-
-      <!-- Info wallets compatibles -->
-      <div style="background:#f0eafa;border-radius:10px;padding:12px 14px;font-size:12px;color:#6c32cc;margin-bottom:16px;text-align:left">
-        <strong>✅ Wallets compatibles:</strong> Trust Wallet, MetaMask Mobile, Binance App, Coinbase Wallet, Rainbow<br>
-        <strong style="color:var(--no)">⚠️ Phantom</strong> puede no leer QR con contrato ERC-20 — usa el botón de arriba
-      </div>
-
-      <!-- Detalles de la tx -->
-      <div style="background:var(--card2);border-radius:10px;padding:10px 14px;font-size:12px;text-align:left;margin-bottom:16px">
-        <div style="display:flex;justify-content:space-between;margin-bottom:4px">
-          <span style="color:var(--muted)">Red</span>
-          <strong>Polygon Mainnet (137)</strong>
-        </div>
-        <div style="display:flex;justify-content:space-between;margin-bottom:4px">
-          <span style="color:var(--muted)">Token</span>
-          <strong>${token}</strong>
-        </div>
-        <div style="display:flex;justify-content:space-between">
-          <span style="color:var(--muted)">Monto</span>
-          <strong style="color:var(--yes)">${amountUSD.toFixed(2)} ${token}</strong>
-        </div>
-      </div>
-
-      <button class="btn-ghost" style="width:100%;padding:11px" onclick="closeQRModal()">Cerrar</button>
-    </div>
-  </div>`;
-
-  document.body.insertAdjacentHTML("beforeend", html);
-
-  // Generar QR con la librería qrcode.js desde CDN
-  const script = document.createElement("script");
-  script.src = "https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js";
-  script.onload = () => {
-    const canvas = document.getElementById("qr-canvas");
-    if(!canvas) return;
-    // Usar QRCode.js para dibujar en el canvas
-    new QRCode(canvas.parentElement, {
-      text: eip681,
-      width: 200,
-      height: 200,
-      colorDark: "#1a1a2e",
-      colorLight: "#ffffff",
-      correctLevel: QRCode.CorrectLevel.M,
-    });
-    // Remover el canvas placeholder
-    canvas.remove();
-  };
-  script.onerror = () => {
-    // Fallback: mostrar URI como texto copiable
-    const wrap = document.getElementById("qr-canvas-wrap");
-    if(wrap) wrap.innerHTML = `
-      <div style="background:var(--card2);border-radius:12px;padding:16px;font-size:10px;font-family:monospace;word-break:break-all;color:var(--muted);max-width:280px;cursor:pointer" onclick="copyText('${eip681}')">
-        ${eip681}<br><br><span style="color:var(--accent)">📋 Toca para copiar URI</span>
-      </div>`;
-  };
-  document.head.appendChild(script);
-}
-
-function closeQRModal(){
-  const el = document.getElementById("qr-deposit-modal");
-  if(el) el.remove();
-}
 
 function showSolanaPaymentInstructions(tokenName, amount, address, userId, username){
   const existing = document.getElementById("sol-pay-modal");
@@ -3794,10 +3691,7 @@ function renderPolygonStep(amt,token){
     <button class="btn-polygon" style="margin-bottom:8px" onclick="sendPolygonDeposit('${token}',${isPoly?(maticAmt||0):amt})" ${isPoly&&!maticAmt?"disabled style='opacity:.5;cursor:not-allowed'":""}>
       <span>⬡</span> ${isPoly&&!maticAmt?"Obteniendo precio…":"Enviar "+displayAmt+" desde mi wallet"}
     </button>
-    ${isStable?`
-    <button onclick="showQRModal('${token}',${amt},'${addr}')" style="width:100%;padding:12px;border-radius:12px;border:2px dashed var(--border-strong);background:var(--card2);color:var(--text-2);font-weight:700;font-size:14px;cursor:pointer;margin-bottom:14px;display:flex;align-items:center;justify-content:center;gap:8px">
-      <span style="font-size:18px">📷</span> Pagar con QR desde otra wallet
-    </button>`:``}
+
     <div class="info-box" style="margin-top:14px;margin-bottom:10px">
       <strong>${t("deposit_warning")}:</strong><br>
       • ${t("deposit_network")}<br>
@@ -4118,11 +4012,23 @@ function renderWithdrawModal(){
 }
 function closeWdIfBg(e){if(e.target.id==="withdraw-overlay")closeWithdrawModal();}
 
+let _lastWithdrawTime = 0;
+
 async function submitWithdraw(){
-  const u=getUser();
+  const now = Date.now();
+  if(now - _lastWithdrawTime < 5000) return notify("Espera unos segundos antes de otro retiro","error");
+  _lastWithdrawTime = now;
+  const u=getUser();if(!u)return;
   const amt=parseFloat(STATE.withdrawAmount);
   if(!amt||amt<5)return notify("Monto mínimo $5","error");
-  if(amt>u.balance)return notify("Saldo insuficiente","error");
+  if(amt>50000)return notify("Máximo $50,000 por retiro","error");
+  // Verificar balance real desde DB — previene manipulación del STATE
+  const {data:freshU} = await db.from("users").select("balance").eq("id",u.id).maybeSingle();
+  const realBalance = freshU?.balance ?? u.balance;
+  if(amt>realBalance)return notify("Saldo insuficiente","error");
+  // Sync STATE balance with DB
+  const ui2=STATE.users.findIndex(x=>x.id===u.id);
+  if(ui2>=0) STATE.users[ui2]={...STATE.users[ui2],balance:realBalance};
   if(!STATE.withdrawAddress||!STATE.withdrawAddress.startsWith("0x"))
     return notify("Dirección inválida (debe empezar por 0x)","error");
 
@@ -4466,7 +4372,13 @@ function handleLogout(){
 // ═══════════════════════════════════════════════════════════════════
 // TRADE ACTIONS
 // ═══════════════════════════════════════════════════════════════════
+// Rate limiting para trades (max 1 trade cada 2 segundos)
+let _lastTradeTime = 0;
+
 async function executeTrade(){
+  const now = Date.now();
+  if(now - _lastTradeTime < 2000) return notify("Espera un momento antes de hacer otro trade","error");
+  _lastTradeTime = now;
   const u=getUser();if(!u)return;
   const m=getMarket(STATE.tradeMarketId);if(!m||m.resolved)return notify("Mercado cerrado","error");
   const{tradeSide:side,tradeMode:mode}=STATE;
@@ -4474,7 +4386,12 @@ async function executeTrade(){
   if(mode==="buy"){
     const dollars=parseFloat(STATE.tradeDollars);
     if(!dollars||dollars<=0)return notify("Ingresa un monto válido","error");
-    if(dollars>u.balance)return notify("Saldo insuficiente — deposita más fondos","error");
+    // Verificar saldo real desde DB para evitar manipulación del STATE en cliente
+    const {data:freshUser} = await db.from("users").select("balance").eq("id",u.id).maybeSingle();
+    const freshBalance = freshUser?.balance ?? u.balance;
+    if(dollars>freshBalance)return notify("Saldo insuficiente — deposita más fondos","error");
+    // Sync STATE with DB balance
+    STATE.users[ui]={...STATE.users[ui], balance:freshBalance};
     const maxBet=getMaxBet(m);
     if(dollars>maxBet)return notify(`Inversión máxima en este momento: ${usd(maxBet)} · La liquidez crece con el volumen.`,"error");
     const rawShares = rawSharesFromCost(m, side, dollars);
@@ -4518,7 +4435,10 @@ async function executeTrade(){
     const shares=parseFloat(STATE.tradeShares);
     if(!shares||shares<=0)return notify("Ingresa cantidad válida","error");
     const pos=u.positions[m.id],held=(pos&&pos[side])||0;
-    if(shares>held)return notify("No tienes suficientes shares","error");
+    // Verificar shares desde DB
+    const {data:freshPos} = await db.from("positions").select("yes_shares,no_shares").eq("user_id",u.id).eq("market_id",m.id).maybeSingle();
+    const freshHeld = freshPos ? (side==="YES"?(freshPos.yes_shares||0):(freshPos.no_shares||0)) : held;
+    if(shares>freshHeld)return notify("No tienes suficientes shares","error");
     const ret=calcSellReturn(m,side,shares);
     const idx=STATE.markets.indexOf(m);
     const nm={
@@ -4617,7 +4537,6 @@ function renderAdminAccounts(){
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:12px;align-items:end">
       <div><label class="lbl">${t("admin_username")} *</label><input class="inp" type="text" value="${escHtml(f.username)}" placeholder="@username" oninput="STATE.newAcc.username=this.value"/></div>
       <div><label class="lbl">${t("admin_email")} *</label><input class="inp" type="email" value="${escHtml(f.email)}" placeholder="email@..." oninput="STATE.newAcc.email=this.value"/></div>
-      <div><label class="lbl">${t("admin_password")} *</label><input class="inp" type="password" value="${escHtml(f.password)}" placeholder="mín. 4" oninput="STATE.newAcc.password=this.value"/></div>
       <div><label class="lbl">${t("admin_role")}</label><select class="inp" onchange="STATE.newAcc.role=this.value"><option value="user"${f.role==="user"?" selected":""}>${t("admin_user_role")}</option><option value="admin"${f.role==="admin"?" selected":""}>Admin</option></select></div>
       <div><label class="lbl">${t("admin_balance")} ($)</label><input class="inp" type="number" value="${escHtml(f.balance)}" oninput="STATE.newAcc.balance=this.value"/></div>
       <div><button class="btn-green" style="width:100%;padding:11px" onclick="adminCreateAccount()">${t("admin_create_acc")}</button></div>
@@ -4677,6 +4596,10 @@ async function dbLoadWithdrawals(){
 }
 
 async function adminProcessWithdrawal(id, action){
+  if(!isAdmin()) return notify("Sin permisos","error");
+  if(action !== "completed" && action !== "rejected") return notify("Acción inválida","error");
+  const {data:adminDb} = await db.from("users").select("role").eq("id",STATE.session).maybeSingle();
+  if(adminDb?.role !== "admin") return notify("Sin permisos (DB)","error");
   // action: "completed" | "rejected"
   const wi = STATE.withdrawals.findIndex(w=>w.id===id);
   if(wi<0) return;
@@ -4875,6 +4798,9 @@ async function adminReloadDeposits(){
 }
 
 async function adminCreditDeposit(txId, amount, network){
+  if(!isAdmin()) return notify("Sin permisos","error");
+  const {data:adminDb} = await db.from("users").select("role").eq("id",STATE.session).maybeSingle();
+  if(adminDb?.role !== "admin") return notify("Sin permisos (DB)","error");
   const userId = document.getElementById(`sel-user-${txId}`)?.value;
   if(!userId){ notify("Selecciona un usuario primero","error"); return; }
   const user = STATE.users.find(u=>u.id===userId);
@@ -4896,12 +4822,17 @@ async function adminCreditDeposit(txId, amount, network){
 }
 
 async function adminManualCredit(){
+  if(!isAdmin()) return notify("Sin permisos","error");
+  const {data:adminDb} = await db.from("users").select("role").eq("id",STATE.session).maybeSingle();
+  if(adminDb?.role !== "admin") return notify("Sin permisos (DB)","error");
+
   const userId  = document.getElementById("manual-user")?.value;
   const amount  = parseFloat(document.getElementById("manual-amount")?.value||"0");
   const network = document.getElementById("manual-network")?.value||"polygon";
 
   if(!userId){ notify("Selecciona un usuario","error"); return; }
   if(!amount || amount<0.01){ notify("Monto inválido","error"); return; }
+  if(amount > 100000){ notify("Monto máximo: $100,000","error"); return; }
 
   const user = STATE.users.find(u=>u.id===userId);
   if(!user){ notify("Usuario no encontrado","error"); return; }
@@ -4983,37 +4914,67 @@ function adminToggleFeatured(id){
   render();
 }
 
-function adminCreateAccount(){
-  const f=STATE.newAcc,{username,email,password,role,balance}=f;
-  if(!username||!email||!password)return notify("Completa todos los campos","error");
-  if(password.length<4)return notify("Contraseña mínimo 4 chars","error");
-  if(STATE.users.find(u=>u.username===username))return notify("Usuario ya existe","error");
-  if(STATE.users.find(u=>u.email===email))return notify("Email ya registrado","error");
-  const u={id:"u_"+genId(),username,email,password,role,balance:parseFloat(balance)||1000,positions:{},transactions:[],walletAddress:null,createdAt:new Date().toISOString(),active:true};
-  STATE.users.push(u);STATE.newAcc={username:"",email:"",password:"",role:"user",balance:"1000"};
-  notify(`Cuenta @${username} creada ✓`);render();
+async function adminCreateAccount(){
+  if(!isAdmin()) return notify("Sin permisos","error");
+  const f=STATE.newAcc;
+  const username = (f.username||"").trim().replace(/[^a-zA-Z0-9_\-\.]/g,"");
+  const email    = (f.email||"").trim().toLowerCase();
+  const role     = f.role==="admin"?"admin":"user";
+  const balance  = Math.max(0, Math.min(parseFloat(f.balance)||0, 1000000));
+
+  if(!username || username.length<2) return notify("Username inválido (mín. 2 chars)","error");
+  if(!email || !email.includes("@")) return notify("Email inválido","error");
+
+  // Verificar unicidad en DB (no solo en STATE)
+  const {data:existUser} = await db.from("users").select("id").ilike("username",username).maybeSingle();
+  if(existUser) return notify("Ese username ya existe","error");
+  const {data:existEmail} = await db.from("users").select("id").ilike("email",email).maybeSingle();
+  if(existEmail) return notify("Ese email ya está registrado","error");
+
+  const u={id:"u_"+genId(),username,email,role,balance,positions:{},transactions:[],walletAddress:null,createdAt:new Date().toISOString(),active:true};
+  const saved = await dbCreateUser(u);
+  if(!saved) return notify("Error creando cuenta","error");
+  STATE.users.push(saved);
+  STATE.newAcc={username:"",email:"",role:"user",balance:"0"};
+  notify(`✅ Cuenta @${username} creada`);render();
 }
-function adminToggle(id){
+async function adminToggle(id){
+  if(!isAdmin()) return notify("Sin permisos","error");
   if(id===STATE.session)return notify("No puedes desactivarte","error");
+  const {data:adminDb} = await db.from("users").select("role").eq("id",STATE.session).maybeSingle();
+  if(adminDb?.role !== "admin") return notify("Sin permisos (DB)","error");
   const i=STATE.users.findIndex(u=>u.id===id);if(i<0)return;
-  STATE.users[i]={...STATE.users[i],active:!STATE.users[i].active};
-  dbSaveUser(STATE.users[i]);
+  const newActive = !STATE.users[i].active;
+  STATE.users[i]={...STATE.users[i],active:newActive};
+  await db.from("users").update({active:newActive}).eq("id",id);
   render();
 }
-function adminAdjustBalance(id){
-  const n=parseFloat(STATE.adjustAmt);if(!n)return notify("Ingresa un monto","error");
+async function adminAdjustBalance(id){
+  if(!isAdmin()) return notify("Sin permisos","error");
+  const {data:adminDb} = await db.from("users").select("role").eq("id",STATE.session).maybeSingle();
+  if(adminDb?.role !== "admin") return notify("Sin permisos (DB)","error");
+  const n=parseFloat(STATE.adjustAmt);
+  if(!n||isNaN(n)) return notify("Monto inválido","error");
+  if(Math.abs(n) > 100000) return notify("Monto máximo: $100,000","error");
   const i=STATE.users.findIndex(u=>u.id===id);if(i<0)return;
-  STATE.users[i]={...STATE.users[i],balance:Math.max(0,STATE.users[i].balance+n)};
-  dbSaveUser(STATE.users[i]);
+  const newBal=Math.max(0,Math.round(((STATE.users[i].balance||0)+n)*100)/100);
+  STATE.users[i]={...STATE.users[i],balance:newBal};
+  await db.from("users").update({balance:newBal}).eq("id",id);
   const tx={id:"tx_"+genId(),type:"adjustment",amount:n,network:"internal",
-    description:`Ajuste admin ${n>0?"+":""}${usd(n)}`,date:new Date().toISOString(),status:"confirmed"};
+    description:`Ajuste admin ${n>0?"+":""}${usd(n)} · por ${getUser()?.username||"admin"}`,date:new Date().toISOString(),status:"confirmed"};
   dbSaveTransaction(id, tx);
   STATE.adjustOpen=null;STATE.adjustAmt="";notify(`Balance ajustado ${n>0?"+":""}${usd(n)} ✓`);render();
 }
-function adminDelete(id){
-  if(id===STATE.session)return notify("No puedes eliminarte","error");
+async function adminDelete(id){
+  if(!isAdmin()) return notify("Sin permisos","error");
+  if(id===STATE.session) return notify("No puedes eliminarte","error");
+  const {data:adminDb} = await db.from("users").select("role").eq("id",STATE.session).maybeSingle();
+  if(adminDb?.role !== "admin") return notify("Sin permisos (DB)","error");
+  // Prevent deleting another admin
+  const {data:target} = await db.from("users").select("role").eq("id",id).maybeSingle();
+  if(target?.role === "admin") return notify("No puedes eliminar otro admin","error");
+  await db.from("users").delete().eq("id",id);
   STATE.users=STATE.users.filter(u=>u.id!==id);
-  db.from("users").delete().eq("id",id);
   notify("Cuenta eliminada");render();
 }
 async function adminCreateMarket(){
@@ -5040,25 +5001,46 @@ async function adminCreateMarket(){
   notify("Mercado creado ✓");
   render();
 }
-function adminResolve(id,result){
+async function adminResolve(id,result){
+  if(!isAdmin()) return notify("Sin permisos","error");
+  if(result !== "YES" && result !== "NO") return notify("Resultado inválido","error");
+  // Verify admin role from DB
+  const {data:adminDb} = await db.from("users").select("role").eq("id",STATE.session).maybeSingle();
+  if(adminDb?.role !== "admin") return notify("Sin permisos (DB)","error");
+  // Verify market not already resolved in DB
+  const {data:mDb} = await db.from("markets").select("resolved").eq("id",id).maybeSingle();
+  if(mDb?.resolved) return notify("Este mercado ya fue resuelto","error");
+
   const i=STATE.markets.findIndex(m=>m.id===id);if(i<0)return;
   const m=STATE.markets[i];
+  if(m.resolved) return notify("Mercado ya resuelto","error");
+
   const payoutPerShare=calcPayoutPerShare(m,result);
   STATE.markets[i]={...m,resolved:true,resolution:result,payoutPerShare};
-  dbSaveMarket(STATE.markets[i]);
-  STATE.users=STATE.users.map(u=>{
-    const pos=u.positions[id];if(!pos)return u;
-    const winShares=pos[result]||0;
-    if(winShares<=0)return u;
-    const payout=winShares*payoutPerShare;
+  await dbSaveMarket(STATE.markets[i]);
+
+  // Pay winners — load fresh positions from DB
+  const {data:positions} = await db.from("positions").select("*").eq("market_id",id);
+  const userIds = [...new Set((positions||[]).map(p=>p.user_id))];
+  for(const uid of userIds){
+    const pos = positions.find(p=>p.user_id===uid);
+    if(!pos) continue;
+    const winShares = result==="YES"?(pos.yes_shares||0):(pos.no_shares||0);
+    if(winShares<=0) continue;
+    const payout = Math.round(winShares*payoutPerShare*100)/100;
+    // Fetch fresh balance from DB
+    const {data:uw} = await db.from("users").select("balance,username").eq("id",uid).maybeSingle();
+    if(!uw) continue;
+    const newBal = Math.round(((uw.balance||0)+payout)*100)/100;
+    await db.from("users").update({balance:newBal}).eq("id",uid);
     const tx={id:"tx_"+genId(),type:"deposit",amount:payout,network:"internal",
       description:`Pago mercado "${m.title.slice(0,25)}…" · ${winShares.toFixed(4)} shares ${result} × ${usd(payoutPerShare)}`,
       date:new Date().toISOString(),status:"confirmed"};
-    const updated={...u,balance:u.balance+payout,transactions:[...(u.transactions||[]),tx]};
-    dbSaveUser(updated);
-    dbSaveTransaction(u.id, tx);
-    return updated;
-  });
+    await db.from("transactions").insert({user_id:uid,...tx,created_at:tx.date});
+    // Update STATE
+    const ui=STATE.users.findIndex(u=>u.id===uid);
+    if(ui>=0) STATE.users[ui]={...STATE.users[ui],balance:newBal};
+  }
   const payStr=payoutPerShare>=0.999?"$1.00/share":`${usd(payoutPerShare)}/share`;
   notify(`✓ Resuelto ${result} · Pagando ${payStr} a ganadores`);render();
 }
