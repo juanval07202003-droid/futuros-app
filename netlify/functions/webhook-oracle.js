@@ -174,13 +174,15 @@ async function lockMarket(marketId, reason, details) {
 
   if (error) { log(`Error bloqueando: ${error.message}`); return; }
 
-  // 2. Registrar el evento en una tabla de logs del oracle
-  await db.from("oracle_events").insert({
-    market_id:  marketId,
-    reason,
-    details:    JSON.stringify(details),
-    created_at: new Date().toISOString(),
-  }).catch(() => {}); // ignorar si la tabla no existe
+  // 2. Registrar el evento en oracle_events
+  try {
+    await db.from("oracle_events").insert({
+      market_id:  marketId,
+      reason,
+      details:    JSON.stringify(details),
+      created_at: new Date().toISOString(),
+    });
+  } catch(_) {} // ignorar si la tabla no existe aún
 
   log(`✅ Mercado ${marketId} bloqueado correctamente`);
 }
