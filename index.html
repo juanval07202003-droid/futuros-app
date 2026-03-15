@@ -4,9 +4,14 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <meta http-equiv="X-Content-Type-Options" content="nosniff"/>
+<link rel="canonical" href="https://futuros.bet"/>
+<meta property="og:url" content="https://futuros.bet"/>
+<meta property="og:title" content="⚡ Futuros — Prediction Market"/>
+<meta property="og:description" content="Predice el futuro, gana en el presente. Mercados de predicción con criptomonedas."/>
+<meta name="twitter:card" content="summary"/>
 <meta http-equiv="X-Frame-Options" content="DENY"/>
 <meta http-equiv="Referrer-Policy" content="strict-origin-when-cross-origin"/>
-<title>⚡ Futuros — Prediction Market</title>
+<title>⚡ Futuros — Prediction Market | futuros.bet</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2300c896'/%3E%3Cpolygon points='19,3 9,18 15,18 13,29 23,14 17,14' fill='white'/%3E%3C/svg%3E"/>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700;9..40,800;9..40,900&display=swap" rel="stylesheet"/>
@@ -48,8 +53,6 @@ body{
   --gold-bg:#FFF8E6;
   --poly:#6c32cc;
   --poly-bg:#F0EAFA;
-  --tron:#ef0027;
-  --tron-bg:#FEE8EC;
   --shadow-sm:0 1px 4px rgba(0,0,0,.06),0 4px 16px rgba(0,0,0,.04);
   --shadow-md:0 4px 20px rgba(0,0,0,.08),0 1px 4px rgba(0,0,0,.05);
   --shadow-lg:0 8px 40px rgba(0,0,0,.12),0 2px 8px rgba(0,0,0,.06);
@@ -987,6 +990,7 @@ input, select, textarea{
 const SUPABASE_URL = "https://xskobwfwxvvazteuwggb.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inhza29id2Z3eHZ2YXp0ZXV3Z2diIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMyNzk3NDMsImV4cCI6MjA4ODg1NTc0M30.Oxlk7LtATZxqYHXOaA9Em9owG20kDwFtFKB0mbyJpfQ";
 const db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+const APP_URL = "https://futuros.bet";
 
 // Helper para loguear errores legibles
 function dbErr(label, error){
@@ -1541,14 +1545,6 @@ const PAYMENT_CONFIG = {
     usdcMint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
     usdtMint: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
     confirmationsNeeded: 1
-  },
-  tron: {
-    receivingAddress: "TGfb3Y7XQapApkXaf5neLVVcmEcAj5bU86",
-    explorerUrl: "https://tronscan.org",
-    usdtContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",  // USDT-TRC20
-    usdcContract: "TEkxiTehnzSmSe2XqrBj4w32RUN966rdz8",  // USDC-TRC20
-    confirmationsNeeded: 20,
-    network: "tron"
   },
   depositPresets: [10, 25, 50, 100, 250, 500]
 };
@@ -2487,17 +2483,17 @@ function renderAuth(){
 
       // 1. Safari/Chrome puro móvil — sin wallet inyectada → links <a>
       if(mob && !wallet) return `
-    <a class="wallet-btn" href="https://metamask.app.link/dapp/futurosapp.netlify.app" style="text-decoration:none;display:flex;align-items:center;gap:14px">
+    <a class="wallet-btn" href="https://metamask.app.link/dapp/futuros.bet" style="text-decoration:none;display:flex;align-items:center;gap:14px">
       <div class="wallet-btn-icon" style="background:#f6851b1a"><svg width="30" height="30" viewBox="0 0 35 33" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M32.9 1L19.4 10.7l2.4-5.7z" fill="#E17726" stroke="#E17726" stroke-width=".25"/><path d="M2.1 1l13.4 9.8-2.3-5.8z" fill="#E27625" stroke="#E27625" stroke-width=".25"/><path d="M28.1 23.5l-3.6 5.5 7.7 2.1 2.2-7.5z" fill="#E27625" stroke="#E27625" stroke-width=".25"/><path d="M1.6 23.6l2.2 7.5 7.7-2.1-3.6-5.5z" fill="#E27625" stroke="#E27625" stroke-width=".25"/><path d="M11 14.8l-2.1 3.2 7.6.3-.3-8.1z" fill="#E27625" stroke="#E27625" stroke-width=".25"/><path d="M24 14.8l-5.3-4.7-.2 8.2 7.6-.3z" fill="#E27625" stroke="#E27625" stroke-width=".25"/><path d="M11.4 29l4.6-2.2-3.9-3.1z" fill="#E27625" stroke="#E27625" stroke-width=".25"/><path d="M19 26.8l4.6 2.2-.8-5.3z" fill="#E27625" stroke="#E27625" stroke-width=".25"/><path d="M23.6 29l-4.6-2.2.4 3-.1 1.1z" fill="#D5BFB2" stroke="#D5BFB2" stroke-width=".25"/><path d="M11.4 29l4.3 1.9-.1-1.1.4-3z" fill="#D5BFB2" stroke="#D5BFB2" stroke-width=".25"/><path d="M15.8 21.8l-3.8-1.1 2.7-1.2z" fill="#233447" stroke="#233447" stroke-width=".25"/><path d="M19.2 21.8l1.1-2.3 2.7 1.2z" fill="#233447" stroke="#233447" stroke-width=".25"/><path d="M11.4 29l.7-5.5-6.3.1z" fill="#CC6228" stroke="#CC6228" stroke-width=".25"/><path d="M23.9 23.5l.7 5.5 5.6-5.4z" fill="#CC6228" stroke="#CC6228" stroke-width=".25"/><path d="M26.6 18l-7.6.3.7 4 1.1-2.3 2.7 1.2z" fill="#CC6228" stroke="#CC6228" stroke-width=".25"/><path d="M12 20.7l2.7-1.2 1.1 2.3.7-4-7.6-.3z" fill="#CC6228" stroke="#CC6228" stroke-width=".25"/><path d="M8.9 18l3.2 6.2-.1-3z" fill="#E27525" stroke="#E27525" stroke-width=".25"/><path d="M23 21.2l-.2 3 3.2-6.2z" fill="#E27525" stroke="#E27525" stroke-width=".25"/><path d="M16.5 18.3l-.7 4 .8 4.3.2-5.7z" fill="#E27525" stroke="#E27525" stroke-width=".25"/><path d="M18.5 18.3l-.2 2.5.1 5.8.9-4.3z" fill="#E27525" stroke="#E27525" stroke-width=".25"/><path d="M19.2 22.3l-.9 4.3.7.5 3.8-3.1.2-3z" fill="#F5841F" stroke="#F5841F" stroke-width=".25"/><path d="M12 20.7l.1 3 3.8 3.1.7-.5-.8-4.3z" fill="#F5841F" stroke="#F5841F" stroke-width=".25"/><path d="M19.3 30.9l.1-1.1-.3-.3h-4.2l-.3.3.1 1.1-4.3-1.9 1.5 1.2 3 2.1h5.2l3-2.1 1.5-1.2z" fill="#C0AC9D" stroke="#C0AC9D" stroke-width=".25"/><path d="M19 26.8l-.7-.5h-3.6l-.7.5-.4 3 .3-.3h4.2l.3.3z" fill="#161616" stroke="#161616" stroke-width=".25"/><path d="M33.5 11.3l1.1-5.4L32.9 1 19 10.3l5 4.2 7.1 2.1 1.6-1.8-.7-.5 1.1-1-.8-.6 1.1-.8z" fill="#763E1A" stroke="#763E1A" stroke-width=".25"/><path d="M.4 5.9l1.1 5.4-.7.5 1.1.8-.8.6 1.1 1-.7.5 1.6 1.8 7.1-2.1 5-4.2L2.1 1z" fill="#763E1A" stroke="#763E1A" stroke-width=".25"/><path d="M31.1 16.6l-7.1-2.1 2.1 3.2-3.1 6.2 4.1-.1h6.1z" fill="#F5841F" stroke="#F5841F" stroke-width=".25"/><path d="M11 14.5L3.9 16.6l-2.1 7.2h6.1l4.1.1-3.1-6.2z" fill="#F5841F" stroke="#F5841F" stroke-width=".25"/><path d="M18.5 18.3l.5-8.1 2.4-6.5h-10.8l2.4 6.5.5 8.1.2 2.6v5.7h3.6l.1-5.7z" fill="#F5841F" stroke="#F5841F" stroke-width=".25"/></svg></div>
       <div class="wallet-btn-text"><span class="wallet-btn-name">MetaMask</span><span class="wallet-btn-desc">Abrir en app MetaMask</span></div>
       <span class="wallet-btn-arrow">›</span>
     </a>
-    <a class="wallet-btn" href="https://phantom.app/ul/browse/https%3A%2F%2Ffuturosapp.netlify.app?ref=https%3A%2F%2Ffuturosapp.netlify.app" style="text-decoration:none;display:flex;align-items:center;gap:14px">
+    <a class="wallet-btn" href="https://phantom.app/ul/browse/https%3A%2F%2Ffuturos.bet?ref=https%3A%2F%2Ffuturos.bet" style="text-decoration:none;display:flex;align-items:center;gap:14px">
       <div class="wallet-btn-icon" style="background:#ab9ff21a"><svg width="30" height="30" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg"><rect width="128" height="128" rx="26" fill="#AB9FF2"/><path d="M28 72 C26 52 34 32 52 26 C70 20 92 28 100 46 C108 62 104 80 94 90 C88 96 80 94 76 88 C72 82 68 82 64 88 C60 94 52 96 46 90 C36 82 30 88 28 72 Z" fill="white"/><ellipse cx="60" cy="58" rx="6" ry="7" fill="#AB9FF2"/><ellipse cx="76" cy="55" rx="6" ry="7" fill="#AB9FF2"/></svg></div>
       <div class="wallet-btn-text"><span class="wallet-btn-name">Phantom</span><span class="wallet-btn-desc">Abrir en app Phantom</span></div>
       <span class="wallet-btn-arrow">›</span>
     </a>
-    <a class="wallet-btn" href="https://link.trustwallet.com/open_url?coin_id=966&url=https%3A%2F%2Ffuturosapp.netlify.app" style="text-decoration:none;display:flex;align-items:center;gap:14px">
+    <a class="wallet-btn" href="https://link.trustwallet.com/open_url?coin_id=966&url=https%3A%2F%2Ffuturos.bet" style="text-decoration:none;display:flex;align-items:center;gap:14px">
       <div class="wallet-btn-icon" style="background:#3375bb1a"><svg width="30" height="30" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg"><rect width="40" height="40" rx="10" fill="#3375BB"/><path d="M20 7L9 11.5V20.5C9 26.3 13.8 31.7 20 33C26.2 31.7 31 26.3 31 20.5V11.5L20 7Z" fill="white"/><path d="M17.5 24.5L13.5 20.5L15 19L17.5 21.5L25 14L26.5 15.5L17.5 24.5Z" fill="#3375BB"/></svg></div>
       <div class="wallet-btn-text"><span class="wallet-btn-name">Trust Wallet</span><span class="wallet-btn-desc">Abrir en app Trust Wallet</span></div>
       <span class="wallet-btn-arrow">›</span>
@@ -3589,20 +3585,15 @@ function renderDepositStep1(){
     ?`<strong>USDC en Polygon</strong> — USD Coin, stablecoin de Coinbase. Envía desde cualquier exchange en red Polygon.`
     :m==="usdt"
     ?`<strong>USDT en Polygon</strong> — Tether USD, stablecoin más usada en LATAM. Selecciona red <strong>Polygon</strong> al enviar.`
-    :m==="usdt-tron"
-    ?`<strong>USDT en Tron (TRC-20)</strong> — Tether USD en la red Tron. Fees muy bajos (~$1). Popular en LATAM.`
-    :m==="usdc-tron"
-    ?`<strong>USDC en Tron (TRC-20)</strong> — USD Coin en la red Tron. Envía desde cualquier exchange que soporte TRC-20.`
     :`<strong>SOL (Solana)</strong> — Transferencia nativa en Solana. Rápido y muy barato.`;
 
   const polygonActive = net==="polygon";
   const solanaActive  = net==="solana";
-  const tronActive    = net==="tron";
 
   return`
   <div>
     <label class="lbl" style="margin-bottom:8px">Red de pago</label>
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:14px">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px">
       <button onclick="STATE.depositNetwork='polygon';STATE.depositMethod='usdc';document.getElementById('deposit-step-content').innerHTML=renderDepositStep1()"
         style="padding:10px;border-radius:10px;border:2px solid ${polygonActive?"#8247e5":"var(--border)"};background:${polygonActive?"#f0eafa":"var(--card)"};font-weight:600;font-size:13px;cursor:pointer;color:${polygonActive?"#8247e5":"var(--muted)"}">
         ⬡ Polygon
@@ -3610,10 +3601,6 @@ function renderDepositStep1(){
       <button onclick="STATE.depositNetwork='solana';STATE.depositMethod='sol';document.getElementById('deposit-step-content').innerHTML=renderDepositStep1()"
         style="padding:10px;border-radius:10px;border:2px solid ${solanaActive?"#9945ff":"var(--border)"};background:${solanaActive?"#f5f0ff":"var(--card)"};font-weight:600;font-size:13px;cursor:pointer;color:${solanaActive?"#9945ff":"var(--muted)"}">
         ◎ Solana
-      </button>
-      <button onclick="STATE.depositNetwork='tron';STATE.depositMethod='usdt-tron';document.getElementById('deposit-step-content').innerHTML=renderDepositStep1()"
-        style="padding:10px;border-radius:10px;border:2px solid ${tronActive?"#ef0027":"var(--border)"};background:${tronActive?"#fee8ec":"var(--card)"};font-weight:600;font-size:13px;cursor:pointer;color:${tronActive?"#ef0027":"var(--muted)"}">
-        ⬡ Tron
       </button>
     </div>
 
@@ -3644,20 +3631,6 @@ function renderDepositStep1(){
         <div class="pay-icon" style="font-size:22px">◎</div>
         <div class="pay-label" style="color:#9945ff">SOL</div>
         <div class="pay-sublabel">Nativo Solana</div>
-      </button>
-    </div>`:``}
-    ${tronActive?`
-    <div class="pay-methods" style="grid-template-columns:1fr 1fr;max-width:280px;margin:0 auto">
-      <button class="pay-method${m==="usdt-tron"?" selected-usdc":""}" onclick="selectDepositMethod('usdt-tron')" style="position:relative;${m==="usdt-tron"?"border-color:#26a17b;background:rgba(38,161,123,.08)":""}">
-        <div style="position:absolute;top:-8px;left:50%;transform:translateX(-50%);background:#26a17b;color:#fff;font-size:9px;font-weight:800;padding:2px 7px;border-radius:20px;white-space:nowrap">⭐ RECOMENDADO</div>
-        <div class="pay-icon">💵</div>
-        <div class="pay-label" style="color:#26a17b">USDT</div>
-        <div class="pay-sublabel">TRC-20</div>
-      </button>
-      <button class="pay-method${m==="usdc-tron"?" selected-usdc":""}" onclick="selectDepositMethod('usdc-tron')" style="${m==="usdc-tron"?"border-color:#2775ca;background:rgba(39,117,202,.08)":""}">
-        <div class="pay-icon">💲</div>
-        <div class="pay-label" style="color:#2775ca">USDC</div>
-        <div class="pay-sublabel">TRC-20</div>
       </button>
     </div>`:``}
 
@@ -3694,8 +3667,7 @@ function renderDepositStep3(){
   if(m==="sol")     return renderSolanaStep(amt,"SOL");
   if(m==="usdc-sol")return renderSolanaStep(amt,"USDC-SOL");
   if(m==="usdt-sol")return renderSolanaStep(amt,"USDT-SOL");
-  if(m==="usdt-tron")return renderTronStep(amt,"USDT");
-  if(m==="usdc-tron")return renderTronStep(amt,"USDC");
+
   return renderPolygonStep(amt,"MATIC");
 }
 
@@ -3804,55 +3776,6 @@ async function connectSolanaForDeposit(){
 
 function selectDepositMethod(m){STATE.depositMethod=m;document.getElementById("deposit-step-content").innerHTML=renderDepositStep();}
 
-function renderTronStep(amt, token){
-  const addr   = PAYMENT_CONFIG.tron.receivingAddress;
-  const isUSDT = token === "USDT";
-  const color  = isUSDT ? "#26a17b" : "#2775ca";
-  const userId = STATE.session || "";
-  const memo   = `futuros:${userId}`;
-  const contract = isUSDT ? PAYMENT_CONFIG.tron.usdtContract : PAYMENT_CONFIG.tron.usdcContract;
-
-  return`
-  <div>
-    <div style="text-align:center;margin-bottom:16px">
-      <div style="font-size:12px;color:var(--muted);margin-bottom:4px">Enviar exactamente</div>
-      <div style="font-size:34px;font-weight:900;color:${color}">${amt.toFixed(2)} ${token}</div>
-      <div style="font-size:12px;color:var(--muted)">→ recibirás <strong style="color:var(--yes)">${usd(amt)}</strong> en créditos</div>
-    </div>
-
-    <div style="background:#ef00271a;border:2px solid #ef002733;border-radius:14px;padding:14px;margin-bottom:14px;text-align:center">
-      <div style="font-size:11px;font-weight:700;color:#ef0027;letter-spacing:.5px;margin-bottom:8px">⬡ RED TRON (TRC-20)</div>
-      <div style="font-family:monospace;font-size:11px;word-break:break-all;color:var(--text);cursor:pointer;background:white;border-radius:8px;padding:10px"
-           onclick="copyText('${addr}');this.style.background='#e8f8f2'">
-        ${addr}
-        <div style="color:var(--accent);font-size:11px;margin-top:4px">📋 Toca para copiar</div>
-      </div>
-    </div>
-
-    <div style="background:#f0eafa;border:2px solid #9945ff33;border-radius:12px;padding:12px;margin-bottom:12px;text-align:left">
-      <div style="font-size:12px;font-weight:800;color:#6c32cc;margin-bottom:6px">🔑 MEMO — pégalo en el campo Memo/Tag</div>
-      <div style="background:white;border-radius:8px;padding:8px;font-family:monospace;font-size:13px;font-weight:700;cursor:pointer;color:var(--accent);word-break:break-all"
-           onclick="copyText('${memo}');this.style.background='#e8f8f2'">
-        ${memo}
-        <div style="color:var(--muted);font-size:10px;font-weight:400;margin-top:3px">📋 Toca para copiar</div>
-      </div>
-      <div style="font-size:11px;color:#6c32cc;margin-top:6px">⚠️ Sin el memo el depósito NO se acredita automáticamente</div>
-    </div>
-
-    <div style="background:#fff8e6;border:1px solid #f5c842;border-radius:10px;padding:10px 12px;font-size:12px;color:#92620a;margin-bottom:14px;text-align:left">
-      <strong>📱 Cómo enviar desde un exchange:</strong><br>
-      • Binance / Bybit / OKX → Retiro → ${token} → Red: <strong>TRC20</strong><br>
-      • Dirección: pega la dirección de arriba<br>
-      • Memo/Tag: pega el código de arriba<br>
-      • Contrato: <code style="font-size:10px">${contract.slice(0,12)}…</code>
-    </div>
-
-    <div style="display:flex;gap:10px;margin-top:4px">
-      <button class="btn-ghost" style="flex:1;padding:11px" onclick="depositPrevStep()">← Atrás</button>
-    </div>
-    <div class="hint" style="text-align:center;margin-top:8px">El saldo se acredita automáticamente tras confirmarse en la red Tron (~1 min).</div>
-  </div>`;
-}
 function setDepositAmount(a){STATE.depositAmount=a;document.getElementById("deposit-step-content").innerHTML=renderDepositStep();}
 function updateDepositAmountDisplay(){
   const el=document.getElementById("dep-amount-display");
