@@ -9,3 +9,11 @@
   for = "/*"
   [headers.values]
     X-Frame-Options = "DENY"
+
+[functions]
+  directory = "netlify/functions"
+
+# Oracle — evalúa mercados activos cada 5 minutos
+[[scheduled-functions]]
+  name = "webhook-oracle"
+  schedule = "*/5 * * * *"
