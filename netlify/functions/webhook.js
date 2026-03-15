@@ -301,3 +301,198 @@ exports.handler = async (event) => {
     return { statusCode: 500, body: JSON.stringify({ error: err.message }) };
   }
 };
+
+const { createClient } = require("@supabase/supabase-js");
+
+const SUPABASE_URL = "https://xskobwfwxvvazteuwggb.supabase.co";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inhza29id2Z3eHZ2YXp0ZXV3Z2diIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMyNzk3NDMsImV4cCI6MjA4ODg1NTc0M30.Oxlk7LtATZxqYHXOaA9Em9owG20kDwFtFKB0mbyJpfQ";
+const TRONGRID_API_KEY = "191dafe9-7dbd-4c25-84e1-cbf1f476c54c";
+
+// ── Direcciones ──────────────────────────────────────────
+const PLATFORM_TRON  = "TGfb3Y7XQapApkXaf5neLVVcmEcAj5bU86";
+const USDT_TRC20     = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
+const USDC_TRC20     = "TEkxiTehnzSmSe2XqrBj4w32RUN966rdz8";
+
+const db = createClient(SUPABASE_URL, SUPABASE_KEY);
+
+// ── Convertir SUN a TRX/USDT/USDC ───────────────────────
+// TRC-20 tokens usan 6 decimales (igual que en Polygon)
+function fromSun(value, decimals = 6) {
+  return Number(value) / Math.pow(10, decimals);
+}
+
+// ── Buscar memo en los datos de la tx ───────────────────
+function extractMemo(tx) {
+  try {
+    // El memo en Tron viene en el campo "data" de la transacción como hex
+    const data = tx?.raw_data?.data || tx?.data || "";
+    if (!data) return null;
+    const decoded = Buffer.from(data, "hex").toString("utf8");
+    const match = decoded.match(/futuros:([a-zA-Z0-9\-_]+)/);
+    return match ? match[1] : null;
+  } catch (_) { return null; }
+}
+
+// ── Deduplicar por hash ──────────────────────────────────
+async function isDuplicate(hash) {
+  const { data } = await db.from("transactions")
+    .select("id").ilike("description", `%${hash}%`).maybeSingle();
+  return !!data;
+}
+
+// ── Acreditar usuario ────────────────────────────────────
+async function creditUser(fromAddress, amountUSD, symbol, hash, memoUserId) {
+  if (await isDuplicate(hash)) {
+    console.log(`[Tron] Ya procesado: ${hash}`);
+    return;
+  }
+
+  if (amountUSD > 50000) {
+    console.warn(`[Tron] Monto excesivo $${amountUSD} — rechazado`);
+    return;
+  }
+
+  const roundedUSD = Math.round(amountUSD * 100) / 100;
+  let user = null;
+
+  // 1. Buscar por memo (userId directo)
+  if (memoUserId) {
+    const { data } = await db.from("users").select("*").eq("id", memoUserId).maybeSingle();
+    if (data) { user = data; console.log(`[Tron] Usuario por memo: ${user.username}`); }
+  }
+
+  // 2. Buscar por wallet_address
+  if (!user) {
+    const { data } = await db.from("users").select("*").ilike("wallet_address", fromAddress).maybeSingle();
+    if (data) { user = data; console.log(`[Tron] Usuario por wallet: ${user.username}`); }
+  }
+
+  // 3. Buscar por tron_address (columna adicional si existe)
+  if (!user) {
+    const { data } = await db.from("users").select("*").ilike("tron_address", fromAddress).maybeSingle();
+    if (data) { user = data; console.log(`[Tron] Usuario por tron_address: ${user.username}`); }
+  }
+
+  const txData = {
+    type:        "deposit",
+    amount:      roundedUSD,
+    network:     "tron",
+    status:      "confirmed",
+    created_at:  new Date().toISOString(),
+  };
+
+  if (user) {
+    const newBalance = Math.round(((user.balance || 0) + roundedUSD) * 100) / 100;
+    await db.from("users").update({ balance: newBalance }).eq("id", user.id);
+    await db.from("transactions").insert({
+      ...txData,
+      user_id:     user.id,
+      description: `Depósito ${symbol} +$${roundedUSD.toFixed(2)} · tx:${hash}`,
+    });
+    console.log(`[Tron] ✅ +$${roundedUSD.toFixed(2)} ${symbol} → ${user.username} (balance: $${newBalance.toFixed(2)})`);
+  } else {
+    await db.from("transactions").insert({
+      ...txData,
+      user_id:     null,
+      status:      "pending_assignment",
+      description: `tx:${hash} · wallet:${fromAddress} · pendiente · ${symbol} $${roundedUSD.toFixed(2)}`,
+    });
+    console.log(`[Tron] ⚠️ Wallet desconocida ${fromAddress} → pending_assignment`);
+  }
+}
+
+// ── Polling de TronGrid ──────────────────────────────────
+// TronGrid no tiene webhooks push como Alchemy.
+// Este handler es llamado por un cron job cada ~30 segundos.
+// Configura en Netlify: scheduled function o usa un servicio externo.
+async function pollTronDeposits() {
+  const headers = { "TRON-PRO-API-KEY": TRONGRID_API_KEY };
+
+  // Obtener transacciones TRC-20 recientes a nuestra wallet
+  const url = `https://api.trongrid.io/v1/accounts/${PLATFORM_TRON}/transactions/trc20?limit=20&only_to=true&contract_address=${USDT_TRC20}`;
+  const urlUSDC = `https://api.trongrid.io/v1/accounts/${PLATFORM_TRON}/transactions/trc20?limit=20&only_to=true&contract_address=${USDC_TRC20}`;
+
+  for (const [endpoint, symbol] of [[url, "USDT"], [urlUSDC, "USDC"]]) {
+    try {
+      const res  = await fetch(endpoint, { headers });
+      const data = await res.json();
+      const txs  = data?.data || [];
+
+      console.log(`[Tron] ${symbol}: ${txs.length} transacciones recientes`);
+
+      for (const tx of txs) {
+        const hash      = tx.transaction_id || "";
+        const fromAddr  = tx.from || "";
+        const rawValue  = tx.value || "0";
+        const decimals  = parseInt(tx.token_info?.decimals || "6");
+        const amount    = fromSun(rawValue, decimals);
+        const memoId    = extractMemo(tx);
+
+        console.log(`[Tron] ${symbol} from=${fromAddr} amount=${amount} memo=${memoId||"none"} hash=${hash.slice(0,20)}`);
+
+        if (amount < 0.01) continue;
+        await creditUser(fromAddr, amount, symbol, hash, memoId);
+      }
+    } catch (err) {
+      console.error(`[Tron] Error obteniendo ${symbol}:`, err.message);
+    }
+  }
+}
+
+// ── Handler principal ────────────────────────────────────
+// Este endpoint puede ser llamado de dos formas:
+// 1. POST desde TronGrid webhook (si lo configuran)
+// 2. GET desde un cron job (polling)
+exports.handler = async (event) => {
+  // Validar tamaño
+  const bodySize = Buffer.byteLength(event.body || "", "utf8");
+  if (bodySize > 1024 * 1024) return { statusCode: 413, body: "Payload Too Large" };
+
+  try {
+    // ── Modo webhook push (POST desde TronGrid) ──────────
+    if (event.httpMethod === "POST" && event.body) {
+      const body = JSON.parse(event.body || "{}");
+      console.log("[Tron Webhook] Recibido:", JSON.stringify(body).slice(0, 500));
+
+      // TronGrid webhook format
+      const txList = body?.data || (Array.isArray(body) ? body : [body]);
+
+      for (const tx of txList) {
+        const hash     = tx.transaction_id || tx.txID || "";
+        const fromAddr = tx.from || tx.fromAddress || "";
+        const toAddr   = (tx.to || tx.toAddress || "").toLowerCase();
+        const contract = (tx.token_info?.address || tx.contract_address || "").toLowerCase();
+        const rawValue = tx.value || tx.amount || "0";
+        const decimals = parseInt(tx.token_info?.decimals || "6");
+        const amount   = fromSun(rawValue, decimals);
+        const memoId   = extractMemo(tx);
+
+        // Solo procesar si va a nuestra wallet
+        if (toAddr !== PLATFORM_TRON.toLowerCase()) {
+          console.log(`[Tron] Skip — destino: ${toAddr}`);
+          continue;
+        }
+
+        let symbol = null;
+        if (contract === USDT_TRC20.toLowerCase()) symbol = "USDT";
+        if (contract === USDC_TRC20.toLowerCase()) symbol = "USDC";
+        if (!symbol) { console.log(`[Tron] Contrato desconocido: ${contract}`); continue; }
+
+        console.log(`[Tron] ${symbol} from=${fromAddr} amount=${amount} memo=${memoId||"none"}`);
+        if (amount < 0.01) continue;
+
+        await creditUser(fromAddr, amount, symbol, hash, memoId);
+      }
+
+      return { statusCode: 200, body: JSON.stringify({ ok: true }) };
+    }
+
+    // ── Modo polling (GET o cron) ────────────────────────
+    await pollTronDeposits();
+    return { statusCode: 200, body: JSON.stringify({ ok: true, mode: "poll" }) };
+
+  } catch (err) {
+    console.error("[Tron] Error crítico:", err.message);
+    return { statusCode: 500, body: JSON.stringify({ error: err.message }) };
+  }
+};
