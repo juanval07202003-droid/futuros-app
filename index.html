@@ -1187,8 +1187,10 @@ function dbRowToMarket(row){
   return {
     id: row.id,
     title: row.title,
+    title_en: row.title_en||null,
     category: row.category,
     emoji: row.emoji||"🎯",
+    description_en: row.description_en||null,
     description: row.description||"",
     alpha: row.alpha||0.1,
     seedLiquidity: row.seed_liquidity||1000,
@@ -1213,9 +1215,11 @@ function marketToDbRow(m){
   return {
     id: m.id,
     title: m.title,
+    title_en: m.title_en||null,
     category: m.category,
     emoji: m.emoji,
     description: m.description||"",
+    description_en: m.description_en||null,
     alpha: m.alpha,
     seed_liquidity: m.seedLiquidity,
     q_yes: m.qYes,
@@ -1658,7 +1662,7 @@ const STATE={
   authForm:{username:"",email:"",password:"",confirmPassword:""},
   // admin forms
   newAcc:{username:"",email:"",role:"user",balance:"1000"},
-  mkForm:{title:"",category:"Deportes",emoji:"🎯",description:"",alpha:"0.10",seedLiquidity:"1000",closesAt:"",yesWeight:"0.5",oracleType:"none",oracleConfig:""},
+  mkForm:{title:"",title_en:"",category:"Deportes",emoji:"🎯",description:"",description_en:"",alpha:"0.10",seedLiquidity:"1000",closesAt:"",yesWeight:"0.5",oracleType:"none",oracleConfig:""},
   adjustOpen:null,adjustAmt:"",
   // deposit/withdraw modal
   depositOpen:false,
@@ -2208,6 +2212,9 @@ const LANG={
   }
 };
 const t=k=>LANG[STATE.lang][k]||LANG.es[k]||k;
+// Get translated market field (title or description)
+const mTitle = m => (STATE.lang==="en" && m.title_en) ? m.title_en : m.title;
+const mDesc  = m => (STATE.lang==="en" && m.description_en) ? m.description_en : (m.description||"");
 function toggleLang(){STATE.lang=STATE.lang==="es"?"en":"es";document.documentElement.lang=STATE.lang;render();renderFooter();}
 
 
@@ -2344,8 +2351,10 @@ function renderHome(){
     const q = STATE.marketSearch.toLowerCase().trim();
     const searchMatch = !q ||
       m.title.toLowerCase().includes(q) ||
+      (m.title_en||"").toLowerCase().includes(q) ||
       m.category.toLowerCase().includes(q) ||
-      (m.description||"").toLowerCase().includes(q);
+      (m.description||"").toLowerCase().includes(q) ||
+      (m.description_en||"").toLowerCase().includes(q);
     return catMatch && searchMatch;
   });
   const featuredCount=STATE.markets.filter(m=>m.featured&&!m.resolved).length;
@@ -2410,7 +2419,7 @@ function renderMarketCard(m){
        </div>`;
   return`<div class="market-card" onclick="navigate('market',{marketId:'${m.id}'})">
   <div class="card-meta">${mkTag(m.emoji+" "+m.category,cc)}<span style="font-size:11px;color:var(--muted)">${timeLeft(m.closesAt)}</span></div>
-  <div style="font-weight:700;font-size:14px;line-height:1.4;margin-bottom:14px;min-height:38px">${escHtml(m.title)}</div>
+  <div style="font-weight:700;font-size:14px;line-height:1.4;margin-bottom:14px;min-height:38px">${escHtml(mTitle(m))}</div>
   <div class="prob-row">
     <div style="font-size:30px;font-weight:900;color:var(--yes);letter-spacing:-1px">${pct(pYes)}</div>
     <div style="text-align:right"><div style="font-size:14px;font-weight:700;color:var(--no)">${t("detail_no")} ${pct(1-pYes)}</div>
@@ -2517,7 +2526,7 @@ function renderFeaturedCarousel(){
     const cc=CAT_COLOR[m.category]||"#888";
     return`<div class="carousel-slide" onclick="navigate('market',{marketId:'${m.id}'})">
       <div class="carousel-badge">${m.emoji} ${m.category}</div>
-      <div class="carousel-title">${escHtml(m.title)}</div>
+      <div class="carousel-title">${escHtml(mTitle(m))}</div>
       <div class="carousel-body">
         <div>
           <div class="carousel-prob-yes">${pct(pYes)}</div>
@@ -3297,10 +3306,14 @@ function renderMarket(){
     // Línea de referencia 50%
     const y50 = toY(0.5);
 
-    // Min/Max actuales
+    // Stats completas
     const curYes = data[data.length-1];
     const curNo  = 1-curYes;
     const minYes = Math.min(...data), maxYes = Math.max(...data);
+    const minNo  = Math.min(...dataNo), maxNo = Math.max(...dataNo);
+    const avgYes = Math.round((data.reduce((s,v)=>s+v,0)/data.length)*1000)/1000;
+    const avgNo  = Math.round((dataNo.reduce((s,v)=>s+v,0)/dataNo.length)*1000)/1000;
+    const trades = data.length;
 
     chartHtml=`
     <div style="margin-top:4px">
@@ -3346,13 +3359,26 @@ function renderMarket(){
             </text>
           `).join("")}
 
-          <!-- Etiquetas eje X -->
+          <!-- Etiquetas eje X: T=trade number -->
           ${xLabels.map(i=>`
-            <text x="${toX(i).toFixed(1)}" y="${(PT+cH+18).toFixed(0)}"
+            <text x="${toX(i).toFixed(1)}" y="${(PT+cH+16).toFixed(0)}"
               text-anchor="middle" font-size="10" fill="var(--muted)" font-family="inherit">
-              #${i+1}
+              T${i+1}
             </text>
           `).join("")}
+
+          <!-- Líneas min/max YES punteadas -->
+          <line x1="${PL}" y1="${toY(minYes).toFixed(1)}" x2="${(PL+cW).toFixed(1)}" y2="${toY(minYes).toFixed(1)}"
+            stroke="#00e5a0" stroke-width="1" stroke-dasharray="3,3" opacity=".45" clip-path="url(#chartClip)"/>
+          <line x1="${PL}" y1="${toY(maxYes).toFixed(1)}" x2="${(PL+cW).toFixed(1)}" y2="${toY(maxYes).toFixed(1)}"
+            stroke="#00e5a0" stroke-width="1" stroke-dasharray="3,3" opacity=".45" clip-path="url(#chartClip)"/>
+          <text x="${(PL+cW+3).toFixed(0)}" y="${(toY(minYes)+4).toFixed(0)}" font-size="9" fill="#00e5a0" opacity=".8">${Math.round(minYes*100)}%</text>
+          <text x="${(PL+cW+3).toFixed(0)}" y="${(toY(maxYes)+4).toFixed(0)}" font-size="9" fill="#00e5a0" opacity=".8">${Math.round(maxYes*100)}%</text>
+          <!-- Líneas min/max NO punteadas -->
+          <line x1="${PL}" y1="${toY(minNo).toFixed(1)}" x2="${(PL+cW).toFixed(1)}" y2="${toY(minNo).toFixed(1)}"
+            stroke="#e0284a" stroke-width="1" stroke-dasharray="3,3" opacity=".35" clip-path="url(#chartClip)"/>
+          <line x1="${PL}" y1="${toY(maxNo).toFixed(1)}" x2="${(PL+cW).toFixed(1)}" y2="${toY(maxNo).toFixed(1)}"
+            stroke="#e0284a" stroke-width="1" stroke-dasharray="3,3" opacity=".35" clip-path="url(#chartClip)"/>
 
           <!-- Área YES -->
           <path d="${areaYes}" fill="url(#gYes)" clip-path="url(#chartClip)"/>
@@ -3384,22 +3410,33 @@ function renderMarket(){
         </svg>
       </div>
 
-      <!-- Stats min/max bajo el gráfico -->
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:12px;font-size:11px">
-        <div style="text-align:center;background:var(--card2);border-radius:8px;padding:8px">
-          <div style="color:var(--muted);margin-bottom:2px">Mín SÍ</div>
-          <div style="font-weight:800;color:var(--yes)">${pct(minYes)}</div>
+      <!-- Stats tabla SÍ / NO -->
+      <div style="margin-top:14px;font-size:11px">
+        <div style="display:grid;grid-template-columns:80px 1fr 1fr 1fr 1fr;gap:6px;align-items:center">
+          <!-- Header -->
+          <div></div>
+          <div style="text-align:center;font-weight:700;color:var(--muted);text-transform:uppercase;font-size:10px">Mín</div>
+          <div style="text-align:center;font-weight:700;color:var(--muted);text-transform:uppercase;font-size:10px">Prom.</div>
+          <div style="text-align:center;font-weight:700;color:var(--muted);text-transform:uppercase;font-size:10px">Máx</div>
+          <div style="text-align:center;font-weight:700;color:var(--muted);text-transform:uppercase;font-size:10px">Actual</div>
+          <!-- Fila SÍ -->
+          <div style="font-weight:700;color:var(--yes);font-size:12px">● SÍ</div>
+          <div style="text-align:center;background:var(--card2);border-radius:6px;padding:6px;font-weight:700;color:var(--yes)">${pct(minYes)}</div>
+          <div style="text-align:center;background:var(--card2);border-radius:6px;padding:6px;font-weight:700;color:var(--yes)">${pct(avgYes)}</div>
+          <div style="text-align:center;background:var(--card2);border-radius:6px;padding:6px;font-weight:700;color:var(--yes)">${pct(maxYes)}</div>
+          <div style="text-align:center;background:rgba(0,229,160,.1);border:1.5px solid rgba(0,229,160,.3);border-radius:6px;padding:6px;font-weight:800;color:var(--yes)">${pct(curYes)}</div>
+          <!-- Fila NO -->
+          <div style="font-weight:700;color:var(--no);font-size:12px">● NO</div>
+          <div style="text-align:center;background:var(--card2);border-radius:6px;padding:6px;font-weight:700;color:var(--no)">${pct(minNo)}</div>
+          <div style="text-align:center;background:var(--card2);border-radius:6px;padding:6px;font-weight:700;color:var(--no)">${pct(avgNo)}</div>
+          <div style="text-align:center;background:var(--card2);border-radius:6px;padding:6px;font-weight:700;color:var(--no)">${pct(maxNo)}</div>
+          <div style="text-align:center;background:rgba(224,40,74,.08);border:1.5px solid rgba(224,40,74,.25);border-radius:6px;padding:6px;font-weight:800;color:var(--no)">${pct(curNo)}</div>
         </div>
-        <div style="text-align:center;background:var(--card2);border-radius:8px;padding:8px">
-          <div style="color:var(--muted);margin-bottom:2px">Actual SÍ / NO</div>
-          <div style="font-weight:800"><span style="color:var(--yes)">${pct(curYes)}</span> / <span style="color:var(--no)">${pct(curNo)}</span></div>
-        </div>
-        <div style="text-align:center;background:var(--card2);border-radius:8px;padding:8px">
-          <div style="color:var(--muted);margin-bottom:2px">Máx SÍ</div>
-          <div style="font-weight:800;color:var(--yes)">${pct(maxYes)}</div>
+        <div style="text-align:center;color:var(--muted);margin-top:8px;font-size:10px">
+          ${trades} operaciones · Eje X: T1 = primera operación · T${trades} = última · Eje Y: probabilidad %
         </div>
       </div>
-    </div>`;\
+    </div>`;
   }
   const closed = isMarketClosed(m);
   const bottomAction = m.resolved
@@ -3425,8 +3462,8 @@ function renderMarket(){
   <div class="detail-header">
     <div style="flex:1;min-width:0">
       ${mkTag(m.emoji+" "+m.category,cc)}
-      <h2 style="font-size:clamp(20px,5vw,26px);margin:10px 0 8px;line-height:1.25">${escHtml(m.title)}</h2>
-      <p style="color:var(--muted);font-size:13px;line-height:1.5">${escHtml(m.description)}</p>
+      <h2 style="font-size:clamp(20px,5vw,26px);margin:10px 0 8px;line-height:1.25">${escHtml(mTitle(m))}</h2>
+      <p style="color:var(--muted);font-size:13px;line-height:1.5">${escHtml(mDesc(m))}</p>
     </div>
     <div style="text-align:right;flex-shrink:0"><div class="mkt-prob-big">${pct(pYes)}</div><div style="color:var(--muted);font-size:12px;margin-top:4px">prob. ${t("detail_yes")}</div></div>
   </div>
@@ -4962,6 +4999,7 @@ function renderAdminMarkets(){
   <div class="admin-section-title">📊 ${t("admin_create_market_title")}</div>
   <div class="form-grid">
     <div class="full"><label class="lbl">${t("admin_title_field")}</label><input class="inp" type="text" value="${escHtml(f.title)}" placeholder="¿Quién ganará...?" oninput="STATE.mkForm.title=this.value;document.getElementById('mk-prev').innerHTML=getMkPreview()"/></div>
+    <div class="full"><label class="lbl">Título en inglés <span style="color:var(--muted);font-weight:400">(opcional)</span></label><input class="inp" type="text" value="${escHtml(f.title_en||'')}" placeholder="Who will win...?" oninput="STATE.mkForm.title_en=this.value"/></div>
     <div><label class="lbl">${t("admin_category")}</label><select class="inp" onchange="STATE.mkForm.category=this.value;document.getElementById('mk-prev').innerHTML=getMkPreview()">${["Deportes","Economía","Cultura","Tecnología"].map(c=>`<option${f.category===c?" selected":""}>${c}</option>`).join("")}</select></div>
     <div><label class="lbl">${t("admin_emoji")}</label><input class="inp" value="${escHtml(f.emoji)}" oninput="STATE.mkForm.emoji=this.value;document.getElementById('mk-prev').innerHTML=getMkPreview()"/></div>
     <div><label class="lbl">${t("admin_alpha")}</label><input class="inp" type="number" step="0.01" min="0.01" max="1" value="${f.alpha}" oninput="STATE.mkForm.alpha=this.value;document.getElementById('mk-prev').innerHTML=getMkPreview()"/><div class="hint">${t("admin_alpha_hint")}</div></div>
@@ -4990,6 +5028,7 @@ function renderAdminMarkets(){
       <div id="oracle-example" style="font-size:11px;color:var(--muted);margin-top:8px"></div>
     </div>
     <div class="full"><label class="lbl">${t("admin_description")}</label><input class="inp" value="${escHtml(f.description)}" placeholder="${t("admin_description_ph")}" oninput="STATE.mkForm.description=this.value"/></div>
+    <div class="full"><label class="lbl">Descripción en inglés <span style="color:var(--muted);font-weight:400">(opcional)</span></label><input class="inp" value="${escHtml(f.description_en||'')}" placeholder="English description..." oninput="STATE.mkForm.description_en=this.value"/></div>
   </div>
   <div id="mk-prev">${getMkPreview()}</div>
   <button class="btn-green" style="width:100%;padding:13px;font-size:15px;margin-top:16px" onclick="adminCreateMarket()">${t("admin_create_btn")}</button>
@@ -5500,7 +5539,8 @@ async function adminCreateMarket(){
     title:f.title, category:f.category, emoji:f.emoji, description:f.description,
     alpha, seedLiquidity:sl, qYes, qNo, totalVolume:0, spreadPool:0, totalPaid:0,
     closesAt:new Date(f.closesAt).toISOString(), resolved:false, resolution:null,
-    oracleType:f.oracleType||"none", oracleConfig:f.oracleConfig||"", oracleLocked:false,
+    oracleType:f.oracleType||"none", oracleConfig:f.oracleConfig||"",
+    title_en:f.title_en||null, description_en:f.description_en||null, oracleLocked:false,
     priceHistory:[yw], createdAt:new Date().toISOString(), featured:false
   };
   // Guardar en DB primero — si falla no agregar al STATE
@@ -5510,7 +5550,7 @@ async function adminCreateMarket(){
     if(error){ console.error("[DB] creando mercado:", error.message); return notify("Error al crear el mercado: "+error.message,"error"); }
   }catch(e){ return notify("Error al crear el mercado: "+(e?.message||e),"error"); }
   STATE.markets.push(m);
-  STATE.mkForm={title:"",category:"Deportes",emoji:"🎯",description:"",alpha:"0.10",seedLiquidity:"1000",closesAt:"",yesWeight:"0.5",oracleType:"none",oracleConfig:""};
+  STATE.mkForm={title:"",title_en:"",category:"Deportes",emoji:"🎯",description:"",description_en:"",alpha:"0.10",seedLiquidity:"1000",closesAt:"",yesWeight:"0.5",oracleType:"none",oracleConfig:""};
   notify("Mercado creado ✓");
   render();
 }
@@ -5562,25 +5602,30 @@ async function adminResolve(id,result){
 // POLICY PAGES
 // ═══════════════════════════════════════════════════════════════════
 const POLICY_META={
-  terms:   {title:"Términos y Condiciones de Uso",      icon:"📋"},
-  privacy: {title:"Política de Privacidad",              icon:"🔒"},
-  cookies: {title:"Política de Cookies",                 icon:"🍪"},
-  risks:   {title:"Advertencia de Riesgos",              icon:"⚠️"},
-  aml:     {title:"Política AML / KYC",                  icon:"🛡️"},
-  responsible:{title:"Juego Responsable",                icon:"💚"},
+  terms:      {title:"Términos y Condiciones de Uso", title_en:"Terms and Conditions of Use",  icon:"📋"},
+  privacy:    {title:"Política de Privacidad",         title_en:"Privacy Policy",               icon:"🔒"},
+  cookies:    {title:"Política de Cookies",            title_en:"Cookie Policy",                icon:"🍪"},
+  risks:      {title:"Advertencia de Riesgos",         title_en:"Risk Disclosure",              icon:"⚠️"},
+  aml:        {title:"Política AML / KYC",             title_en:"AML / KYC Policy",             icon:"🛡️"},
+  responsible:{title:"Juego Responsable",              title_en:"Responsible Gaming",           icon:"💚"},
 };
 
 function renderPolicy(key){
-  const meta=POLICY_META[key]||{title:"Política",icon:"📄"};
-  const date="Última actualización: 1 de enero de 2025";
-  const content=POLICY_CONTENT[key]||"";
+  const en = STATE.lang === "en";
+  const meta = POLICY_META[key] || {title:"Policy", title_en:"Policy", icon:"📄"};
+  const title = en ? (meta.title_en || meta.title) : meta.title;
+  const date = en ? "Last updated: January 1, 2025" : "Última actualización: 1 de enero de 2025";
+  const back = en ? "← Back" : "← Volver";
+  // Use English content if available, fallback to Spanish
+  const contentKey = en && POLICY_CONTENT[key+"_en"] ? key+"_en" : key;
+  const policyContent = POLICY_CONTENT[contentKey] || "";
   window.scrollTo(0,0);
   return`<div class="policy-wrap fade-up">
-    <button class="btn-ghost" style="padding:6px 14px;font-size:13px;margin-bottom:28px" onclick="navigate('home')">← Volver</button>
+    <button class="btn-ghost" style="padding:6px 14px;font-size:13px;margin-bottom:28px" onclick="navigate('home')">${back}</button>
     <div style="font-size:28px;margin-bottom:8px">${meta.icon}</div>
-    <h1>${meta.title}</h1>
+    <h1>${title}</h1>
     <span class="policy-date">${date}</span>
-    ${content}
+    ${policyContent}
   </div>`;
 }
 
@@ -5814,10 +5859,236 @@ responsible:`
   <p>Si compartes dispositivos con menores de edad, te recomendamos utilizar controles parentales o cerrar sesión siempre que termines de usar la plataforma. Más información en: <strong>internetmatters.org</strong></p>
 `,
 
-};
+// ── English versions ─────────────────────────────────────
+terms_en:`
+  <div class="policy-highlight">By using Futuros you accept these terms in full. If you disagree, you must not use the platform.</div>
 
-// ═══════════════════════════════════════════════════════════════════
-// INIT
+  <h2>1. Nature of the Service</h2>
+  <p>Futuros is a prediction market platform that allows users to invest in the outcome of future events using an automated market-making model (LS-LMSR). The platform operates for entertainment purposes and does not constitute financial, investment, or any other type of advice.</p>
+
+  <h2>2. Eligibility</h2>
+  <ul>
+    <li>You must be at least 18 years old to use the platform.</li>
+    <li>You must reside in a country where the use of paid prediction platforms is legal.</li>
+    <li>Use of the platform from jurisdictions where such activity is expressly prohibited is not allowed.</li>
+    <li>You may not create more than one account per person. Duplicate accounts will be suspended.</li>
+  </ul>
+
+  <h2>3. Registration and Account</h2>
+  <p>By registering, you agree to provide truthful, complete, and up-to-date information. You are responsible for maintaining the confidentiality of your password. Futuros will not be liable for losses resulting from unauthorized access to your account due to your negligence.</p>
+
+  <h2>4. Deposits and Withdrawals</h2>
+  <p>Deposits are made via cryptocurrency on the Polygon network (MATIC/USDC). Withdrawals are subject to a 1% platform fee on the requested amount. Withdrawals are processed once a day at 1:00 PM Miami time (ET).</p>
+  <p>Futuros reserves the right to request identity verification documentation before processing withdrawals above certain amounts, in accordance with our AML/KYC policy.</p>
+
+  <h2>5. Market Mechanics</h2>
+  <p>Markets close on the indicated date and are resolved by the Futuros administration team based on public and verifiable sources. The resolution decision is final. If an event cannot be determined with certainty, Futuros may cancel the market and return the invested funds.</p>
+
+  <h2>6. Fees</h2>
+  <p>Futuros applies a 0.25% spread on each share buy and sell operation. This spread is included in the price you see on screen. Additionally, a 1% fee applies to all fund withdrawals.</p>
+
+  <h2>7. Prohibited Conduct</h2>
+  <ul>
+    <li>Market manipulation or coordination with other users to alter prices.</li>
+    <li>Use of bots, scripts, or automated tools without written authorization.</li>
+    <li>Money laundering or any illicit financial activity.</li>
+    <li>Creating fake accounts or identity impersonation.</li>
+    <li>Exploiting bugs or system vulnerabilities. Any vulnerability must be reported to support.</li>
+  </ul>
+
+  <h2>8. Limitation of Liability</h2>
+  <p>Futuros does not guarantee uninterrupted service availability. In no event shall Futuros be liable for indirect, incidental, or consequential losses arising from the use of the platform. Futuros's maximum liability to any user shall not exceed the amount deposited by that user in the last 30 days.</p>
+
+  <h2>9. Modifications</h2>
+  <p>Futuros reserves the right to modify these terms at any time. Changes will take effect 7 days after publication on the platform. Continued use of the service implies acceptance of the new terms.</p>
+
+  <h2>10. Governing Law</h2>
+  <p>These terms are governed by the laws of the Republic of Colombia. Any dispute shall be submitted to the jurisdiction of the competent courts of Bogotá, Colombia.</p>
+`,
+
+privacy_en:`
+  <div class="policy-highlight">Your privacy matters to us. This policy explains what data we collect, how we use it, and how we protect it.</div>
+
+  <h2>1. Data Controller</h2>
+  <p>Futuros is responsible for the processing of personal data collected through the platform, in compliance with Colombian Law 1581 of 2012 and the General Data Protection Regulation (GDPR) where applicable.</p>
+
+  <h2>2. Data We Collect</h2>
+  <ul>
+    <li><strong>Registration data:</strong> username, email address, password (stored with bcrypt hash).</li>
+    <li><strong>Financial data:</strong> history of deposits, withdrawals and operations. We do not store private keys or wallet data beyond the public address.</li>
+    <li><strong>Crypto wallet data:</strong> public Polygon wallet address if you connect one.</li>
+    <li><strong>Usage data:</strong> pages visited, markets viewed, time on platform, IP address, device type and browser.</li>
+    <li><strong>Comments:</strong> the content of comments you post on markets.</li>
+  </ul>
+
+  <h2>3. Purpose of Processing</h2>
+  <ul>
+    <li>Providing the prediction market service.</li>
+    <li>Processing deposits and withdrawals.</li>
+    <li>Compliance with legal obligations (AML/KYC).</li>
+    <li>Service communications (no marketing without consent).</li>
+    <li>Platform improvement through aggregated and anonymized usage analysis.</li>
+    <li>Fraud prevention and illicit activity detection.</li>
+  </ul>
+
+  <h2>4. Legal Basis</h2>
+  <p>The processing of your data is based on the execution of the service contract (terms of use), compliance with legal obligations, and Futuros's legitimate interest in operating the platform securely.</p>
+
+  <h2>5. Data Sharing</h2>
+  <p>We do not sell or rent your personal data to third parties. We may share data with strictly necessary service providers (cloud infrastructure, Polygonscan API) under confidentiality agreements. In the event of a legal requirement, we may disclose data to competent authorities.</p>
+
+  <h2>6. Data Retention</h2>
+  <p>We retain your data for the duration of your account and for an additional period of 5 years after its closure, as required by Colombian financial regulations. Technical log data is deleted after 90 days.</p>
+
+  <h2>7. Your Rights</h2>
+  <p>You have the right to access, rectify, delete, port, and object to the processing of your data. To exercise these rights write to <strong>privacy@futuros.co</strong>. We will respond within a maximum of 15 business days.</p>
+
+  <h2>8. Security</h2>
+  <p>We implement TLS encryption in all communications, bcrypt password storage, and strict access controls over data. However, no system is 100% infallible and we cannot guarantee the absolute security of transmitted information.</p>
+`,
+
+cookies_en:`
+  <div class="policy-highlight">We use cookies and similar technologies to make the platform work correctly and to improve your experience.</div>
+
+  <h2>What are cookies?</h2>
+  <p>Cookies are small text files stored on your device when you visit a website. They allow us to remember your preferences and keep you authenticated between sessions.</p>
+
+  <h2>Cookies We Use</h2>
+
+  <h2>Strictly Necessary Cookies</h2>
+  <p>These cookies are essential for the platform to function. They cannot be disabled.</p>
+  <ul>
+    <li><strong>session_token:</strong> keeps your session securely logged in.</li>
+    <li><strong>csrf_token:</strong> protects against cross-site request forgery attacks.</li>
+  </ul>
+
+  <h2>Preference Cookies</h2>
+  <p>Remember your settings to personalize your experience.</p>
+  <ul>
+    <li><strong>lang:</strong> preferred language.</li>
+    <li><strong>last_market:</strong> last market visited for quick access.</li>
+  </ul>
+
+  <h2>Analytics Cookies</h2>
+  <p>Help us understand how the platform is used so we can improve it. All information is aggregated and anonymous.</p>
+  <ul>
+    <li><strong>_analytics_id:</strong> anonymous session identifier for usage analytics.</li>
+  </ul>
+
+  <h2>Third-Party Cookies</h2>
+  <ul>
+    <li><strong>Polygon / MetaMask:</strong> MetaMask integration may set its own cookies during the wallet connection process. See MetaMask's policy for details.</li>
+    <li><strong>Google Fonts:</strong> we use Google Fonts for typography; Google may log font requests.</li>
+  </ul>
+
+  <h2>Managing Cookies</h2>
+  <p>You can configure your browser to reject all cookies or to alert you when a cookie is sent. Note that disabling necessary cookies may prevent the platform from working properly. Check your browser's help to manage cookies in Chrome, Firefox, Safari, or Edge.</p>
+`,
+
+risks_en:`
+  <div class="policy-warning"><strong>⚠️ Important Warning:</strong> investing in prediction markets involves the risk of total loss of invested capital. Read this section carefully before trading.</div>
+
+  <h2>1. Risk of Capital Loss</h2>
+  <p>When investing in a prediction market you may lose all the money you invest. If the event resolves in the opposite direction to your position, you will lose 100% of the invested amount. Only invest money you can afford to lose.</p>
+
+  <h2>2. Market Risk</h2>
+  <p>Market prices fluctuate based on all participants' investments. A high YES price does not guarantee the event will occur; it only reflects the aggregate opinion of investors at that moment. Prices can change significantly in a short time.</p>
+
+  <h2>3. Liquidity Risk</h2>
+  <p>In markets with low volume, it may be difficult to sell your positions at a favorable price before closing. The LS-LMSR model guarantees you can always buy and sell, but the price may be unfavorable in less active markets.</p>
+
+  <h2>4. Resolution Risk</h2>
+  <p>Market resolution depends on the Futuros team's interpretation of real-world events. In ambiguous cases, the resolution decision may not match your interpretation of the event. Futuros's decision is final.</p>
+
+  <h2>5. Technology Risk</h2>
+  <p>The platform may experience technical outages, cyberattacks, or infrastructure failures that temporarily affect access to funds or the ability to trade. Futuros works to minimize these risks but cannot guarantee 24/7 availability.</p>
+
+  <h2>6. Regulatory Risk</h2>
+  <p>The regulatory framework for prediction platforms may change in your jurisdiction, which could affect your ability to use the service or withdraw funds.</p>
+
+  <h2>7. Crypto Risk</h2>
+  <p>Withdrawals in MATIC or USDC are subject to cryptocurrency market volatility and the inherent risks of the Polygon network. Wallet addresses are unrecoverable if entered incorrectly. Futuros cannot reverse already confirmed blockchain transactions.</p>
+
+  <h2>8. Not Financial Advice</h2>
+  <p>Nothing on this platform constitutes financial, investment, or legal advice. Make your decisions responsibly and consult a professional if in doubt.</p>
+`,
+
+aml_en:`
+  <div class="policy-highlight">Futuros is committed to preventing money laundering and terrorist financing, in compliance with Colombian and international regulations.</div>
+
+  <h2>1. Regulatory Framework</h2>
+  <p>This policy is governed by Law 526 of 1999, Decree 1674 of 2021, UIAF (Financial Information and Analysis Unit) circulars, and FATF (Financial Action Task Force) recommendations.</p>
+
+  <h2>2. KYC Policy (Know Your Customer)</h2>
+  <p>Futuros may request identity verification in the following situations:</p>
+  <ul>
+    <li>Cumulative withdrawals exceeding $500 USD in a 30-day period.</li>
+    <li>Deposits showing unusual or inconsistent patterns with the user's profile.</li>
+    <li>When required by applicable regulations or a court order.</li>
+    <li>Users whose activity triggers internal alert signals.</li>
+  </ul>
+  <p>Documentation we may request includes: identity document copy (national ID, passport), proof of address (utility bill no older than 3 months), and in some cases a source of funds declaration.</p>
+
+  <h2>3. Alert Signals</h2>
+  <p>Futuros continuously monitors transactions to detect alert signals such as:</p>
+  <ul>
+    <li>Immediate deposits and withdrawals with no investment activity.</li>
+    <li>Multiple accounts associated with the same person or device.</li>
+    <li>Structured transfers to evade reporting thresholds.</li>
+    <li>Use of crypto addresses associated with known illicit activities.</li>
+  </ul>
+
+  <h2>4. Suspicious Activity Reporting</h2>
+  <p>In compliance with regulations, Futuros will report to the UIAF any operation that raises reasonable suspicion of money laundering or terrorist financing, without being required to notify the affected user of such report.</p>
+
+  <h2>5. Account Freezing</h2>
+  <p>Futuros reserves the right to immediately suspend or freeze accounts and funds when there is well-founded suspicion of illicit activity, while conducting an internal investigation or upon request from a competent authority.</p>
+
+  <h2>6. Contact</h2>
+  <p>For inquiries related to this policy write to <strong>compliance@futuros.co</strong>.</p>
+`,
+
+responsible_en:`
+  <div class="policy-highlight">At Futuros we care about our users' well-being. Gaming should be a form of entertainment, never a source of problems.</div>
+
+  <h2>Play Responsibly</h2>
+  <p>Investments in prediction markets should be an entertainment activity. If you feel your participation is affecting your financial, emotional, or social life, it is important to take action immediately.</p>
+
+  <h2>Warning Signs</h2>
+  <ul>
+    <li>Investing more money than you can afford to lose.</li>
+    <li>Trying to recover losses by increasing investment amounts.</li>
+    <li>Constantly thinking about the platform when not using the service.</li>
+    <li>Hiding your investment activity from family or friends.</li>
+    <li>Neglecting work, family, or personal obligations to invest.</li>
+    <li>Using money intended for essential expenses (rent, food, health) to invest.</li>
+  </ul>
+
+  <h2>Self-Control Tools</h2>
+  <p>Futuros offers the following tools to help you stay in control:</p>
+  <ul>
+    <li><strong>Deposit limit:</strong> you can ask the support team to set a monthly deposit limit.</li>
+    <li><strong>Temporary self-exclusion:</strong> you can request your account be suspended for 30, 90, or 180 days. During this period you will not be able to access the platform.</li>
+    <li><strong>Permanent self-exclusion:</strong> you can request permanent account closure. This action is irreversible.</li>
+  </ul>
+  <p>To activate any of these options write to <strong>support@futuros.co</strong> with the subject "Responsible Gaming".</p>
+
+  <h2>Minors</h2>
+  <p>Futuros is strictly prohibited for users under 18 years of age. If you believe a minor is using the platform, report it immediately to <strong>support@futuros.co</strong>.</p>
+
+  <h2>Help Lines</h2>
+  <p>If you or someone you know needs support, contact:</p>
+  <ul>
+    <li><strong>Gamblers Anonymous:</strong> gamblersanonymous.org</li>
+    <li><strong>National Problem Gambling Helpline (US):</strong> 1-800-522-4700</li>
+    <li><strong>BeGambleAware:</strong> begambleaware.org</li>
+  </ul>
+
+  <h2>Age Restriction</h2>
+  <p>If you share devices with minors, we recommend using parental controls or always logging out when you finish using the platform. More information at: <strong>internetmatters.org</strong></p>
+`,
+
+};
 // ═══════════════════════════════════════════════════════════════════
 if(window.ethereum){
   window.ethereum.on("accountsChanged",accs=>{if(!accs.length)disconnectWallet();});
