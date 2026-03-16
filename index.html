@@ -4261,8 +4261,11 @@ function renderWithdrawModal(){
 
     <div class="form-group">
       <label class="lbl">${t("withdraw_method")}</label>
-      <div style="display:flex;gap:8px;margin-bottom:4px">
-        ${["polygon","usdc"].map(m=>`<button onclick="STATE.withdrawMethod='${m}';renderWithdrawModal()" style="flex:1;padding:9px;border-radius:8px;border:1px solid ${STATE.withdrawMethod===m?"var(--poly)":"var(--border)"};background:${STATE.withdrawMethod===m?"var(--poly-bg)":"transparent"};color:${STATE.withdrawMethod===m?"var(--poly)":"var(--muted)"};font-weight:700;font-size:12px;cursor:pointer">${m==="polygon"?"⬡ MATIC":"💲 USDC"}</button>`).join("")}
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:4px">
+        ${["polygon","usdc","usdt"].map(m=>`<button onclick="STATE.withdrawMethod='${m}';renderWithdrawModal()" style="padding:9px;border-radius:8px;border:1px solid ${STATE.withdrawMethod===m?"var(--poly)":"var(--border)"};background:${STATE.withdrawMethod===m?"var(--poly-bg)":"transparent"};color:${STATE.withdrawMethod===m?"var(--poly)":"var(--muted)"};font-weight:700;font-size:12px;cursor:pointer">${m==="polygon"?"⬡ MATIC":m==="usdc"?"💲 USDC":"💵 USDT"}</button>`).join("")}
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-top:4px">
+        ${STATE.withdrawMethod==="polygon"?"Red Polygon · Token nativo MATIC":STATE.withdrawMethod==="usdt"?"Red Polygon · Tether USD (USDT-ERC20)":"Red Polygon · USD Coin (USDC-ERC20)"}
       </div>
     </div>
 
@@ -5146,27 +5149,155 @@ async function dbLoadWithdrawals(){
   }catch(e){ console.error("[DB] excepción retiros:", e?.message||e); }
 }
 
+async function adminApproveWithdrawal(id){
+  if(!isAdmin()) return notify("Sin permisos","error");
+  const {data:adminDb} = await db.from("users").select("role").eq("id",STATE.session).maybeSingle();
+  if(adminDb?.role !== "admin") return notify("Sin permisos (DB)","error");
+
+  const wi = STATE.withdrawals.findIndex(w=>w.id===id);
+  if(wi<0) return;
+  if(STATE.withdrawals[wi].status !== "pending"){
+    notify("Este retiro ya fue procesado","error"); return;
+  }
+
+  const {error} = await db.from("withdrawals")
+    .update({status:"approved", processed_at:new Date().toISOString()})
+    .eq("id",id).eq("status","pending");
+
+  if(error){ notify("Error: "+error.message,"error"); return; }
+  STATE.withdrawals[wi] = {...STATE.withdrawals[wi], status:"approved"};
+  notify("✅ Retiro aprobado — ahora envía los fondos desde tu wallet","success");
+  render();
+}
+
+async function adminSendWithdrawal(id, toAddress, netAmount, method){
+  if(!isAdmin()) return notify("Sin permisos","error");
+
+  const isPolygon = method==="polygon"||method==="usdc"||method==="usdt";
+  const isSolana  = method==="solana"||method==="sol";
+
+  notify("Abriendo wallet para enviar...","info");
+
+  try{
+    if(isPolygon){
+      // Usar el provider EVM (MetaMask / Phantom EVM)
+      const provider = window.phantom?.ethereum || window.ethereum;
+      if(!provider){ notify("Conecta MetaMask o Phantom para enviar","error"); return; }
+
+      const accounts = await provider.request({method:"eth_accounts"});
+      if(!accounts?.length){
+        await provider.request({method:"eth_requestAccounts"});
+      }
+      const from = (await provider.request({method:"eth_accounts"}))[0];
+
+      // Switch a Polygon
+      try{
+        await provider.request({method:"wallet_switchEthereumChain",params:[{chainId:"0x89"}]});
+      }catch(sw){
+        if(sw.code===4902){
+          await provider.request({method:"wallet_addEthereumChain",params:[{
+            chainId:"0x89", chainName:"Polygon Mainnet",
+            nativeCurrency:{name:"MATIC",symbol:"MATIC",decimals:18},
+            rpcUrls:["https://polygon-rpc.com"],
+          }]});
+        }
+      }
+      await new Promise(r=>setTimeout(r,400));
+
+      let txHash;
+      if(method==="polygon"){
+        // Enviar MATIC nativo
+        const maticPrice = STATE.maticPrice || 0.10;
+        const maticAmt = netAmount / maticPrice;
+        const amtWei = "0x" + Math.floor(maticAmt*1e18).toString(16);
+        txHash = await provider.request({method:"eth_sendTransaction",
+          params:[{from, to:toAddress, value:amtWei, chainId:"0x89"}]});
+      } else {
+        // Enviar USDC o USDT ERC-20
+        const contractAddr = method==="usdt"
+          ? PAYMENT_CONFIG.polygon.usdtAddress
+          : PAYMENT_CONFIG.polygon.usdcAddress;
+        const ERC20_TRANSFER = "0xa9059cbb";
+        const paddedTo = toAddress.replace("0x","").padStart(64,"0");
+        const amtUnits = Math.floor(netAmount * 1e6);
+        const paddedAmt = amtUnits.toString(16).padStart(64,"0");
+        const data = ERC20_TRANSFER + paddedTo + paddedAmt;
+        txHash = await provider.request({method:"eth_sendTransaction",
+          params:[{from, to:contractAddr, data, chainId:"0x89"}]});
+      }
+
+      notify(`✅ Tx enviada: ${txHash.slice(0,14)}…`,"success");
+      // Marcar como completado
+      await adminProcessWithdrawal(id,"completed");
+
+    } else if(isSolana){
+      // Abrir Phantom para enviar SOL
+      const url = `https://phantom.app/ul/send?to=${toAddress}&amount=${netAmount}&network=mainnet`;
+      window.open(url,"_blank");
+      // Mostrar instrucciones
+      notify(`Confirma el envío en Phantom → luego marca como enviado manualmente`,"info");
+    }
+  }catch(e){
+    if(e.code===4001) notify("Transacción rechazada","error");
+    else notify("Error: "+(e.message||e),"error");
+  }
+}
+
 async function adminProcessWithdrawal(id, action){
   if(!isAdmin()) return notify("Sin permisos","error");
   if(action !== "completed" && action !== "rejected") return notify("Acción inválida","error");
   const {data:adminDb} = await db.from("users").select("role").eq("id",STATE.session).maybeSingle();
   if(adminDb?.role !== "admin") return notify("Sin permisos (DB)","error");
-  // action: "completed" | "rejected"
+
   const wi = STATE.withdrawals.findIndex(w=>w.id===id);
   if(wi<0) return;
   const wd = STATE.withdrawals[wi];
+
+  // Verificar que no esté ya procesado
+  if(wd.status !== "pending"){
+    notify("Este retiro ya fue procesado","error");
+    return;
+  }
+
   try{
-    const {error} = await db.from("withdrawals").update({status:action, processed_at:new Date().toISOString()}).eq("id",id);
+    const {error} = await db.from("withdrawals")
+      .update({status:action, processed_at:new Date().toISOString()})
+      .eq("id",id)
+      .eq("status","pending"); // solo actualizar si sigue pending — previene doble proceso
     if(error){ notify("Error: "+error.message,"error"); return; }
+
     STATE.withdrawals[wi] = {...wd, status:action};
-    // Si se rechaza → devolver el balance al usuario
+
+    // Si se rechaza → devolver el balance desde DB (no desde STATE)
     if(action==="rejected"){
-      const ui = STATE.users.findIndex(u=>u.id===wd.user_id);
-      if(ui>=0){
-        STATE.users[ui] = {...STATE.users[ui], balance: STATE.users[ui].balance + wd.amount};
-        await dbSaveUser(STATE.users[ui]);
+      const {data:freshUser} = await db.from("users")
+        .select("balance")
+        .eq("id",wd.user_id)
+        .maybeSingle();
+
+      if(freshUser){
+        // El balance ya fue descontado cuando se creó la solicitud
+        // Solo devolvemos si el balance actual es MENOR al que debería tener
+        // Usamos el balance actual de DB + el monto del retiro
+        const newBalance = Math.round(((freshUser.balance||0) + wd.amount)*100)/100;
+        await db.from("users").update({balance:newBalance}).eq("id",wd.user_id);
+
+        // Actualizar STATE
+        const ui = STATE.users.findIndex(u=>u.id===wd.user_id);
+        if(ui>=0) STATE.users[ui] = {...STATE.users[ui], balance:newBalance};
+
+        // Agregar tx de devolución al historial
+        await db.from("transactions").insert({
+          user_id:    wd.user_id,
+          type:       "deposit",
+          amount:     wd.amount,
+          network:    "internal",
+          description:`Devolución retiro rechazado · ${usd(wd.amount)}`,
+          status:     "confirmed",
+          created_at: new Date().toISOString(),
+        });
       }
-      notify(`Retiro rechazado — $${wd.amount.toFixed(2)} devueltos al usuario`,"info");
+      notify(`Retiro rechazado — ${usd(wd.amount)} devueltos al usuario`,"info");
     } else {
       notify(`Retiro marcado como completado ✓`,"success");
     }
@@ -5177,71 +5308,122 @@ async function adminProcessWithdrawal(id, action){
 function renderAdminWithdrawals(){
   const wds = STATE.withdrawals||[];
   const pending   = wds.filter(w=>w.status==="pending");
-  const processed = wds.filter(w=>w.status!=="pending");
+  const approved  = wds.filter(w=>w.status==="approved");
+  const processed = wds.filter(w=>w.status==="completed"||w.status==="rejected");
 
-  const statusColor = s => s==="pending"?"var(--gold)":s==="completed"?"var(--yes)":"var(--no)";
-  const statusLabel = s => s==="pending"?"⏳ Pendiente":s==="completed"?"✅ Completado":"❌ Rechazado";
+  const statusColor = s => s==="pending"?"var(--gold)":s==="approved"?"var(--accent)":s==="completed"?"var(--yes)":"var(--no)";
+  const statusLabel = s => s==="pending"?"⏳ Pendiente":s==="approved"?"✅ Aprobado · listo para enviar":s==="completed"?"✓ Completado":"❌ Rechazado";
 
-  const renderRow = (w) => `
-    <div class="card" style="margin-bottom:10px">
+  const renderRow = (w) => {
+    const isPolygon = w.method==="polygon"||w.method==="usdc"||w.method==="usdt";
+    const isSolana  = w.method==="solana"||w.method==="sol";
+    const tokenLabel = w.method==="polygon"?"MATIC":w.method==="usdc"?"USDC":w.method==="usdt"?"USDT":w.method?.toUpperCase()||"USDC";
+    const networkLabel = isSolana?"Solana":"Polygon";
+    const explorerBase = isSolana?"https://solscan.io/account/":"https://polygonscan.com/address/";
+
+    // Construir URL de envío según método
+    let sendUrl = "";
+    if(isPolygon){
+      // MetaMask deep link con la dirección destino prellenada
+      sendUrl = `https://metamask.app.link/send/${w.address}@137`;
+    } else if(isSolana){
+      sendUrl = `https://phantom.app/ul/send?to=${w.address}&amount=${w.net}`;
+    }
+
+    return`
+    <div class="card" style="margin-bottom:12px;${w.status==="approved"?"border-color:var(--accent);border-width:2px":""}">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px">
         <div style="flex:1;min-width:0">
-          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap">
-            <span style="font-weight:800;font-size:15px;color:var(--yes)">${usd(w.net)}</span>
-            <span style="font-size:11px;color:var(--muted)">+ fee ${usd(w.fee)}</span>
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">
+            <span style="font-weight:900;font-size:17px;color:var(--yes)">${usd(w.net)}</span>
+            <span style="font-size:11px;color:var(--muted)">fee ${usd(w.fee)}</span>
             <span style="background:${statusColor(w.status)}22;color:${statusColor(w.status)};border-radius:20px;padding:2px 10px;font-size:11px;font-weight:700">${statusLabel(w.status)}</span>
           </div>
           <div style="font-size:12px;color:var(--muted);margin-bottom:4px">
             👤 <strong style="color:var(--text)">${escHtml(w.username||"Usuario")}</strong>
-            · ${w.method?.toUpperCase()||"USDC"}
+            · <span style="background:var(--card2);padding:1px 7px;border-radius:20px;font-size:10px;font-weight:700">${networkLabel} · ${tokenLabel}</span>
             · ${formatDate(w.created_at)}
           </div>
-          <div style="font-family:monospace;font-size:11px;color:var(--muted);word-break:break-all">
-            → ${escHtml(w.address)}
+          <div style="display:flex;align-items:center;gap:6px;margin-top:4px">
+            <div style="font-family:monospace;font-size:11px;color:var(--muted);word-break:break-all;flex:1">
+              → ${escHtml(w.address)}
+            </div>
+            <button onclick="copyText('${escHtml(w.address)}')" style="background:var(--card2);border:1px solid var(--border);border-radius:6px;padding:3px 8px;font-size:10px;cursor:pointer;flex-shrink:0">📋</button>
+            <a href="${explorerBase}${w.address}" target="_blank" style="background:var(--card2);border:1px solid var(--border);border-radius:6px;padding:3px 8px;font-size:10px;cursor:pointer;text-decoration:none;color:var(--text);flex-shrink:0">🔍</a>
           </div>
-          ${w.processed_at?`<div style="font-size:11px;color:var(--muted);margin-top:4px">Procesado: ${formatDate(w.processed_at)}</div>`:""}
+          ${w.processed_at?`<div style="font-size:11px;color:var(--muted);margin-top:6px">Procesado: ${formatDate(w.processed_at)}</div>`:""}
         </div>
-        ${w.status==="pending"?`
-        <div style="display:flex;flex-direction:column;gap:6px;min-width:120px">
-          <button class="btn-green" style="padding:8px 14px;font-size:13px"
-            onclick="adminProcessWithdrawal('${w.id}','completed')">
-            ✅ Completado
-          </button>
-          <button class="btn-red-soft" style="padding:8px 14px;font-size:13px"
-            onclick="adminProcessWithdrawal('${w.id}','rejected')">
-            ❌ Rechazar
-          </button>
-        </div>`:""}
+
+        <div style="display:flex;flex-direction:column;gap:8px;min-width:160px">
+          ${w.status==="pending"?`
+            <button class="btn-green" style="padding:10px 16px;font-size:13px;font-weight:800"
+              onclick="adminApproveWithdrawal('${w.id}')">
+              ✅ Aceptar retiro
+            </button>
+            <button class="btn-ghost" style="padding:7px 12px;font-size:12px;color:var(--no);border-color:var(--no)"
+              onclick="adminProcessWithdrawal('${w.id}','rejected')">
+              ✕ Rechazar
+            </button>
+          `:""}
+          ${w.status==="approved"?`
+            <div style="background:var(--accent-bg);border:1.5px solid var(--accent);border-radius:10px;padding:10px;text-align:center">
+              <div style="font-size:11px;font-weight:700;color:var(--accent);margin-bottom:8px">Enviar ${usd(w.net)} ${tokenLabel}</div>
+              <button class="btn-polygon" style="width:100%;padding:10px;font-size:13px;margin-bottom:6px"
+                onclick="adminSendWithdrawal('${w.id}','${w.address}',${w.net},'${w.method||"usdc"}')">
+                ⬡ Enviar desde mi wallet
+              </button>
+              <button class="btn-ghost" style="width:100%;padding:7px;font-size:11px"
+                onclick="adminProcessWithdrawal('${w.id}','completed')">
+                ✓ Marcar como enviado manualmente
+              </button>
+            </div>
+          `:""}
+          ${(w.status==="completed"||w.status==="rejected")?
+            `<span style="font-size:12px;color:${statusColor(w.status)};font-weight:700">${statusLabel(w.status)}</span>`
+          :""}
+        </div>
       </div>
     </div>`;
+  };
 
   return`<div class="slide-in">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;flex-wrap:wrap;gap:10px">
       <div>
         <div style="font-weight:800;font-size:16px;margin-bottom:4px">💸 Solicitudes de Retiro</div>
-        <div style="font-size:12px;color:var(--muted)">${pending.length} pendientes · ${processed.length} procesadas</div>
+        <div style="font-size:12px;color:var(--muted)">${pending.length} pendientes · ${approved.length} aprobados · ${processed.length} procesados</div>
       </div>
-      <button class="btn-ghost" style="font-size:13px;padding:8px 16px" onclick="dbLoadWithdrawals()">
-        🔄 Actualizar
-      </button>
+      <button class="btn-ghost" style="font-size:13px;padding:8px 16px" onclick="dbLoadWithdrawals()">🔄 Actualizar</button>
     </div>
 
-    ${pending.length===0&&processed.length===0
-      ?`<div style="text-align:center;padding:48px 0;color:var(--muted)">
-          <div style="font-size:40px;margin-bottom:12px">💸</div>
-          <div>No hay solicitudes de retiro aún</div>
-        </div>`
-      :`${pending.length>0?`
-        <div style="font-size:12px;font-weight:700;color:var(--gold);letter-spacing:.6px;text-transform:uppercase;margin-bottom:10px">
-          ⏳ Pendientes (${pending.length})
-        </div>
-        ${pending.map(renderRow).join("")}`:""}
-        ${processed.length>0?`
-        <div style="font-size:12px;font-weight:700;color:var(--muted);letter-spacing:.6px;text-transform:uppercase;margin:20px 0 10px">
-          Historial (${processed.length})
-        </div>
-        ${processed.map(renderRow).join("")}`:""}
-      `}
+    ${approved.length>0?`
+      <div style="font-size:12px;font-weight:800;color:var(--accent);letter-spacing:.6px;text-transform:uppercase;margin-bottom:10px">
+        ✅ Aprobados — pendientes de envío (${approved.length})
+      </div>
+      ${approved.map(renderRow).join("")}
+      <div style="height:16px"></div>
+    `:""}
+
+    ${pending.length>0?`
+      <div style="font-size:12px;font-weight:700;color:var(--gold);letter-spacing:.6px;text-transform:uppercase;margin-bottom:10px">
+        ⏳ Pendientes de revisión (${pending.length})
+      </div>
+      ${pending.map(renderRow).join("")}
+      <div style="height:16px"></div>
+    `:""}
+
+    ${processed.length>0?`
+      <div style="font-size:12px;font-weight:700;color:var(--muted);letter-spacing:.6px;text-transform:uppercase;margin:8px 0 10px">
+        Historial (${processed.length})
+      </div>
+      ${processed.map(renderRow).join("")}
+    `:""}
+
+    ${pending.length===0&&approved.length===0&&processed.length===0?`
+      <div style="text-align:center;padding:48px 0;color:var(--muted)">
+        <div style="font-size:40px;margin-bottom:12px">💸</div>
+        <div>No hay solicitudes de retiro aún</div>
+      </div>
+    `:""}
   </div>`;
 }
 
