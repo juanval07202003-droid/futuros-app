@@ -1131,22 +1131,32 @@ async function dbCreateUser(user){
 // ── POSITIONS ────────────────────────────────────────────────────
 async function dbSavePositions(userId, positions){
   try{
-    const nonZero = Object.entries(positions)
-      .filter(([,p])=>(p.YES||0)>0||(p.NO||0)>0)
-      .map(([marketId,p])=>({user_id:userId,market_id:marketId,yes_shares:p.YES||0,no_shares:p.NO||0}));
-    const zeroed = Object.entries(positions)
-      .filter(([,p])=>(p.YES||0)<=0&&(p.NO||0)<=0)
-      .map(([marketId])=>marketId);
-    // Guardar posiciones activas
-    if(nonZero.length){
-      const {error} = await db.from("positions").upsert(nonZero,{onConflict:"user_id,market_id"});
-      if(error) console.error("[DB] guardando posiciones:", error.message);
-    }
-    // Eliminar posiciones en cero
-    if(zeroed.length){
-      const {error} = await db.from("positions")
-        .delete().eq("user_id",userId).in("market_id",zeroed);
-      if(error) console.error("[DB] eliminando posiciones cero:", error.message);
+    const entries = Object.entries(positions);
+    for(const [marketId, p] of entries){
+      const yesShares = Math.max(0, p.YES||0);
+      const noShares  = Math.max(0, p.NO||0);
+      if(yesShares > 0 || noShares > 0){
+        // Intentar upsert primero
+        const {error} = await db.from("positions").upsert(
+          {user_id:userId, market_id:marketId, yes_shares:yesShares, no_shares:noShares},
+          {onConflict:"user_id,market_id"}
+        );
+        if(error){
+          // Fallback: update
+          const {error:e2} = await db.from("positions")
+            .update({yes_shares:yesShares, no_shares:noShares})
+            .eq("user_id",userId).eq("market_id",marketId);
+          if(e2){
+            // Fallback final: insert
+            await db.from("positions")
+              .insert({user_id:userId, market_id:marketId, yes_shares:yesShares, no_shares:noShares});
+          }
+        }
+      } else {
+        // Eliminar posición en cero
+        await db.from("positions")
+          .delete().eq("user_id",userId).eq("market_id",marketId);
+      }
     }
   }catch(e){ console.error("[DB] excepción posiciones:", e?.message||e); }
 }
@@ -2368,14 +2378,15 @@ function renderHome(){
   <div class="market-search-wrap">
     <span class="market-search-icon">🔍</span>
     <input
+      id="market-search-input"
       class="market-search-input"
       type="text"
       placeholder="Buscar mercados…"
       value="${escHtml(STATE.marketSearch)}"
-      oninput="STATE.marketSearch=this.value;render()"
-      onkeydown="if(event.key==='Escape'){STATE.marketSearch='';render();}"
+      oninput="updateMarketSearch(this.value)"
+      onkeydown="if(event.key==='Escape'){updateMarketSearch('');}"
     />
-    ${isSearching?`<button class="market-search-clear" onclick="STATE.marketSearch='';render()">✕</button>`:""}
+    ${isSearching?`<button class="market-search-clear" onclick="updateMarketSearch('')">✕</button>`:""}
   </div>
   <div class="filter-row">
     ${catIds.map((c,i)=>`<button class="filter-btn${STATE.filterCat===c?" active":""}" onclick="setFilter('${c}')">
@@ -2383,8 +2394,8 @@ function renderHome(){
       ${c!=="Todos"?`<span style="margin-left:5px;opacity:.4;font-size:11px">${STATE.markets.filter(m=>m.category===c).length}</span>`:""}
     </button>`).join("")}
   </div>
-  ${isSearching?`<div class="search-results-count">${filtered.length} resultado${filtered.length!==1?"s":""} para "<strong>${escHtml(STATE.marketSearch)}</strong>"</div>`:""}
-  <div class="markets-grid">${filtered.length?filtered.map(renderMarketCard).join(""):`
+  ${isSearching?`<div id="search-results-count" class="search-results-count">${filtered.length} resultado${filtered.length!==1?"s":""} para "<strong>${escHtml(STATE.marketSearch)}</strong>"</div>`:`<div id="search-results-count"></div>`}
+  <div id="markets-grid" class="markets-grid">${filtered.length?filtered.map(renderMarketCard).join(""):`
     <div style="text-align:center;padding:48px 0;color:var(--muted)">
       <div style="font-size:40px;margin-bottom:12px">${isSearching?"🔍":"📭"}</div>
       <div style="font-weight:600;margin-bottom:6px">${isSearching?`Sin resultados para "${escHtml(STATE.marketSearch)}"`:t("markets_empty")}</div>
@@ -2432,6 +2443,71 @@ function renderMarketCard(m){
 }
 function setFilter(cat){STATE.filterCat=cat;render();}
 function clearMarketSearch(){STATE.marketSearch="";render();}
+
+function updateMarketSearch(val){
+  STATE.marketSearch = val;
+  // Actualizar solo el grid y el contador — sin re-renderizar el input
+  const catKeys=["all","sports","economy","culture","tech"];
+  const catIds=["Todos","Deportes","Economía","Cultura","Tecnología"];
+  const catEmoji={Deportes:"⚽",Economía:"💵",Cultura:"🎬",Tecnología:"🤖"};
+  const q = val.toLowerCase().trim();
+  const filtered = STATE.markets.filter(m=>{
+    const catMatch = STATE.filterCat==="Todos"||m.category===STATE.filterCat;
+    const searchMatch = !q ||
+      m.title.toLowerCase().includes(q) ||
+      (m.title_en||"").toLowerCase().includes(q) ||
+      m.category.toLowerCase().includes(q) ||
+      (m.description||"").toLowerCase().includes(q) ||
+      (m.description_en||"").toLowerCase().includes(q);
+    return catMatch && searchMatch;
+  });
+  const isSearching = val.trim().length > 0;
+
+  // Actualizar contador de resultados
+  const countEl = document.getElementById("search-results-count");
+  if(countEl){
+    countEl.innerHTML = isSearching
+      ? `${filtered.length} resultado${filtered.length!==1?"s":""} para "<strong>${escHtml(val)}</strong>"`
+      : "";
+  }
+
+  // Actualizar botón clear
+  const clearBtn = document.querySelector(".market-search-clear");
+  if(isSearching && !clearBtn){
+    const wrap = document.querySelector(".market-search-wrap");
+    if(wrap){
+      const btn = document.createElement("button");
+      btn.className = "market-search-clear";
+      btn.onclick = ()=>updateMarketSearch("");
+      btn.textContent = "✕";
+      wrap.appendChild(btn);
+    }
+  } else if(!isSearching && clearBtn){
+    clearBtn.remove();
+  }
+
+  // Actualizar el input value si fue llamado externamente (botón clear)
+  const inputEl = document.getElementById("market-search-input");
+  if(inputEl && inputEl.value !== val) inputEl.value = val;
+
+  // Actualizar grid de mercados
+  const grid = document.getElementById("markets-grid");
+  if(grid){
+    if(filtered.length){
+      grid.innerHTML = filtered.map(renderMarketCard).join("");
+    } else {
+      grid.innerHTML = `
+        <div style="text-align:center;padding:48px 0;color:var(--muted);grid-column:1/-1">
+          <div style="font-size:40px;margin-bottom:12px">${isSearching?"🔍":"📭"}</div>
+          <div style="font-weight:600;margin-bottom:6px">${isSearching?`Sin resultados para "${escHtml(val)}"`:""}</div>
+          ${isSearching?`<button class="filter-btn" style="margin-top:12px" onclick="updateMarketSearch('')">Limpiar búsqueda</button>`:""}
+        </div>`;
+    }
+  } else {
+    // Si el grid no existe aún, hacer render completo
+    render();
+  }
+}
 
 // ─── FEATURED CAROUSEL ─────────────────────────────────────────────
 let carouselIdx=0;
@@ -4718,6 +4794,10 @@ async function executeTrade(){
         dbSavePositions(updatedUser.id, updatedUser.positions),
         dbSaveTransaction(updatedUser.id, tx),
       ]);
+      // Recargar posiciones desde DB para confirmar que se guardaron
+      const confirmedPositions = await dbLoadPositions(updatedUser.id);
+      const uiNow = STATE.users.findIndex(u=>u.id===updatedUser.id);
+      if(uiNow>=0) STATE.users[uiNow] = {...STATE.users[uiNow], positions: confirmedPositions};
     }catch(e){
       console.error("[Trade] Error guardando en DB:", e);
       notify("Trade ejecutado pero hubo un error al guardar — recarga si ves inconsistencias","error");
@@ -4747,7 +4827,7 @@ async function executeTrade(){
     STATE.users[ui]={...u,balance:u.balance+ret,positions:{...u.positions,[m.id]:np},transactions:[...(u.transactions||[]),tx]};
     notify(`Vendiste ${shares.toFixed(4)} shares ${side} · +${usd(ret)}`);
     closeTradeModal();render();
-    // Persistir en DB — en paralelo para no bloquear UI
+    // Persistir en DB
     const updatedUser2 = STATE.users[ui];
     try{
       await Promise.all([
@@ -4756,6 +4836,10 @@ async function executeTrade(){
         dbSavePositions(updatedUser2.id, updatedUser2.positions),
         dbSaveTransaction(updatedUser2.id, tx),
       ]);
+      // Recargar posiciones desde DB para confirmar
+      const confirmedPos2 = await dbLoadPositions(updatedUser2.id);
+      const uiNow2 = STATE.users.findIndex(u=>u.id===updatedUser2.id);
+      if(uiNow2>=0) STATE.users[uiNow2] = {...STATE.users[uiNow2], positions: confirmedPos2};
     }catch(e){
       console.error("[Trade] Error guardando en DB:", e);
       notify("Venta ejecutada pero hubo un error al guardar — recarga si ves inconsistencias","error");
