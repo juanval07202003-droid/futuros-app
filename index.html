@@ -3747,8 +3747,9 @@ function renderPortfolio(){
   const active=Object.entries(u.positions).filter(([,p])=>(p.YES||0)>0||(p.NO||0)>0);
   const totalValue=active.reduce((sum,[mid,pos])=>{
     const m=getMarket(mid);if(!m)return sum;
-    const pYes=getPrice(m,"YES");
-    return sum+(pos.YES||0)*pYes+(pos.NO||0)*(1-pYes);
+    const yesVal = (pos.YES||0)>0 ? calcSellReturn(m,"YES",pos.YES||0) : 0;
+    const noVal  = (pos.NO||0) >0 ? calcSellReturn(m,"NO", pos.NO ||0) : 0;
+    return sum + yesVal + noVal;
   },0);
   return`<div class="container-sm fade-up">
   <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px;margin-bottom:28px">
@@ -3766,12 +3767,11 @@ function renderPortfolio(){
     ?`<div class="portfolio-empty">${t("portfolio_empty")}<br><a onclick="navigate('home')">${t("portfolio_explore")} →</a></div>`
     :active.map(([mid,pos])=>{
       const m=getMarket(mid);if(!m)return"";
-      const pYes=getPrice(m,"YES");
       return`<div class="card fade-up" style="margin-bottom:12px;cursor:pointer" onclick="navigate('market',{marketId:'${m.id}'})">
         <div style="font-weight:700;font-size:15px;margin-bottom:10px">${escHtml(m.emoji)} ${escHtml(m.title)}</div>
         <div class="market-pos">
-          ${(pos.YES||0)>0?`<div>${t("detail_yes")}: <strong style="color:var(--yes)">${pos.YES.toFixed(2)} ${t("shares_label")}</strong> ≈ ${usd(pos.YES*pYes)}</div>`:""}
-          ${(pos.NO||0) >0?`<div>${t("detail_no")}: <strong style="color:var(--no)">${pos.NO.toFixed(2)} ${t("shares_label")}</strong> ≈ ${usd(pos.NO*(1-pYes))}</div>`:""}
+          ${(pos.YES||0)>0?`<div>${t("detail_yes")}: <strong style="color:var(--yes)">${pos.YES.toFixed(2)} ${t("shares_label")}</strong> ≈ ${usd(calcSellReturn(m,"YES",pos.YES||0))}</div>`:""}
+          ${(pos.NO||0) >0?`<div>${t("detail_no")}: <strong style="color:var(--no)">${pos.NO.toFixed(2)} ${t("shares_label")}</strong> ≈ ${usd(calcSellReturn(m,"NO",pos.NO||0))}</div>`:""}
         </div>
         ${m.resolved?`<div style="margin-top:8px">${mkTag("✓ "+t("detail_resolved")+": "+m.resolution,"var(--yes)")}</div>`:""}
       </div>`;
