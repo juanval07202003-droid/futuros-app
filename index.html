@@ -1649,6 +1649,8 @@ const STATE={
   filterCat:"Todos",
   marketSearch:"",
   adminTab:"accounts",
+  adminStats: null,
+  adminStatsLoaded: false,
   withdrawals:[],
   // trade modal
   tradeOpen:false,tradeMarketId:null,tradeSide:"YES",tradeMode:"buy",tradeShares:"",tradeDollars:"",
@@ -3249,15 +3251,155 @@ function renderMarket(){
   if(!m)return`<div class="container"><p>${t("market_not_found")}</p></div>`;
   const u=getUser(),pYes=getPrice(m,"YES"),b=computeB(m.alpha,m.totalVolume,m.seedLiquidity);
   const pos=u?.positions[m.id]||{YES:0,NO:0},cc=CAT_COLOR[m.category]||"#888";
-  let chartHtml=`<div style="color:#333;font-size:13px;padding:20px 0;margin-top:8px">${t("chart_empty")}</div>`;
+  let chartHtml=`<div style="color:var(--muted);font-size:13px;padding:20px 0;margin-top:8px;text-align:center">${t("chart_empty")}</div>`;
   if(m.priceHistory.length>1){
-    const data=m.priceHistory,mn=Math.min(...data)-.02,mx=Math.max(...data)+.02,rng=mx-mn||.01;
-    const pts=data.map((v,i)=>[(i/(data.length-1))*600,90-((v-mn)/rng)*80-5]);
-    const poly=pts.map(p=>p.join(",")).join(" ");
-    const area=`M${pts[0].join(",")} ${pts.slice(1).map(p=>"L"+p.join(",")).join(" ")} L600,90 L0,90 Z`;
-    chartHtml=`<svg width="100%" height="90" viewBox="0 0 600 90" preserveAspectRatio="none" style="display:block;margin-top:12px">
-      <defs><linearGradient id="g1" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#00e5a0" stop-opacity=".3"/><stop offset="100%" stop-color="#00e5a0" stop-opacity="0"/></linearGradient></defs>
-      <path d="${area}" fill="url(#g1)"/><polyline points="${poly}" fill="none" stroke="#00e5a0" stroke-width="2.5"/></svg>`;
+    const data   = m.priceHistory;
+    const dataNo = data.map(v => 1-v);
+
+    // Rango Y con padding
+    const allVals = [...data, ...dataNo];
+    const rawMin  = Math.min(...allVals);
+    const rawMax  = Math.max(...allVals);
+    const pad     = Math.max((rawMax-rawMin)*0.15, 0.04);
+    const mn      = Math.max(0, rawMin - pad);
+    const mx      = Math.min(1, rawMax + pad);
+    const rng     = mx - mn || 0.01;
+
+    // Dimensiones SVG
+    const W=580, H=130, PL=42, PR=10, PT=10, PB=28;
+    const cW=W-PL-PR, cH=H-PT-PB;
+
+    const toX = i  => PL + (i/(data.length-1))*cW;
+    const toY = v  => PT + cH - ((v-mn)/rng)*cH;
+
+    // Puntos YES y NO
+    const ptsYes = data.map((v,i)  => [toX(i), toY(v)]);
+    const ptsNo  = dataNo.map((v,i) => [toX(i), toY(v)]);
+    const polyYes = ptsYes.map(p=>p.map(n=>n.toFixed(1)).join(",")).join(" ");
+    const polyNo  = ptsNo.map(p=>p.map(n=>n.toFixed(1)).join(",")).join(" ");
+
+    // Área bajo curva YES
+    const areaYes = `M${ptsYes[0].map(n=>n.toFixed(1)).join(",")} ${ptsYes.slice(1).map(p=>"L"+p.map(n=>n.toFixed(1)).join(",")).join(" ")} L${(PL+cW).toFixed(1)},${(PT+cH).toFixed(1)} L${PL},${(PT+cH).toFixed(1)} Z`;
+
+    // Etiquetas eje Y (4 niveles)
+    const yLabels = [0,1,2,3].map(i => {
+      const v  = mn + (rng/3)*i;
+      const yp = toY(v);
+      return {v, yp};
+    });
+
+    // Etiquetas eje X (max 5 puntos)
+    const xStep  = Math.max(1, Math.floor((data.length-1)/4));
+    const xLabels = [];
+    for(let i=0; i<data.length; i+=xStep) xLabels.push(i);
+    if(xLabels[xLabels.length-1] !== data.length-1) xLabels.push(data.length-1);
+
+    // Línea de referencia 50%
+    const y50 = toY(0.5);
+
+    // Min/Max actuales
+    const curYes = data[data.length-1];
+    const curNo  = 1-curYes;
+    const minYes = Math.min(...data), maxYes = Math.max(...data);
+
+    chartHtml=`
+    <div style="margin-top:4px">
+      <!-- Leyenda -->
+      <div style="display:flex;gap:16px;justify-content:flex-end;margin-bottom:8px;font-size:11px;font-weight:700">
+        <span style="display:flex;align-items:center;gap:5px"><span style="display:inline-block;width:12px;height:3px;background:#00e5a0;border-radius:2px"></span> SÍ ${pct(curYes)}</span>
+        <span style="display:flex;align-items:center;gap:5px"><span style="display:inline-block;width:12px;height:3px;background:#e0284a;border-radius:2px"></span> NO ${pct(curNo)}</span>
+      </div>
+
+      <!-- SVG Chart -->
+      <div style="position:relative">
+        <svg width="100%" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" style="display:block;overflow:visible">
+          <defs>
+            <linearGradient id="gYes" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="#00e5a0" stop-opacity=".2"/>
+              <stop offset="100%" stop-color="#00e5a0" stop-opacity="0"/>
+            </linearGradient>
+            <clipPath id="chartClip">
+              <rect x="${PL}" y="${PT}" width="${cW}" height="${cH}"/>
+            </clipPath>
+          </defs>
+
+          <!-- Fondo del área del chart -->
+          <rect x="${PL}" y="${PT}" width="${cW}" height="${cH}" fill="transparent"/>
+
+          <!-- Líneas de cuadrícula horizontales -->
+          ${yLabels.map(({v,yp})=>`
+            <line x1="${PL}" y1="${yp.toFixed(1)}" x2="${PL+cW}" y2="${yp.toFixed(1)}"
+              stroke="var(--border)" stroke-width="1" stroke-dasharray="4,4"/>
+          `).join("")}
+
+          <!-- Línea 50% especial -->
+          <line x1="${PL}" y1="${y50.toFixed(1)}" x2="${PL+cW}" y2="${y50.toFixed(1)}"
+            stroke="var(--muted)" stroke-width="1" stroke-dasharray="6,3" opacity=".5"/>
+          <text x="${(PL-4).toFixed(0)}" y="${(y50+4).toFixed(0)}"
+            text-anchor="end" font-size="9" fill="var(--muted)" opacity=".7">50%</text>
+
+          <!-- Etiquetas eje Y -->
+          ${yLabels.map(({v,yp})=>`
+            <text x="${(PL-5).toFixed(0)}" y="${(yp+4).toFixed(0)}"
+              text-anchor="end" font-size="10" fill="var(--muted)" font-family="inherit">
+              ${Math.round(v*100)}%
+            </text>
+          `).join("")}
+
+          <!-- Etiquetas eje X -->
+          ${xLabels.map(i=>`
+            <text x="${toX(i).toFixed(1)}" y="${(PT+cH+18).toFixed(0)}"
+              text-anchor="middle" font-size="10" fill="var(--muted)" font-family="inherit">
+              #${i+1}
+            </text>
+          `).join("")}
+
+          <!-- Área YES -->
+          <path d="${areaYes}" fill="url(#gYes)" clip-path="url(#chartClip)"/>
+
+          <!-- Línea NO -->
+          <polyline points="${polyNo}" fill="none" stroke="#e0284a"
+            stroke-width="2" stroke-linejoin="round" stroke-linecap="round"
+            clip-path="url(#chartClip)" opacity=".7"/>
+
+          <!-- Línea YES -->
+          <polyline points="${polyYes}" fill="none" stroke="#00e5a0"
+            stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"
+            clip-path="url(#chartClip)"/>
+
+          <!-- Punto actual YES -->
+          <circle cx="${toX(data.length-1).toFixed(1)}" cy="${toY(curYes).toFixed(1)}"
+            r="4" fill="#00e5a0" stroke="white" stroke-width="2"/>
+
+          <!-- Punto actual NO -->
+          <circle cx="${toX(data.length-1).toFixed(1)}" cy="${toY(curNo).toFixed(1)}"
+            r="4" fill="#e0284a" stroke="white" stroke-width="2"/>
+
+          <!-- Eje X -->
+          <line x1="${PL}" y1="${PT+cH}" x2="${PL+cW}" y2="${PT+cH}"
+            stroke="var(--border-strong)" stroke-width="1"/>
+          <!-- Eje Y -->
+          <line x1="${PL}" y1="${PT}" x2="${PL}" y2="${PT+cH}"
+            stroke="var(--border-strong)" stroke-width="1"/>
+        </svg>
+      </div>
+
+      <!-- Stats min/max bajo el gráfico -->
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:12px;font-size:11px">
+        <div style="text-align:center;background:var(--card2);border-radius:8px;padding:8px">
+          <div style="color:var(--muted);margin-bottom:2px">Mín SÍ</div>
+          <div style="font-weight:800;color:var(--yes)">${pct(minYes)}</div>
+        </div>
+        <div style="text-align:center;background:var(--card2);border-radius:8px;padding:8px">
+          <div style="color:var(--muted);margin-bottom:2px">Actual SÍ / NO</div>
+          <div style="font-weight:800"><span style="color:var(--yes)">${pct(curYes)}</span> / <span style="color:var(--no)">${pct(curNo)}</span></div>
+        </div>
+        <div style="text-align:center;background:var(--card2);border-radius:8px;padding:8px">
+          <div style="color:var(--muted);margin-bottom:2px">Máx SÍ</div>
+          <div style="font-weight:800;color:var(--yes)">${pct(maxYes)}</div>
+        </div>
+      </div>
+    </div>`;\
   }
   const closed = isMarketClosed(m);
   const bottomAction = m.resolved
@@ -4591,6 +4733,7 @@ function renderAdmin(){
   const pendingDep=(STATE.pendingDeposits||[]).length;
   const tabs=[
     {k:"accounts", l:`👤 ${t("admin_accounts")}`,       count:STATE.users.length},
+    {k:"stats",    l:`📈 Estadísticas`,                  count:null},
     {k:"markets",  l:`📊 ${t("admin_create_market")}`},
     {k:"featured", l:`⚡ ${t("admin_featured_tab")}`,   count:featuredCount},
     {k:"resolve",  l:`🏁 ${t("admin_resolve")}`,        count:STATE.markets.filter(m=>!m.resolved).length},
@@ -4599,6 +4742,7 @@ function renderAdmin(){
   ];
   let content="";
   if(STATE.adminTab==="accounts")   content=renderAdminAccounts();
+  if(STATE.adminTab==="stats")      content=renderAdminStats();
   if(STATE.adminTab==="markets")    content=renderAdminMarkets();
   if(STATE.adminTab==="featured")   content=renderAdminFeatured();
   if(STATE.adminTab==="resolve")    content=renderAdminResolve();
@@ -4613,7 +4757,162 @@ function renderAdmin(){
 function setAdminTab(tab){
   STATE.adminTab=tab;
   if(tab==="withdrawals") dbLoadWithdrawals();
+  else if(tab==="stats"){ STATE.adminStatsLoaded=false; STATE.adminStats=null; render(); }
   else render();
+}
+
+function renderAdminStats(){
+  // Calcular stats por usuario desde sus transacciones en DB
+  // Usamos STATE.users + cargamos transacciones si no están
+  if(!STATE.adminStatsLoaded) {
+    STATE.adminStatsLoaded = false;
+    loadAdminStats();
+    return`<div class="slide-in" style="text-align:center;padding:48px 0;color:var(--muted)">
+      <div style="font-size:32px;margin-bottom:12px">⏳</div>
+      <div>Cargando estadísticas...</div>
+    </div>`;
+  }
+
+  const stats = STATE.adminStats || [];
+  if(!stats.length) return`<div class="slide-in"><p style="color:var(--muted);padding:24px 0">No hay datos aún</p></div>`;
+
+  const gainers = stats.filter(s => s.pnl > 0).sort((a,b) => b.pnl - a.pnl);
+  const losers  = stats.filter(s => s.pnl <= 0).sort((a,b) => a.pnl - b.pnl);
+
+  // Totales globales
+  const totalDeposited = stats.reduce((s,u) => s + u.deposited, 0);
+  const totalWithdrawn = stats.reduce((s,u) => s + u.withdrawn, 0);
+  const totalBalance   = stats.reduce((s,u) => s + u.balance,   0);
+  const totalPnl       = stats.reduce((s,u) => s + u.pnl,       0);
+
+  const renderRow = (s, i) => {
+    const pnlColor = s.pnl > 0 ? "var(--yes)" : s.pnl < 0 ? "var(--no)" : "var(--muted)";
+    const pnlIcon  = s.pnl > 0 ? "▲" : s.pnl < 0 ? "▼" : "—";
+    return`
+    <div class="card" style="margin-bottom:8px;padding:14px 16px">
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <div style="width:28px;height:28px;border-radius:50%;background:var(--card2);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;color:var(--muted);flex-shrink:0">${i+1}</div>
+        <div style="flex:1;min-width:120px">
+          <div style="font-weight:700;font-size:14px">@${escHtml(s.username)}</div>
+          <div style="font-size:11px;color:var(--muted)">${s.walletAddress?s.walletAddress.slice(0,8)+"…":"Sin wallet"}</div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;text-align:right;flex:2;min-width:280px">
+          <div>
+            <div style="font-size:10px;color:var(--muted);font-weight:600;text-transform:uppercase;margin-bottom:2px">Depositado</div>
+            <div style="font-weight:700;font-size:13px;color:var(--accent)">${usd(s.deposited)}</div>
+          </div>
+          <div>
+            <div style="font-size:10px;color:var(--muted);font-weight:600;text-transform:uppercase;margin-bottom:2px">Retirado</div>
+            <div style="font-weight:700;font-size:13px;color:var(--text)">${usd(s.withdrawn)}</div>
+          </div>
+          <div>
+            <div style="font-size:10px;color:var(--muted);font-weight:600;text-transform:uppercase;margin-bottom:2px">Gan/Pérd</div>
+            <div style="font-weight:800;font-size:13px;color:${pnlColor}">${pnlIcon} ${usd(Math.abs(s.pnl))}</div>
+          </div>
+          <div>
+            <div style="font-size:10px;color:var(--muted);font-weight:600;text-transform:uppercase;margin-bottom:2px">Saldo</div>
+            <div style="font-weight:800;font-size:13px;color:var(--text)">${usd(s.balance)}</div>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  };
+
+  return`<div class="slide-in">
+
+    <!-- Resumen global -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:24px">
+      <div class="card" style="text-align:center;padding:16px">
+        <div style="font-size:11px;color:var(--muted);font-weight:700;text-transform:uppercase;margin-bottom:6px">Total usuarios</div>
+        <div style="font-size:24px;font-weight:900">${stats.length}</div>
+        <div style="font-size:11px;color:var(--yes)">${gainers.length} en ganancia · ${losers.length} en pérdida</div>
+      </div>
+      <div class="card" style="text-align:center;padding:16px">
+        <div style="font-size:11px;color:var(--muted);font-weight:700;text-transform:uppercase;margin-bottom:6px">Total depositado</div>
+        <div style="font-size:24px;font-weight:900;color:var(--accent)">${usd(totalDeposited)}</div>
+      </div>
+      <div class="card" style="text-align:center;padding:16px">
+        <div style="font-size:11px;color:var(--muted);font-weight:700;text-transform:uppercase;margin-bottom:6px">Total retirado</div>
+        <div style="font-size:24px;font-weight:900">${usd(totalWithdrawn)}</div>
+      </div>
+      <div class="card" style="text-align:center;padding:16px">
+        <div style="font-size:11px;color:var(--muted);font-weight:700;text-transform:uppercase;margin-bottom:6px">Saldo total</div>
+        <div style="font-size:24px;font-weight:900;color:var(--text)">${usd(totalBalance)}</div>
+      </div>
+      <div class="card" style="text-align:center;padding:16px">
+        <div style="font-size:11px;color:var(--muted);font-weight:700;text-transform:uppercase;margin-bottom:6px">P&L global</div>
+        <div style="font-size:24px;font-weight:900;color:${totalPnl>=0?"var(--yes)":"var(--no)"}">${totalPnl>=0?"▲":"▼"} ${usd(Math.abs(totalPnl))}</div>
+      </div>
+    </div>
+
+    <div style="display:flex;justify-content:flex-end;margin-bottom:16px">
+      <button class="btn-ghost" style="font-size:12px;padding:7px 14px" onclick="STATE.adminStatsLoaded=false;STATE.adminStats=null;render()">🔄 Actualizar</button>
+    </div>
+
+    <!-- En ganancia -->
+    ${gainers.length>0?`
+    <div style="font-size:12px;font-weight:800;color:var(--yes);letter-spacing:.6px;text-transform:uppercase;margin-bottom:10px;display:flex;align-items:center;gap:8px">
+      <span>▲ En ganancia (${gainers.length})</span>
+    </div>
+    ${gainers.map((s,i)=>renderRow(s,i)).join("")}
+    <div style="height:20px"></div>
+    `:""}
+
+    <!-- En pérdida -->
+    ${losers.length>0?`
+    <div style="font-size:12px;font-weight:800;color:var(--no);letter-spacing:.6px;text-transform:uppercase;margin-bottom:10px">
+      ▼ En pérdida (${losers.length})
+    </div>
+    ${losers.map((s,i)=>renderRow(s,i)).join("")}
+    `:""}
+
+  </div>`;
+}
+
+async function loadAdminStats(){
+  try{
+    // Cargar todas las transacciones de todos los usuarios
+    const { data: txs } = await db.from("transactions")
+      .select("user_id,type,amount,status")
+      .in("status",["confirmed","pending"])
+      .order("created_at",{ascending:true});
+
+    const stats = [];
+    for(const user of STATE.users.filter(u=>u.role!=="admin")){
+      const userTxs = (txs||[]).filter(t=>t.user_id===user.id && t.status==="confirmed");
+
+      const deposited = userTxs
+        .filter(t=>t.type==="deposit")
+        .reduce((s,t)=>s+Number(t.amount),0);
+
+      const withdrawn = userTxs
+        .filter(t=>t.type==="withdraw")
+        .reduce((s,t)=>s+Number(t.amount),0);
+
+      const balance = user.balance||0;
+      // P&L = saldo actual + retirado - depositado
+      const pnl = Math.round((balance + withdrawn - deposited)*100)/100;
+
+      stats.push({
+        id:            user.id,
+        username:      user.username||user.id.slice(0,8),
+        walletAddress: user.walletAddress||null,
+        deposited:     Math.round(deposited*100)/100,
+        withdrawn:     Math.round(withdrawn*100)/100,
+        balance:       Math.round(balance*100)/100,
+        pnl,
+      });
+    }
+
+    STATE.adminStats = stats;
+    STATE.adminStatsLoaded = true;
+    render();
+  }catch(e){
+    console.error("[Stats]",e);
+    STATE.adminStatsLoaded = true;
+    STATE.adminStats = [];
+    render();
+  }
 }
 
 function renderAdminAccounts(){
