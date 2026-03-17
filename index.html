@@ -2754,10 +2754,28 @@ function showUsernameModal(userId){
         oninput="this.value=this.value.replace(/[^a-zA-Z0-9_\\-\\.]/g,'');checkUsernameAvailable('${userId}')"
         onkeydown="if(event.key==='Enter')submitUsername('${userId}')"
       />
-      <div id="username-status" style="font-size:12px;margin-bottom:12px;min-height:16px;color:var(--muted)">
+      <div id="username-status" style="font-size:12px;margin-bottom:16px;min-height:16px;color:var(--muted)">
         Solo letras, números, _ y - · Máx 24 caracteres
       </div>
-      <button class="btn-green" style="width:100%;padding:13px;font-size:15px" onclick="submitUsername('${userId}')">
+
+      <!-- Checkbox términos y condiciones -->
+      <label id="terms-label" style="display:flex;align-items:flex-start;gap:10px;text-align:left;cursor:pointer;padding:12px 14px;background:var(--card2);border:1.5px solid var(--border);border-radius:10px;margin-bottom:14px;transition:border-color .15s">
+        <input
+          type="checkbox"
+          id="terms-checkbox"
+          onchange="updateTermsState()"
+          style="width:18px;height:18px;min-width:18px;margin-top:1px;cursor:pointer;accent-color:var(--yes)"
+        />
+        <span style="font-size:13px;line-height:1.5;color:var(--text)">
+          Acepto los
+          <span onclick="event.preventDefault();event.stopPropagation();navigate('terms')" style="color:var(--yes);font-weight:700;text-decoration:underline;cursor:pointer">términos y condiciones</span>
+          y la
+          <span onclick="event.preventDefault();event.stopPropagation();navigate('privacy')" style="color:var(--yes);font-weight:700;text-decoration:underline;cursor:pointer">política de privacidad</span>
+          de Futuros. Confirmo que tengo al menos 18 años.
+        </span>
+      </label>
+
+      <button id="submit-username-btn" class="btn-green" style="width:100%;padding:13px;font-size:15px;opacity:.5;cursor:not-allowed" onclick="submitUsername('${userId}')" disabled>
         Guardar nombre →
       </button>
       <p style="color:var(--muted);font-size:11px;margin-top:12px">
@@ -2808,7 +2826,40 @@ async function checkUsernameAvailable(userId){
   }, 400);
 }
 
+function updateTermsState(){
+  const checked = document.getElementById("terms-checkbox")?.checked;
+  const btn = document.getElementById("submit-username-btn");
+  const label = document.getElementById("terms-label");
+  if(!btn) return;
+  if(checked){
+    btn.disabled = false;
+    btn.style.opacity = "1";
+    btn.style.cursor = "pointer";
+    if(label) label.style.borderColor = "var(--yes)";
+  } else {
+    btn.disabled = true;
+    btn.style.opacity = ".5";
+    btn.style.cursor = "not-allowed";
+    if(label) label.style.borderColor = "var(--border)";
+  }
+}
+
 async function submitUsername(userId){
+  // Validar checkbox términos
+  const termsChecked = document.getElementById("terms-checkbox")?.checked;
+  if(!termsChecked){
+    // Destacar el checkbox visualmente
+    const label = document.getElementById("terms-label");
+    if(label){
+      label.style.borderColor = "var(--no)";
+      label.style.background = "rgba(224,40,74,.06)";
+      setTimeout(()=>{
+        if(label){ label.style.borderColor="var(--border)"; label.style.background="var(--card2)"; }
+      }, 2000);
+    }
+    notify("Debes aceptar los términos y condiciones para continuar","error");
+    return;
+  }
   const raw = (document.getElementById("username-input")?.value||"").trim();
   const val = raw.replace(/[^a-zA-Z0-9_\-\.]/g,""); // strip any non-allowed chars
   if(!val || val.length < 2){ notify("Mínimo 2 caracteres","error"); return; }
@@ -5991,35 +6042,35 @@ terms:`
   <div class="policy-highlight">Al usar Futuros aceptas estos términos en su totalidad. Si no estás de acuerdo, no debes usar la plataforma.</div>
 
   <h2>1. Naturaleza del servicio</h2>
-  <p>Futuros es una plataforma de mercados de predicción que permite a los usuarios invertir en el resultado de eventos futuros utilizando un modelo de creación de mercado automatizado (LS-LMSR). La plataforma opera con fines de entretenimiento y no constituye asesoramiento financiero, de inversión ni de ningún otro tipo.</p>
+  <p>Futuros es una plataforma global de mercados de predicción que permite a los usuarios invertir en el resultado de eventos futuros utilizando un modelo de creación de mercado automatizado (LS-LMSR). La plataforma opera con fines de entretenimiento y no constituye asesoramiento financiero, de inversión ni de ningún otro tipo.</p>
 
   <h2>2. Elegibilidad</h2>
   <ul>
-    <li>Debes tener al menos 18 años de edad para usar la plataforma.</li>
-    <li>Debes ser residente de un país donde el uso de plataformas de predicción de pago sea legal.</li>
-    <li>Está prohibido el uso de la plataforma desde jurisdicciones donde este tipo de actividad esté expresamente prohibida.</li>
-    <li>No puedes crear más de una cuenta por persona. Las cuentas duplicadas serán suspendidas.</li>
+    <li>Debes tener al menos 18 años de edad, o la mayoría de edad legal en tu jurisdicción si esta es superior.</li>
+    <li>Debes residir en un país donde el uso de plataformas de predicción de pago sea legal conforme a la normativa local aplicable.</li>
+    <li>Está prohibido el uso de la plataforma desde jurisdicciones donde este tipo de actividad esté expresamente prohibida, incluyendo sin limitarse a: Estados Unidos, Reino Unido (sin licencia), y cualquier territorio bajo sanciones internacionales.</li>
+    <li>No puedes crear más de una cuenta por persona. Las cuentas duplicadas serán suspendidas sin previo aviso.</li>
+    <li>Es tu responsabilidad verificar que el uso de la plataforma sea legal en tu país antes de registrarte.</li>
   </ul>
 
   <h2>3. Registro y cuenta</h2>
-  <p>Al registrarte, aceptas proporcionar información veraz, completa y actualizada. Eres responsable de mantener la confidencialidad de tu contraseña. Futuros no será responsable de pérdidas derivadas del acceso no autorizado a tu cuenta por negligencia tuya.</p>
+  <p>Al registrarte, aceptas proporcionar información veraz, completa y actualizada. Eres responsable de mantener la confidencialidad de tus credenciales de acceso. Futuros no será responsable de pérdidas derivadas del acceso no autorizado a tu cuenta por negligencia tuya.</p>
 
   <h2>4. Depósitos y retiros</h2>
-  <p>Los depósitos se realizan mediante criptomonedas en la red Polygon (MATIC/USDC). Los retiros están sujetos a una comisión de plataforma del 1% sobre el monto solicitado. El tiempo de procesamiento estimado es de 1 a 5 minutos para retiros en Polygon una vez aprobados por el equipo de operaciones.</p>
-  <p>Futuros se reserva el derecho de solicitar documentación de verificación de identidad antes de procesar retiros superiores a ciertos montos, conforme a nuestra política AML/KYC.</p>
+  <p>Los depósitos se realizan mediante criptomonedas en la red Polygon (MATIC/USDC/USDT) o Solana (SOL). Los retiros están sujetos a una comisión de plataforma del 1% sobre el monto solicitado y se procesan una vez al día. Futuros se reserva el derecho de solicitar verificación de identidad antes de procesar retiros, conforme a nuestra política AML/KYC.</p>
 
   <h2>5. Mecánica de mercados</h2>
-  <p>Los mercados se cierran en la fecha indicada y son resueltos por el equipo de administración de Futuros con base en fuentes públicas y verificables. La decisión de resolución es definitiva. En caso de que un evento no pueda determinarse con certeza, Futuros podrá cancelar el mercado y devolver los fondos apostados.</p>
+  <p>Los mercados se cierran en la fecha indicada y son resueltos por el equipo de administración de Futuros con base en fuentes públicas y verificables. La decisión de resolución es definitiva. En caso de que un evento no pueda determinarse con certeza, Futuros podrá cancelar el mercado y devolver los fondos invertidos.</p>
 
   <h2>6. Comisiones</h2>
-  <p>Futuros aplica un spread del 0.25% sobre cada operación de compra y venta de shares. Este spread está incluido en el precio que ves en pantalla. Adicionalmente, se aplica una comisión del 1% sobre todos los retiros de fondos.</p>
+  <p>Futuros aplica un spread del 0.25% sobre cada operación de compra y venta de shares. Este spread está incluido en el precio visible en pantalla. Adicionalmente, se aplica una comisión del 1% sobre todos los retiros de fondos.</p>
 
   <h2>7. Conducta prohibida</h2>
   <ul>
-    <li>Manipulación de mercados o coordinación con otros usuarios para alterar precios.</li>
-    <li>Uso de bots, scripts o herramientas automatizadas sin autorización escrita.</li>
-    <li>Lavado de dinero o cualquier actividad financiera ilícita.</li>
-    <li>Creación de cuentas falsas o suplantación de identidad.</li>
+    <li>Manipulación de mercados o coordinación con otros usuarios para alterar precios artificialmente.</li>
+    <li>Uso de bots, scripts o herramientas automatizadas sin autorización escrita de Futuros.</li>
+    <li>Lavado de dinero, financiación del terrorismo o cualquier actividad financiera ilícita.</li>
+    <li>Creación de cuentas falsas, suplantación de identidad o evasión de restricciones geográficas mediante VPN.</li>
     <li>Explotación de bugs o vulnerabilidades del sistema. Cualquier vulnerabilidad debe reportarse a soporte.</li>
   </ul>
 
@@ -6029,226 +6080,238 @@ terms:`
   <h2>9. Modificaciones</h2>
   <p>Futuros se reserva el derecho de modificar estos términos en cualquier momento. Los cambios entrarán en vigor 7 días después de su publicación en la plataforma. El uso continuado del servicio implica la aceptación de los nuevos términos.</p>
 
-  <h2>10. Legislación aplicable</h2>
-  <p>Estos términos se rigen por las leyes de la República de Colombia. Cualquier disputa se someterá a la jurisdicción de los tribunales competentes de Bogotá, Colombia.</p>
-`,
+  <h2>10. Legislación aplicable y resolución de disputas</h2>
+  <p>Estos términos se rigen por principios de derecho internacional aplicables a plataformas digitales globales. Futuros opera como entidad internacional y no está sujeto a ninguna jurisdicción nacional específica. Cualquier disputa será resuelta mediante arbitraje internacional vinculante conforme a las reglas de la Cámara de Comercio Internacional (CCI). El idioma del arbitraje será el español o inglés según acuerdo de las partes.</p>
 
+`,
 privacy:`
   <div class="policy-highlight">Tu privacidad es importante para nosotros. Esta política explica qué datos recopilamos, cómo los usamos y cómo los protegemos.</div>
 
   <h2>1. Responsable del tratamiento</h2>
-  <p>Futuros es responsable del tratamiento de los datos personales recopilados a través de la plataforma, en cumplimiento de la Ley 1581 de 2012 (Colombia) y el Reglamento General de Protección de Datos (RGPD) en lo que resulte aplicable.</p>
+  <p>Futuros es responsable del tratamiento de los datos personales recopilados a través de la plataforma. Esta política cumple con los estándares internacionales de protección de datos, incluyendo el Reglamento General de Protección de Datos de la Unión Europea (RGPD/GDPR), la Ley de Privacidad del Consumidor de California (CCPA), y otras normativas de privacidad aplicables globalmente.</p>
 
   <h2>2. Datos que recopilamos</h2>
   <ul>
-    <li><strong>Datos de registro:</strong> nombre de usuario, dirección de correo electrónico, contraseña (almacenada con hash bcrypt).</li>
+    <li><strong>Datos de registro:</strong> nombre de usuario, dirección de correo electrónico, contraseña (almacenada con hash seguro).</li>
     <li><strong>Datos financieros:</strong> historial de depósitos, retiros y operaciones. No almacenamos claves privadas ni datos de billeteras más allá de la dirección pública.</li>
-    <li><strong>Datos de billetera crypto:</strong> dirección pública de billetera Polygon si la conectas.</li>
-    <li><strong>Datos de uso:</strong> páginas visitadas, mercados consultados, tiempo en la plataforma, dirección IP, tipo de dispositivo y navegador.</li>
+    <li><strong>Datos de billetera crypto:</strong> dirección pública de billetera Polygon o Solana si la conectas.</li>
+    <li><strong>Datos de uso:</strong> páginas visitadas, mercados consultados, tiempo en la plataforma, dirección IP, país de acceso, tipo de dispositivo y navegador.</li>
     <li><strong>Comentarios:</strong> el contenido de los comentarios que publicas en mercados.</li>
   </ul>
 
   <h2>3. Finalidad del tratamiento</h2>
   <ul>
     <li>Prestación del servicio de mercados de predicción.</li>
-    <li>Procesamiento de depósitos y retiros.</li>
-    <li>Cumplimiento de obligaciones legales (AML/KYC).</li>
-    <li>Comunicaciones sobre el servicio (no marketing sin consentimiento).</li>
+    <li>Procesamiento de depósitos y retiros en criptomonedas.</li>
+    <li>Cumplimiento de obligaciones legales internacionales (AML/KYC).</li>
+    <li>Comunicaciones sobre el servicio (nunca marketing sin consentimiento explícito).</li>
     <li>Mejora de la plataforma mediante análisis de uso agregado y anonimizado.</li>
-    <li>Prevención de fraude y actividades ilícitas.</li>
+    <li>Prevención de fraude, lavado de dinero y actividades ilícitas.</li>
   </ul>
 
   <h2>4. Base legal</h2>
-  <p>El tratamiento de tus datos se basa en la ejecución del contrato de servicio (términos de uso), el cumplimiento de obligaciones legales y el interés legítimo de Futuros en operar la plataforma de forma segura.</p>
+  <p>El tratamiento de tus datos se basa en: (a) la ejecución del contrato de servicio aceptado al registrarte; (b) el cumplimiento de obligaciones legales internacionales; y (c) el interés legítimo de Futuros en operar la plataforma de forma segura.</p>
 
-  <h2>5. Compartición de datos</h2>
-  <p>No vendemos ni alquilamos tus datos personales a terceros. Podemos compartir datos con proveedores de servicios estrictamente necesarios (proveedores de infraestructura cloud, Polygonscan API) bajo acuerdos de confidencialidad. En caso de requerimiento legal, podremos divulgar datos a autoridades competentes.</p>
+  <h2>5. Transferencias internacionales de datos</h2>
+  <p>Como plataforma global, tus datos pueden ser procesados en servidores ubicados en distintos países. Garantizamos que dichas transferencias cumplen con los estándares internacionales de protección de datos, incluyendo cláusulas contractuales estándar donde aplique.</p>
 
-  <h2>6. Retención de datos</h2>
-  <p>Conservamos tus datos durante la vigencia de tu cuenta y por un período adicional de 5 años tras su cierre, según lo exige la normativa financiera colombiana. Los datos de logs técnicos se eliminan a los 90 días.</p>
+  <h2>6. Compartición de datos</h2>
+  <p>No vendemos ni alquilamos tus datos personales a terceros. Podemos compartir datos con proveedores de servicios estrictamente necesarios (infraestructura cloud, proveedores blockchain) bajo acuerdos de confidencialidad. En caso de requerimiento legal por autoridad competente de cualquier jurisdicción, podremos divulgar datos conforme a la ley aplicable.</p>
 
-  <h2>7. Tus derechos</h2>
-  <p>Tienes derecho a acceder, rectificar, suprimir, portar y oponerte al tratamiento de tus datos. Para ejercer estos derechos escríbenos a <strong>privacidad@futuros.co</strong>. Responderemos en un plazo máximo de 15 días hábiles.</p>
+  <h2>7. Retención de datos</h2>
+  <p>Conservamos tus datos durante la vigencia de tu cuenta y por un período adicional de 5 años tras su cierre, conforme a estándares internacionales de cumplimiento financiero. Los datos de logs técnicos se eliminan a los 90 días.</p>
 
-  <h2>8. Seguridad</h2>
-  <p>Implementamos cifrado TLS en todas las comunicaciones, almacenamiento de contraseñas con bcrypt, y controles de acceso estrictos sobre los datos. No obstante, ningún sistema es 100% infalible y no podemos garantizar la seguridad absoluta de la información transmitida.</p>
+  <h2>8. Tus derechos</h2>
+  <p>Independientemente de tu país de residencia, tienes derecho a: acceder a tus datos, rectificarlos, solicitar su eliminación, oponerte al tratamiento, y solicitar su portabilidad. Para ejercer estos derechos escríbenos a <strong>privacy@futuros.bet</strong>. Responderemos en un plazo máximo de 30 días.</p>
+
+  <h2>9. Seguridad</h2>
+  <p>Implementamos cifrado TLS en todas las comunicaciones, almacenamiento de contraseñas con hash seguro, y controles de acceso estrictos. No obstante, ningún sistema es 100% infalible y no podemos garantizar la seguridad absoluta de la información transmitida.</p>
+
 `,
-
 cookies:`
   <div class="policy-highlight">Usamos cookies y tecnologías similares para que la plataforma funcione correctamente y para mejorar tu experiencia.</div>
 
   <h2>¿Qué son las cookies?</h2>
-  <p>Las cookies son pequeños archivos de texto que se almacenan en tu dispositivo cuando visitas un sitio web. Nos permiten recordar tus preferencias y mantenerte autenticado entre sesiones.</p>
-
-  <h2>Cookies que usamos</h2>
+  <p>Las cookies son pequeños archivos de texto que se almacenan en tu dispositivo cuando visitas un sitio web. Nos permiten recordar tus preferencias, mantenerte autenticado entre sesiones y entender cómo usas la plataforma.</p>
 
   <h2>Cookies estrictamente necesarias</h2>
-  <p>Estas cookies son imprescindibles para el funcionamiento de la plataforma. No pueden desactivarse.</p>
+  <p>Estas cookies son imprescindibles para el funcionamiento de la plataforma. No pueden desactivarse sin afectar el servicio.</p>
   <ul>
     <li><strong>session_token:</strong> mantiene tu sesión iniciada de forma segura.</li>
-    <li><strong>csrf_token:</strong> protege contra ataques de falsificación de solicitudes.</li>
+    <li><strong>csrf_token:</strong> protege contra ataques de falsificación de solicitudes entre sitios.</li>
   </ul>
 
   <h2>Cookies de preferencias</h2>
-  <p>Recuerdan tus configuraciones para personalizar tu experiencia.</p>
+  <p>Recuerdan tu configuración para personalizar tu experiencia.</p>
   <ul>
-    <li><strong>lang:</strong> idioma preferido.</li>
+    <li><strong>lang:</strong> idioma preferido (español o inglés).</li>
     <li><strong>last_market:</strong> último mercado visitado para acceso rápido.</li>
   </ul>
 
   <h2>Cookies analíticas</h2>
-  <p>Nos ayudan a entender cómo se usa la plataforma para mejorarla. Toda la información es agregada y anónima.</p>
+  <p>Nos ayudan a entender cómo se usa la plataforma para mejorarla. Toda la información es agregada y anónima — no se vincula a tu identidad personal.</p>
   <ul>
     <li><strong>_analytics_id:</strong> identificador anónimo de sesión para análisis de uso.</li>
   </ul>
 
   <h2>Cookies de terceros</h2>
   <ul>
-    <li><strong>Polygon / MetaMask:</strong> la integración con MetaMask puede establecer cookies propias durante el proceso de conexión de billetera. Consulta la política de MetaMask para más detalles.</li>
-    <li><strong>Google Fonts:</strong> usamos Google Fonts para la tipografía; Google puede registrar la solicitud de las fuentes.</li>
+    <li><strong>Polygon / MetaMask / Phantom:</strong> las integraciones de wallets pueden establecer cookies propias. Consulta las políticas de privacidad de cada proveedor.</li>
+    <li><strong>Google Fonts:</strong> usamos Google Fonts para la tipografía; Google puede registrar la solicitud de las fuentes conforme a su propia política de privacidad.</li>
   </ul>
 
-  <h2>Gestión de cookies</h2>
-  <p>Puedes configurar tu navegador para rechazar todas las cookies o para que te avise cuando se envíe una cookie. Ten en cuenta que deshabilitar las cookies necesarias puede impedir el funcionamiento correcto de la plataforma. Consulta la ayuda de tu navegador para gestionar cookies en Chrome, Firefox, Safari o Edge.</p>
-`,
+  <h2>Tu consentimiento y gestión de cookies</h2>
+  <p>Al continuar usando la plataforma, aceptas el uso de cookies esenciales. Para cookies analíticas y de preferencias puedes configurar tu navegador para rechazarlas. Ten en cuenta que deshabilitar cookies esenciales puede impedir el correcto funcionamiento de la plataforma. Puedes gestionar cookies en Chrome, Firefox, Safari o Edge desde la configuración de tu navegador.</p>
 
+  <h2>Cumplimiento internacional</h2>
+  <p>Esta política de cookies cumple con el RGPD europeo, la directiva ePrivacy de la UE, y otras normativas internacionales de cookies aplicables.</p>
+
+`,
 risks:`
   <div class="policy-warning"><strong>⚠️ Advertencia importante:</strong> invertir en mercados de predicción implica riesgo de pérdida total del capital invertido. Lee esta sección con atención antes de operar.</div>
 
   <h2>1. Riesgo de pérdida de capital</h2>
-  <p>Al invertir en un mercado de predicción puedes perder la totalidad del dinero que inviertas. Si el evento se resuelve en la dirección contraria a tu posición, perderás el 100% del monto invertido. Solo invierte dinero que puedas permitirte perder.</p>
+  <p>Al invertir en un mercado de predicción puedes perder la totalidad del dinero que inviertas. Si el evento se resuelve en la dirección contraria a tu posición, perderás el 100% del monto invertido. Solo invierte dinero que puedas permitirte perder completamente.</p>
 
   <h2>2. Riesgo de mercado</h2>
-  <p>Los precios de los mercados fluctúan en función de las inversiones de todos los participantes. Un precio alto de YES no garantiza que el evento ocurra; solo refleja la opinión agregada de los inversores en ese momento. Los precios pueden cambiar significativamente en poco tiempo.</p>
+  <p>Los precios fluctúan en función de las inversiones de todos los participantes a nivel global. Un precio alto de YES no garantiza que el evento ocurra; solo refleja la opinión agregada de los inversores en ese momento. Los precios pueden cambiar significativamente en muy poco tiempo.</p>
 
   <h2>3. Riesgo de liquidez</h2>
-  <p>En mercados con bajo volumen, puede ser difícil vender tus posiciones a un precio favorable antes del cierre. El modelo LS-LMSR garantiza que siempre puedas comprar y vender, pero el precio puede ser desfavorable en mercados poco activos.</p>
+  <p>En mercados con bajo volumen, puede ser difícil vender tus posiciones a un precio favorable. El modelo LS-LMSR garantiza que siempre puedas comprar y vender, pero el precio puede ser desfavorable en mercados poco activos.</p>
 
   <h2>4. Riesgo de resolución</h2>
-  <p>La resolución de los mercados depende de la interpretación de eventos del mundo real por parte del equipo de Futuros. En casos ambiguos, la decisión de resolución puede no coincidir con tu interpretación del evento. La decisión de Futuros es definitiva.</p>
+  <p>La resolución depende de la interpretación de eventos del mundo real por parte del equipo de Futuros. En casos ambiguos o disputados, la decisión puede no coincidir con tu interpretación. La decisión de Futuros es definitiva e inapelable.</p>
 
   <h2>5. Riesgo tecnológico</h2>
-  <p>La plataforma puede experimentar interrupciones técnicas, ciberataques o fallos de infraestructura que afecten temporalmente el acceso a los fondos o la capacidad de operar. Futuros trabaja para minimizar estos riesgos pero no puede garantizar disponibilidad 24/7.</p>
+  <p>La plataforma puede experimentar interrupciones técnicas, ciberataques o fallos de infraestructura que afecten temporalmente el acceso a fondos o la capacidad de operar. Futuros trabaja para minimizar estos riesgos pero no puede garantizar disponibilidad 24/7.</p>
 
   <h2>6. Riesgo regulatorio</h2>
-  <p>El marco regulatorio de las plataformas de predicción puede cambiar en tu jurisdicción, lo que podría afectar tu capacidad de usar el servicio o retirar fondos.</p>
+  <p>El marco regulatorio de las plataformas de predicción varía por país y puede cambiar en tu jurisdicción sin previo aviso. Es tu responsabilidad verificar la legalidad del servicio en tu país. Futuros no es responsable de las consecuencias legales derivadas del uso de la plataforma en jurisdicciones donde esté restringida.</p>
 
-  <h2>7. Riesgo crypto</h2>
-  <p>Los retiros en MATIC o USDC están sujetos a la volatilidad del mercado de criptomonedas y a los riesgos inherentes a la red Polygon. Las direcciones de billetera son irrecuperables si se introducen incorrectamente. Futuros no puede revertir transacciones blockchain ya confirmadas.</p>
+  <h2>7. Riesgo crypto y blockchain</h2>
+  <p>Los activos en MATIC, USDC, USDT y SOL están sujetos a la volatilidad del mercado de criptomonedas. Las transacciones blockchain son irreversibles — las direcciones de billetera incorrectas resultan en pérdida permanente de fondos. Futuros no puede revertir transacciones ya confirmadas en la blockchain.</p>
 
-  <h2>8. No es asesoramiento financiero</h2>
-  <p>Nada en esta plataforma constituye asesoramiento financiero, de inversión o legal. Toma tus decisiones con responsabilidad y consulta a un profesional si tienes dudas.</p>
+  <h2>8. Riesgo de tipo de cambio</h2>
+  <p>El valor de tus activos en criptomonedas puede variar significativamente con respecto a tu moneda local debido a la volatilidad de los mercados de criptomonedas.</p>
+
+  <h2>9. No es asesoramiento financiero</h2>
+  <p>Nada en esta plataforma constituye asesoramiento financiero, de inversión, legal o fiscal. Las decisiones de inversión son exclusivamente tuyas. Consulta a un profesional financiero independiente si tienes dudas.</p>
+
 `,
-
 aml:`
-  <div class="policy-highlight">Futuros está comprometido con la prevención del lavado de activos y la financiación del terrorismo, en cumplimiento de la normativa colombiana e internacional.</div>
+  <div class="policy-highlight">Futuros está comprometido con la prevención del lavado de activos y la financiación del terrorismo, siguiendo los más altos estándares internacionales.</div>
 
-  <h2>1. Marco normativo</h2>
-  <p>Esta política se rige por la Ley 526 de 1999, el Decreto 1674 de 2021, las circulares de la UIAF (Unidad de Información y Análisis Financiero) y las recomendaciones del GAFI (Grupo de Acción Financiera Internacional).</p>
+  <h2>1. Marco normativo internacional</h2>
+  <p>Esta política sigue las recomendaciones del Grupo de Acción Financiera Internacional (GAFI/FATF), los estándares del Grupo Egmont, y las mejores prácticas internacionales de cumplimiento AML/CFT aplicables a plataformas de activos virtuales (VASPs). Futuros aplica estos estándares globalmente, independientemente del país de residencia del usuario.</p>
 
   <h2>2. Política KYC (Conoce a tu cliente)</h2>
   <p>Futuros puede solicitar verificación de identidad en las siguientes situaciones:</p>
   <ul>
     <li>Retiros acumulados superiores a $500 USD en un período de 30 días.</li>
-    <li>Depósitos que presenten patrones inusuales o inconsistentes con el perfil del usuario.</li>
-    <li>Cuando así lo requiera la normativa aplicable o una orden judicial.</li>
+    <li>Depósitos o patrones de actividad inusuales o inconsistentes con el perfil del usuario.</li>
+    <li>Cuando así lo requiera la normativa aplicable en cualquier jurisdicción o una autoridad competente.</li>
     <li>Usuarios con actividad que active señales de alerta internas.</li>
   </ul>
-  <p>La documentación que podemos solicitar incluye: copia de documento de identidad (cédula de ciudadanía, pasaporte), prueba de domicilio (recibo de servicios no mayor a 3 meses) y, en algunos casos, declaración de origen de fondos.</p>
+  <p>La documentación que podemos solicitar incluye: documento de identidad oficial vigente (pasaporte, documento nacional de identidad), prueba de domicilio (documento oficial no mayor a 3 meses) y, en casos justificados, declaración de origen de fondos.</p>
 
-  <h2>3. Señales de alerta</h2>
+  <h2>3. Jurisdicciones restringidas</h2>
+  <p>Futuros no presta servicios a usuarios residentes en países bajo sanciones internacionales de la OFAC (EE.UU.), la UE, la ONU u otros organismos internacionales, incluyendo pero sin limitarse a: Corea del Norte, Irán, Siria, Cuba y Rusia (sanciones vigentes). El acceso desde estas jurisdicciones está técnicamente bloqueado.</p>
+
+  <h2>4. Señales de alerta</h2>
   <p>Futuros monitorea continuamente las transacciones para detectar señales de alerta como:</p>
   <ul>
-    <li>Depósitos y retiros inmediatos sin actividad de inversión.</li>
-    <li>Múltiples cuentas asociadas a la misma persona o dispositivo.</li>
-    <li>Transferencias estructuradas para evadir umbrales de reporte.</li>
-    <li>Uso de direcciones crypto asociadas a actividades ilícitas conocidas.</li>
+    <li>Depósitos y retiros inmediatos sin actividad de inversión (estructuración).</li>
+    <li>Múltiples cuentas asociadas a la misma persona, dispositivo o dirección IP.</li>
+    <li>Transferencias fraccionadas para evadir umbrales de reporte.</li>
+    <li>Uso de direcciones crypto asociadas a actividades ilícitas según bases de datos internacionales.</li>
+    <li>Intentos de evadir controles geográficos mediante VPN o proxies.</li>
   </ul>
 
-  <h2>4. Reporte de operaciones sospechosas</h2>
-  <p>En cumplimiento de la normativa, Futuros reportará a la UIAF cualquier operación que genere sospechas razonables de lavado de activos o financiación del terrorismo, sin estar obligados a notificar al usuario afectado sobre dicho reporte.</p>
+  <h2>5. Reporte de operaciones sospechosas</h2>
+  <p>Futuros coopera plenamente con autoridades competentes de cualquier jurisdicción conforme a los tratados internacionales aplicables. Podemos reportar operaciones sospechosas a las autoridades pertinentes sin estar obligados a notificar al usuario afectado.</p>
 
-  <h2>5. Congelamiento de cuentas</h2>
-  <p>Futuros se reserva el derecho de suspender o congelar cuentas y fondos de forma inmediata cuando existan sospechas fundadas de actividad ilícita, mientras se realiza una investigación interna o a petición de autoridad competente.</p>
+  <h2>6. Congelamiento de cuentas</h2>
+  <p>Futuros se reserva el derecho de suspender o congelar cuentas y fondos de forma inmediata cuando existan sospechas fundadas de actividad ilícita, mientras se realiza una investigación interna o a petición de autoridad competente de cualquier jurisdicción.</p>
 
-  <h2>6. Contacto</h2>
-  <p>Para consultas relacionadas con esta política escríbenos a <strong>cumplimiento@futuros.co</strong>.</p>
+  <h2>7. Contacto de cumplimiento</h2>
+  <p>Para consultas relacionadas con esta política escríbenos a <strong>compliance@futuros.bet</strong>.</p>
+
 `,
-
 responsible:`
-  <div class="policy-highlight">En Futuros nos preocupamos por el bienestar de nuestros usuarios. El juego debe ser una forma de entretenimiento, nunca una fuente de problemas.</div>
+  <div class="policy-highlight">En Futuros nos preocupamos por el bienestar de nuestros usuarios en todo el mundo. La participación en mercados de predicción debe ser entretenimiento, nunca una fuente de problemas.</div>
 
   <h2>Juega de forma responsable</h2>
-  <p>Las inversiones en mercados de predicción deben ser una actividad de entretenimiento. Si sientes que tu participación está afectando tu vida financiera, emocional o social, es importante que tomes medidas de inmediato.</p>
+  <p>Las inversiones en mercados de predicción deben ser una actividad de entretenimiento controlada. Si sientes que tu participación está afectando tu vida financiera, emocional o social, es importante que actúes de inmediato.</p>
 
   <h2>Señales de advertencia</h2>
   <ul>
     <li>Invertir más dinero del que puedes permitirte perder.</li>
     <li>Intentar recuperar pérdidas aumentando el monto de las inversiones.</li>
     <li>Pensar constantemente en la plataforma cuando no estás usando el servicio.</li>
-    <li>Ocultar tu actividad de inversión a familia o amigos.</li>
+    <li>Ocultar tu actividad de inversión a familia o amigos cercanos.</li>
     <li>Descuidar obligaciones laborales, familiares o personales por invertir.</li>
-    <li>Usar dinero destinado a gastos esenciales (arriendo, alimentación, salud) para invertir.</li>
+    <li>Usar dinero destinado a gastos esenciales (vivienda, alimentación, salud) para invertir.</li>
   </ul>
 
   <h2>Herramientas de autocontrol</h2>
   <p>Futuros ofrece las siguientes herramientas para ayudarte a mantener el control:</p>
   <ul>
-    <li><strong>Límite de depósito:</strong> puedes solicitar al equipo de soporte establecer un límite mensual de depósitos.</li>
-    <li><strong>Autoexclusión temporal:</strong> puedes solicitar la suspensión de tu cuenta por 30, 90 o 180 días. Durante este período no podrás acceder a la plataforma.</li>
-    <li><strong>Autoexclusión permanente:</strong> puedes solicitar el cierre definitivo de tu cuenta. Esta acción es irreversible.</li>
+    <li><strong>Límite de depósito:</strong> puedes solicitar al equipo de soporte establecer un límite mensual de depósitos personalizado.</li>
+    <li><strong>Autoexclusión temporal:</strong> puedes solicitar la suspensión de tu cuenta por 30, 90 o 180 días. Durante este período no podrás acceder ni operar en la plataforma.</li>
+    <li><strong>Autoexclusión permanente:</strong> puedes solicitar el cierre definitivo e irreversible de tu cuenta.</li>
   </ul>
-  <p>Para activar cualquiera de estas opciones escríbenos a <strong>soporte@futuros.co</strong> con el asunto "Juego responsable".</p>
+  <p>Para activar cualquiera de estas opciones escríbenos a <strong>support@futuros.bet</strong> con el asunto "Juego responsable".</p>
 
   <h2>Menores de edad</h2>
-  <p>Futuros está estrictamente prohibido para menores de 18 años. Si crees que un menor está usando la plataforma, repórtalo inmediatamente a <strong>soporte@futuros.co</strong>.</p>
+  <p>Futuros está estrictamente prohibido para personas menores de 18 años en cualquier país. Si compartes dispositivos con menores, utiliza controles parentales y cierra sesión siempre al terminar. Si sospechas que un menor está usando la plataforma, repórtalo a <strong>support@futuros.bet</strong>.</p>
 
-  <h2>Líneas de ayuda</h2>
-  <p>Si tú o alguien que conoces necesita apoyo, contacta:</p>
+  <h2>Recursos de ayuda internacionales</h2>
+  <p>Si tú o alguien que conoces necesita apoyo, contacta un servicio de tu país:</p>
   <ul>
-    <li><strong>Línea 106</strong> — Línea de salud mental (Colombia, gratuita 24/7)</li>
-    <li><strong>Jugadores Anónimos Colombia:</strong> jugadoresanonimos.org.co</li>
-    <li><strong>Jugadores Anónimos internacional:</strong> gamblersanonymous.org</li>
+    <li><strong>Gamblers Anonymous (Internacional):</strong> <a href="https://www.gamblersanonymous.org" target="_blank">gamblersanonymous.org</a></li>
+    <li><strong>GamCare (Reino Unido):</strong> <a href="https://www.gamcare.org.uk" target="_blank">gamcare.org.uk</a> · 0808 8020 133</li>
+    <li><strong>National Council on Problem Gambling (EE.UU.):</strong> 1-800-522-4700</li>
+    <li><strong>BeGambleAware (Internacional):</strong> <a href="https://www.begambleaware.org" target="_blank">begambleaware.org</a></li>
+    <li><strong>Jugadores Anónimos España:</strong> <a href="https://www.jugadoresanonimos.org" target="_blank">jugadoresanonimos.org</a></li>
+    <li><strong>Gordon Moody (UK):</strong> <a href="https://www.gordonmoody.org.uk" target="_blank">gordonmoody.org.uk</a></li>
   </ul>
+  <p style="margin-top:12px;font-size:13px;color:var(--muted)">Para encontrar ayuda en tu país visita: <a href="https://www.begambleaware.org/support-directory" target="_blank" style="color:var(--yes)">begambleaware.org/support-directory</a></p>
 
-  <h2>Restricción de edad</h2>
-  <p>Si compartes dispositivos con menores de edad, te recomendamos utilizar controles parentales o cerrar sesión siempre que termines de usar la plataforma. Más información en: <strong>internetmatters.org</strong></p>
 `,
-
 // ── English versions ─────────────────────────────────────
 terms_en:`
   <div class="policy-highlight">By using Futuros you accept these terms in full. If you disagree, you must not use the platform.</div>
 
   <h2>1. Nature of the Service</h2>
-  <p>Futuros is a prediction market platform that allows users to invest in the outcome of future events using an automated market-making model (LS-LMSR). The platform operates for entertainment purposes and does not constitute financial, investment, or any other type of advice.</p>
+  <p>Futuros is a global prediction market platform that allows users to invest in the outcome of future events using an automated market-making model (LS-LMSR). The platform operates for entertainment purposes and does not constitute financial, investment, or any other type of advice.</p>
 
   <h2>2. Eligibility</h2>
   <ul>
-    <li>You must be at least 18 years old to use the platform.</li>
-    <li>You must reside in a country where the use of paid prediction platforms is legal.</li>
-    <li>Use of the platform from jurisdictions where such activity is expressly prohibited is not allowed.</li>
-    <li>You may not create more than one account per person. Duplicate accounts will be suspended.</li>
+    <li>You must be at least 18 years old, or the legal age of majority in your jurisdiction if higher.</li>
+    <li>You must reside in a country where the use of paid prediction platforms is legal under applicable local regulations.</li>
+    <li>Use of the platform is prohibited from jurisdictions where such activity is expressly restricted, including without limitation: the United States, the United Kingdom (without a licence), and any territory under international sanctions.</li>
+    <li>You may not create more than one account per person. Duplicate accounts will be suspended without notice.</li>
+    <li>It is your sole responsibility to verify that use of the platform is legal in your country before registering.</li>
   </ul>
 
   <h2>3. Registration and Account</h2>
-  <p>By registering, you agree to provide truthful, complete, and up-to-date information. You are responsible for maintaining the confidentiality of your password. Futuros will not be liable for losses resulting from unauthorized access to your account due to your negligence.</p>
+  <p>By registering, you agree to provide truthful, complete, and up-to-date information. You are responsible for maintaining the confidentiality of your credentials. Futuros will not be liable for losses resulting from unauthorized access to your account due to your negligence.</p>
 
   <h2>4. Deposits and Withdrawals</h2>
-  <p>Deposits are made via cryptocurrency on the Polygon network (MATIC/USDC). Withdrawals are subject to a 1% platform fee on the requested amount. Withdrawals are processed once a day at 1:00 PM Miami time (ET).</p>
-  <p>Futuros reserves the right to request identity verification documentation before processing withdrawals above certain amounts, in accordance with our AML/KYC policy.</p>
+  <p>Deposits are made via cryptocurrency on the Polygon network (MATIC/USDC/USDT) or Solana (SOL). Withdrawals are subject to a 1% platform fee and are processed once per day. Futuros reserves the right to request identity verification before processing withdrawals, in accordance with our AML/KYC policy.</p>
 
   <h2>5. Market Mechanics</h2>
-  <p>Markets close on the indicated date and are resolved by the Futuros administration team based on public and verifiable sources. The resolution decision is final. If an event cannot be determined with certainty, Futuros may cancel the market and return the invested funds.</p>
+  <p>Markets close on the indicated date and are resolved by the Futuros administration team based on public and verifiable sources. The resolution decision is final and binding. If an event cannot be determined with certainty, Futuros may cancel the market and return the invested funds.</p>
 
   <h2>6. Fees</h2>
-  <p>Futuros applies a 0.25% spread on each share buy and sell operation. This spread is included in the price you see on screen. Additionally, a 1% fee applies to all fund withdrawals.</p>
+  <p>Futuros applies a 0.25% spread on each share buy and sell operation. This spread is included in the price displayed on screen. Additionally, a 1% fee applies to all fund withdrawals.</p>
 
   <h2>7. Prohibited Conduct</h2>
   <ul>
-    <li>Market manipulation or coordination with other users to alter prices.</li>
-    <li>Use of bots, scripts, or automated tools without written authorization.</li>
-    <li>Money laundering or any illicit financial activity.</li>
-    <li>Creating fake accounts or identity impersonation.</li>
+    <li>Market manipulation or coordination with other users to artificially alter prices.</li>
+    <li>Use of bots, scripts, or automated tools without written authorisation from Futuros.</li>
+    <li>Money laundering, terrorist financing, or any illicit financial activity.</li>
+    <li>Creating fake accounts, identity impersonation, or circumventing geographic restrictions via VPN.</li>
     <li>Exploiting bugs or system vulnerabilities. Any vulnerability must be reported to support.</li>
   </ul>
 
@@ -6258,51 +6321,54 @@ terms_en:`
   <h2>9. Modifications</h2>
   <p>Futuros reserves the right to modify these terms at any time. Changes will take effect 7 days after publication on the platform. Continued use of the service implies acceptance of the new terms.</p>
 
-  <h2>10. Governing Law</h2>
-  <p>These terms are governed by the laws of the Republic of Colombia. Any dispute shall be submitted to the jurisdiction of the competent courts of Bogotá, Colombia.</p>
-`,
+  <h2>10. Governing Law and Dispute Resolution</h2>
+  <p>These terms are governed by principles of international law applicable to global digital platforms. Futuros operates as an international entity and is not subject to any specific national jurisdiction. Any dispute shall be resolved through binding international arbitration under the rules of the International Chamber of Commerce (ICC). The language of arbitration shall be English or Spanish by agreement of the parties.</p>
 
+`,
 privacy_en:`
   <div class="policy-highlight">Your privacy matters to us. This policy explains what data we collect, how we use it, and how we protect it.</div>
 
   <h2>1. Data Controller</h2>
-  <p>Futuros is responsible for the processing of personal data collected through the platform, in compliance with Colombian Law 1581 of 2012 and the General Data Protection Regulation (GDPR) where applicable.</p>
+  <p>Futuros is responsible for the processing of personal data collected through the platform. This policy complies with international data protection standards, including the EU General Data Protection Regulation (GDPR), the California Consumer Privacy Act (CCPA), and other applicable global privacy regulations.</p>
 
   <h2>2. Data We Collect</h2>
   <ul>
-    <li><strong>Registration data:</strong> username, email address, password (stored with bcrypt hash).</li>
+    <li><strong>Registration data:</strong> username, email address, password (stored with secure hash).</li>
     <li><strong>Financial data:</strong> history of deposits, withdrawals and operations. We do not store private keys or wallet data beyond the public address.</li>
-    <li><strong>Crypto wallet data:</strong> public Polygon wallet address if you connect one.</li>
-    <li><strong>Usage data:</strong> pages visited, markets viewed, time on platform, IP address, device type and browser.</li>
+    <li><strong>Crypto wallet data:</strong> public Polygon or Solana wallet address if you connect one.</li>
+    <li><strong>Usage data:</strong> pages visited, markets viewed, time on platform, IP address, country of access, device type and browser.</li>
     <li><strong>Comments:</strong> the content of comments you post on markets.</li>
   </ul>
 
   <h2>3. Purpose of Processing</h2>
   <ul>
     <li>Providing the prediction market service.</li>
-    <li>Processing deposits and withdrawals.</li>
-    <li>Compliance with legal obligations (AML/KYC).</li>
-    <li>Service communications (no marketing without consent).</li>
-    <li>Platform improvement through aggregated and anonymized usage analysis.</li>
+    <li>Processing cryptocurrency deposits and withdrawals.</li>
+    <li>Compliance with international legal obligations (AML/KYC).</li>
+    <li>Service communications (never marketing without explicit consent).</li>
+    <li>Platform improvement through aggregated and anonymised usage analysis.</li>
     <li>Fraud prevention and illicit activity detection.</li>
   </ul>
 
   <h2>4. Legal Basis</h2>
-  <p>The processing of your data is based on the execution of the service contract (terms of use), compliance with legal obligations, and Futuros's legitimate interest in operating the platform securely.</p>
+  <p>The processing of your data is based on: (a) the execution of the service contract accepted upon registration; (b) compliance with international legal obligations; and (c) Futuros's legitimate interest in operating the platform securely.</p>
 
-  <h2>5. Data Sharing</h2>
-  <p>We do not sell or rent your personal data to third parties. We may share data with strictly necessary service providers (cloud infrastructure, Polygonscan API) under confidentiality agreements. In the event of a legal requirement, we may disclose data to competent authorities.</p>
+  <h2>5. International Data Transfers</h2>
+  <p>As a global platform, your data may be processed on servers located in different countries. We ensure that such transfers comply with international data protection standards, including standard contractual clauses where applicable.</p>
 
-  <h2>6. Data Retention</h2>
-  <p>We retain your data for the duration of your account and for an additional period of 5 years after its closure, as required by Colombian financial regulations. Technical log data is deleted after 90 days.</p>
+  <h2>6. Data Sharing</h2>
+  <p>We do not sell or rent your personal data to third parties. We may share data with strictly necessary service providers (cloud infrastructure, blockchain providers) under confidentiality agreements. We may disclose data to competent authorities of any jurisdiction in compliance with applicable law.</p>
 
-  <h2>7. Your Rights</h2>
-  <p>You have the right to access, rectify, delete, port, and object to the processing of your data. To exercise these rights write to <strong>privacy@futuros.co</strong>. We will respond within a maximum of 15 business days.</p>
+  <h2>7. Data Retention</h2>
+  <p>We retain your data for the duration of your account and for an additional period of 5 years after its closure, in accordance with international financial compliance standards. Technical log data is deleted after 90 days.</p>
 
-  <h2>8. Security</h2>
-  <p>We implement TLS encryption in all communications, bcrypt password storage, and strict access controls over data. However, no system is 100% infallible and we cannot guarantee the absolute security of transmitted information.</p>
+  <h2>8. Your Rights</h2>
+  <p>Regardless of your country of residence, you have the right to access, rectify, delete, object to the processing of, and request portability of your data. To exercise these rights write to <strong>privacy@futuros.bet</strong>. We will respond within 30 days.</p>
+
+  <h2>9. Security</h2>
+  <p>We implement TLS encryption in all communications, secure password hashing, and strict access controls. However, no system is 100% infallible and we cannot guarantee the absolute security of transmitted information.</p>
+
 `,
-
 cookies_en:`
   <div class="policy-highlight">We use cookies and similar technologies to make the platform work correctly and to improve your experience.</div>
 
@@ -6370,80 +6436,84 @@ risks_en:`
 `,
 
 aml_en:`
-  <div class="policy-highlight">Futuros is committed to preventing money laundering and terrorist financing, in compliance with Colombian and international regulations.</div>
+  <div class="policy-highlight">Futuros is committed to preventing money laundering and terrorist financing, following the highest international standards.</div>
 
-  <h2>1. Regulatory Framework</h2>
-  <p>This policy is governed by Law 526 of 1999, Decree 1674 of 2021, UIAF (Financial Information and Analysis Unit) circulars, and FATF (Financial Action Task Force) recommendations.</p>
+  <h2>1. International Regulatory Framework</h2>
+  <p>This policy follows the recommendations of the Financial Action Task Force (FATF), Egmont Group standards, and international best practices for AML/CFT compliance applicable to Virtual Asset Service Providers (VASPs). Futuros applies these standards globally, regardless of the user's country of residence.</p>
 
   <h2>2. KYC Policy (Know Your Customer)</h2>
   <p>Futuros may request identity verification in the following situations:</p>
   <ul>
     <li>Cumulative withdrawals exceeding $500 USD in a 30-day period.</li>
-    <li>Deposits showing unusual or inconsistent patterns with the user's profile.</li>
-    <li>When required by applicable regulations or a court order.</li>
+    <li>Deposits or activity patterns that are unusual or inconsistent with the user's profile.</li>
+    <li>When required by applicable regulations in any jurisdiction or a competent authority.</li>
     <li>Users whose activity triggers internal alert signals.</li>
   </ul>
-  <p>Documentation we may request includes: identity document copy (national ID, passport), proof of address (utility bill no older than 3 months), and in some cases a source of funds declaration.</p>
+  <p>Documentation we may request includes: valid official identity document (passport, national identity card), proof of address (official document no older than 3 months), and in justified cases, a source of funds declaration.</p>
 
-  <h2>3. Alert Signals</h2>
+  <h2>3. Restricted Jurisdictions</h2>
+  <p>Futuros does not provide services to users residing in countries under international sanctions from OFAC (USA), the EU, the UN, or other international bodies, including but not limited to: North Korea, Iran, Syria, Cuba, and Russia (current sanctions). Access from these jurisdictions is technically blocked.</p>
+
+  <h2>4. Alert Signals</h2>
   <p>Futuros continuously monitors transactions to detect alert signals such as:</p>
   <ul>
-    <li>Immediate deposits and withdrawals with no investment activity.</li>
-    <li>Multiple accounts associated with the same person or device.</li>
-    <li>Structured transfers to evade reporting thresholds.</li>
-    <li>Use of crypto addresses associated with known illicit activities.</li>
+    <li>Immediate deposits and withdrawals without investment activity (structuring).</li>
+    <li>Multiple accounts associated with the same person, device, or IP address.</li>
+    <li>Fractioned transfers to evade reporting thresholds.</li>
+    <li>Use of crypto addresses associated with illicit activities per international databases.</li>
+    <li>Attempts to evade geographic controls via VPN or proxies.</li>
   </ul>
 
-  <h2>4. Suspicious Activity Reporting</h2>
-  <p>In compliance with regulations, Futuros will report to the UIAF any operation that raises reasonable suspicion of money laundering or terrorist financing, without being required to notify the affected user of such report.</p>
+  <h2>5. Suspicious Activity Reporting</h2>
+  <p>Futuros cooperates fully with competent authorities of any jurisdiction in accordance with applicable international treaties. We may report suspicious activities to relevant authorities without being required to notify the affected user.</p>
 
-  <h2>5. Account Freezing</h2>
-  <p>Futuros reserves the right to immediately suspend or freeze accounts and funds when there is well-founded suspicion of illicit activity, while conducting an internal investigation or upon request from a competent authority.</p>
+  <h2>6. Account Freezing</h2>
+  <p>Futuros reserves the right to immediately suspend or freeze accounts and funds when there is well-founded suspicion of illicit activity, while conducting an internal investigation or upon request from a competent authority of any jurisdiction.</p>
 
-  <h2>6. Contact</h2>
-  <p>For inquiries related to this policy write to <strong>compliance@futuros.co</strong>.</p>
+  <h2>7. Compliance Contact</h2>
+  <p>For inquiries related to this policy write to <strong>compliance@futuros.bet</strong>.</p>
+
 `,
-
 responsible_en:`
-  <div class="policy-highlight">At Futuros we care about our users' well-being. Gaming should be a form of entertainment, never a source of problems.</div>
+  <div class="policy-highlight">At Futuros we care about the well-being of our users worldwide. Participation in prediction markets should be entertainment, never a source of problems.</div>
 
   <h2>Play Responsibly</h2>
-  <p>Investments in prediction markets should be an entertainment activity. If you feel your participation is affecting your financial, emotional, or social life, it is important to take action immediately.</p>
+  <p>Investments in prediction markets should be a controlled entertainment activity. If you feel your participation is affecting your financial, emotional, or social life, it is important to act immediately.</p>
 
   <h2>Warning Signs</h2>
   <ul>
     <li>Investing more money than you can afford to lose.</li>
     <li>Trying to recover losses by increasing investment amounts.</li>
     <li>Constantly thinking about the platform when not using the service.</li>
-    <li>Hiding your investment activity from family or friends.</li>
+    <li>Hiding your investment activity from family or close friends.</li>
     <li>Neglecting work, family, or personal obligations to invest.</li>
-    <li>Using money intended for essential expenses (rent, food, health) to invest.</li>
+    <li>Using money intended for essential expenses (housing, food, health) to invest.</li>
   </ul>
 
   <h2>Self-Control Tools</h2>
   <p>Futuros offers the following tools to help you stay in control:</p>
   <ul>
-    <li><strong>Deposit limit:</strong> you can ask the support team to set a monthly deposit limit.</li>
-    <li><strong>Temporary self-exclusion:</strong> you can request your account be suspended for 30, 90, or 180 days. During this period you will not be able to access the platform.</li>
-    <li><strong>Permanent self-exclusion:</strong> you can request permanent account closure. This action is irreversible.</li>
+    <li><strong>Deposit limit:</strong> you can ask the support team to set a personalised monthly deposit limit.</li>
+    <li><strong>Temporary self-exclusion:</strong> you can request your account be suspended for 30, 90, or 180 days. During this period you will not be able to access or operate on the platform.</li>
+    <li><strong>Permanent self-exclusion:</strong> you can request permanent and irreversible account closure.</li>
   </ul>
-  <p>To activate any of these options write to <strong>support@futuros.co</strong> with the subject "Responsible Gaming".</p>
+  <p>To activate any of these options write to <strong>support@futuros.bet</strong> with the subject "Responsible Gaming".</p>
 
   <h2>Minors</h2>
-  <p>Futuros is strictly prohibited for users under 18 years of age. If you believe a minor is using the platform, report it immediately to <strong>support@futuros.co</strong>.</p>
+  <p>Futuros is strictly prohibited for persons under 18 years of age in any country. If you share devices with minors, use parental controls and always log out when finished. If you suspect a minor is using the platform, report it to <strong>support@futuros.bet</strong>.</p>
 
-  <h2>Help Lines</h2>
-  <p>If you or someone you know needs support, contact:</p>
+  <h2>International Help Resources</h2>
+  <p>If you or someone you know needs support, contact a service in your country:</p>
   <ul>
-    <li><strong>Gamblers Anonymous:</strong> gamblersanonymous.org</li>
-    <li><strong>National Problem Gambling Helpline (US):</strong> 1-800-522-4700</li>
-    <li><strong>BeGambleAware:</strong> begambleaware.org</li>
+    <li><strong>Gamblers Anonymous (International):</strong> <a href="https://www.gamblersanonymous.org" target="_blank">gamblersanonymous.org</a></li>
+    <li><strong>GamCare (UK):</strong> <a href="https://www.gamcare.org.uk" target="_blank">gamcare.org.uk</a> · 0808 8020 133</li>
+    <li><strong>National Council on Problem Gambling (USA):</strong> 1-800-522-4700</li>
+    <li><strong>BeGambleAware (International):</strong> <a href="https://www.begambleaware.org" target="_blank">begambleaware.org</a></li>
+    <li><strong>Jugadores Anónimos España:</strong> <a href="https://www.jugadoresanonimos.org" target="_blank">jugadoresanonimos.org</a></li>
   </ul>
+  <p style="margin-top:12px;font-size:13px;color:var(--muted)">Find help in your country: <a href="https://www.begambleaware.org/support-directory" target="_blank" style="color:var(--yes)">begambleaware.org/support-directory</a></p>
 
-  <h2>Age Restriction</h2>
-  <p>If you share devices with minors, we recommend using parental controls or always logging out when you finish using the platform. More information at: <strong>internetmatters.org</strong></p>
 `,
-
 };
 // ═══════════════════════════════════════════════════════════════════
 if(window.ethereum){
