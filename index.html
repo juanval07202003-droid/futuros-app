@@ -1130,6 +1130,7 @@ async function dbCreateUser(user){
 
 // ── POSITIONS ────────────────────────────────────────────────────
 async function dbSavePositions(userId, positions){
+  const errors = [];
   try{
     const entries = Object.entries(positions);
     for(const [marketId, p] of entries){
@@ -1137,27 +1138,34 @@ async function dbSavePositions(userId, positions){
       const noShares  = Math.max(0, p.NO||0);
       if(yesShares > 0 || noShares > 0){
         // Verificar si ya existe
-        const {data:existing} = await db.from("positions")
+        const {data:existing, error:selErr} = await db.from("positions")
           .select("id")
           .eq("user_id", userId)
           .eq("market_id", marketId)
           .maybeSingle();
+        if(selErr) errors.push("select: "+selErr.message);
         if(existing){
           const {error} = await db.from("positions")
             .update({yes_shares:yesShares, no_shares:noShares})
             .eq("user_id", userId).eq("market_id", marketId);
-          if(error) console.error("[DB] update posición:", error.message, error.details);
+          if(error) errors.push("update: "+error.message);
         } else {
           const {error} = await db.from("positions")
             .insert({user_id:userId, market_id:marketId, yes_shares:yesShares, no_shares:noShares});
-          if(error) console.error("[DB] insert posición:", error.message, error.details);
+          if(error) errors.push("insert: "+error.message);
         }
       } else {
         await db.from("positions")
           .delete().eq("user_id",userId).eq("market_id",marketId);
       }
     }
-  }catch(e){ console.error("[DB] excepción posiciones:", e?.message||e); }
+  }catch(e){ errors.push(e?.message||e); }
+  if(errors.length){
+    console.error("[DB] errores posiciones:", errors);
+    notify("⚠️ Error guardando posición: "+errors[0],"error");
+    return false;
+  }
+  return true;
 }
 
 async function dbLoadPositions(userId){
@@ -4862,16 +4870,24 @@ async function executeTrade(){
     // Persistir en DB — en paralelo para no bloquear UI
     const updatedUser = STATE.users[ui];
     try{
-      await Promise.all([
-        dbSaveMarket(STATE.markets[idx]),
-        dbSaveUser(updatedUser),
-        dbSavePositions(updatedUser.id, updatedUser.positions),
-        dbSaveTransaction(updatedUser.id, tx),
-      ]);
-      // Recargar posiciones desde DB para confirmar que se guardaron
+      // Guardar secuencialmente para detectar errores
+      await dbSaveMarket(STATE.markets[idx]);
+      await dbSaveUser(updatedUser);
+      const posSaved = await dbSavePositions(updatedUser.id, updatedUser.positions);
+      await dbSaveTransaction(updatedUser.id, tx);
+      // Recargar posiciones desde DB para confirmar
       const confirmedPositions = await dbLoadPositions(updatedUser.id);
       const uiNow = STATE.users.findIndex(u=>u.id===updatedUser.id);
-      if(uiNow>=0) STATE.users[uiNow] = {...STATE.users[uiNow], positions: confirmedPositions};
+      if(uiNow>=0){
+        if(Object.keys(confirmedPositions).length > 0){
+          STATE.users[uiNow] = {...STATE.users[uiNow], positions: confirmedPositions};
+        } else {
+          // Si DB devuelve vacío pero sabemos que hay posiciones, mantener STATE
+          console.warn("[Trade] DB devolvió posiciones vacías — manteniendo STATE local");
+          // Reintentar guardar una vez más
+          await dbSavePositions(updatedUser.id, updatedUser.positions);
+        }
+      }
     }catch(e){
       console.error("[Trade] Error guardando en DB:", e);
       notify("Trade ejecutado pero hubo un error al guardar — recarga si ves inconsistencias","error");
