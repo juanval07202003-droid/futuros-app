@@ -1136,24 +1136,23 @@ async function dbSavePositions(userId, positions){
       const yesShares = Math.max(0, p.YES||0);
       const noShares  = Math.max(0, p.NO||0);
       if(yesShares > 0 || noShares > 0){
-        // Intentar upsert primero
-        const {error} = await db.from("positions").upsert(
-          {user_id:userId, market_id:marketId, yes_shares:yesShares, no_shares:noShares},
-          {onConflict:"user_id,market_id"}
-        );
-        if(error){
-          // Fallback: update
-          const {error:e2} = await db.from("positions")
+        // Verificar si ya existe
+        const {data:existing} = await db.from("positions")
+          .select("id")
+          .eq("user_id", userId)
+          .eq("market_id", marketId)
+          .maybeSingle();
+        if(existing){
+          const {error} = await db.from("positions")
             .update({yes_shares:yesShares, no_shares:noShares})
-            .eq("user_id",userId).eq("market_id",marketId);
-          if(e2){
-            // Fallback final: insert
-            await db.from("positions")
-              .insert({user_id:userId, market_id:marketId, yes_shares:yesShares, no_shares:noShares});
-          }
+            .eq("user_id", userId).eq("market_id", marketId);
+          if(error) console.error("[DB] update posición:", error.message, error.details);
+        } else {
+          const {error} = await db.from("positions")
+            .insert({user_id:userId, market_id:marketId, yes_shares:yesShares, no_shares:noShares});
+          if(error) console.error("[DB] insert posición:", error.message, error.details);
         }
       } else {
-        // Eliminar posición en cero
         await db.from("positions")
           .delete().eq("user_id",userId).eq("market_id",marketId);
       }
@@ -4296,12 +4295,65 @@ function creditBalance(amount,network,description){
 // ═══════════════════════════════════════════════════════════════════
 function openWithdraw(){
   if(!getUser()){navigate("auth");return;}
-  STATE.withdrawOpen=true;STATE.withdrawAmount="";STATE.withdrawAddress=STATE.walletAddress||"";
+  STATE.withdrawOpen=true;
+  STATE.withdrawAmount="";
+  STATE.withdrawMethod = STATE.withdrawMethod||"usdc";
+  STATE.withdrawAddress = getWithdrawAddressForMethod(STATE.withdrawMethod);
   renderWithdrawModal();
+}
+
+// Devuelve la dirección correcta según el método de retiro
+function getWithdrawAddressForMethod(method){
+  const u = getUser();
+  if(!u) return "";
+  const isSolana = method==="sol"||method==="solana";
+  if(isSolana){
+    // Para SOL usar la dirección Solana (base58, no empieza con 0x)
+    const solAddr = u.walletAddress && !u.walletAddress.startsWith("0x") ? u.walletAddress : null;
+    return solAddr || "";
+  } else {
+    // Para MATIC/USDC/USDT usar dirección EVM (0x...)
+    const evmAddr = u.evmAddress || (u.walletAddress?.startsWith("0x") ? u.walletAddress : null);
+    return evmAddr || "";
+  }
 }
 function closeWithdrawModal(){
   STATE.withdrawOpen=false;
   const el=document.getElementById("withdraw-overlay");if(el)el.remove();
+}
+
+function updateWithdrawFee(){
+  const en = STATE.lang==="en";
+  const amt = parseFloat(STATE.withdrawAmount)||0;
+  const fee = parseFloat((amt*0.01).toFixed(4));
+  const net = parseFloat((amt-fee).toFixed(4));
+  const el = document.getElementById("withdraw-fee-section");
+  if(!el) return;
+  if(amt>=5){
+    el.innerHTML=`
+      <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+        <span style="color:var(--muted)">${en?"Requested amount":"Monto solicitado"}</span>
+        <span style="font-weight:600">${usd(amt)}</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+        <span style="color:var(--muted)">${en?"Platform fee (1%)":"Comisión plataforma (1%)"}</span>
+        <span style="color:var(--no);font-weight:600">−${usd(fee)}</span>
+      </div>
+      <div style="height:1px;background:var(--border);margin:8px 0"></div>
+      <div style="display:flex;justify-content:space-between">
+        <span style="font-weight:700;color:var(--text)">${en?"You receive":"Recibes"}</span>
+        <span style="font-weight:900;font-size:15px;color:var(--yes)">${usd(net)}</span>
+      </div>`;
+    el.style.background="var(--card2)";
+    el.style.border="1px solid var(--border)";
+    el.style.borderRadius="10px";
+    el.style.padding="12px 14px";
+    el.style.marginBottom="16px";
+    el.style.fontSize="13px";
+  } else {
+    el.innerHTML="";
+    el.style="";
+  }
 }
 
 function renderWithdrawModal(){
@@ -4311,8 +4363,9 @@ function renderWithdrawModal(){
   const fee=parseFloat((amt*0.01).toFixed(4));
   const net=parseFloat((amt-fee).toFixed(4));
   const en=STATE.lang==="en";
+  const isSol = STATE.withdrawMethod==="sol"||STATE.withdrawMethod==="solana";
   const feeHtml=amt>=5?`
-    <div style="background:var(--card2);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:16px;font-size:13px">
+    <div id="withdraw-fee-section" style="background:var(--card2);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:16px;font-size:13px">
       <div style="display:flex;justify-content:space-between;margin-bottom:6px">
         <span style="color:var(--muted)">${en?"Requested amount":"Monto solicitado"}</span>
         <span style="font-weight:600">${usd(amt)}</span>
@@ -4326,7 +4379,7 @@ function renderWithdrawModal(){
         <span style="font-weight:700;color:var(--text)">${t("withdraw_receive")}</span>
         <span style="font-weight:900;font-size:15px;color:var(--yes)">${usd(net)}</span>
       </div>
-    </div>`:"";
+    </div>`:` <div id="withdraw-fee-section"></div>`;
   const html=`<div class="overlay" id="withdraw-overlay" onclick="closeWdIfBg(event)">
   <div class="modal" onclick="event.stopPropagation()">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
@@ -4338,7 +4391,7 @@ function renderWithdrawModal(){
     <div class="form-group">
       <label class="lbl">${t("withdraw_method")}</label>
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:4px">
-        ${["polygon","usdc","usdt"].map(m=>`<button onclick="STATE.withdrawMethod='${m}';renderWithdrawModal()" style="padding:9px;border-radius:8px;border:1px solid ${STATE.withdrawMethod===m?"var(--poly)":"var(--border)"};background:${STATE.withdrawMethod===m?"var(--poly-bg)":"transparent"};color:${STATE.withdrawMethod===m?"var(--poly)":"var(--muted)"};font-weight:700;font-size:12px;cursor:pointer">${m==="polygon"?"⬡ MATIC":m==="usdc"?"💲 USDC":"💵 USDT"}</button>`).join("")}
+        ${["polygon","usdc","usdt"].map(m=>`<button onclick="STATE.withdrawMethod='${m}';STATE.withdrawAddress=getWithdrawAddressForMethod('${m}');renderWithdrawModal()" style="padding:9px;border-radius:8px;border:1px solid ${STATE.withdrawMethod===m?"var(--poly)":"var(--border)"};background:${STATE.withdrawMethod===m?"var(--poly-bg)":"transparent"};color:${STATE.withdrawMethod===m?"var(--poly)":"var(--muted)"};font-weight:700;font-size:12px;cursor:pointer">${m==="polygon"?"⬡ MATIC":m==="usdc"?"💲 USDC":"💵 USDT"}</button>`).join("")}
       </div>
       <div style="font-size:11px;color:var(--muted);margin-top:4px">
         ${STATE.withdrawMethod==="polygon"?"Red Polygon · Token nativo MATIC":STATE.withdrawMethod==="usdt"?"Red Polygon · Tether USD (USDT-ERC20)":"Red Polygon · USD Coin (USDC-ERC20)"}
@@ -4349,7 +4402,7 @@ function renderWithdrawModal(){
       <label class="lbl">${t("withdraw_amount")}</label>
       <input class="inp" type="number" min="5" max="${u.balance.toFixed(2)}" step="0.01"
         value="${STATE.withdrawAmount}" placeholder="0.00"
-        oninput="STATE.withdrawAmount=this.value;renderWithdrawModal()"/>
+        oninput="STATE.withdrawAmount=this.value;updateWithdrawFee()"/>
       <div class="hint">${en?"Minimum $5 · Maximum":"Mínimo $5 · Máximo"} ${usd(u.balance)}</div>
     </div>
 
@@ -4357,9 +4410,30 @@ function renderWithdrawModal(){
 
     <div class="form-group">
       <label class="lbl">${t("withdraw_address")}</label>
-      <input class="inp" type="text" value="${escHtml(STATE.withdrawAddress)}"
-        placeholder="0x..." oninput="STATE.withdrawAddress=this.value"/>
-      ${STATE.walletConnected?`<button class="copy-btn" style="margin-top:4px" onclick="STATE.withdrawAddress='${STATE.walletAddress||""}';renderWithdrawModal()">${en?"Use my connected wallet":"Usar mi billetera conectada"}</button>`:""}
+      ${STATE.withdrawAddress
+        ? `<div style="display:flex;align-items:center;gap:6px;background:rgba(0,229,160,.06);border:1.5px solid rgba(0,229,160,.3);border-radius:10px;padding:10px 12px;margin-bottom:6px">
+            <span style="font-size:14px">${isSol?"◎":"⬡"}</span>
+            <div style="flex:1;min-width:0">
+              <div style="font-size:10px;color:var(--yes);font-weight:700;margin-bottom:2px">${en?"Auto-filled from your connected wallet":"Auto-completado desde tu wallet conectada"}</div>
+              <div style="font-family:monospace;font-size:12px;word-break:break-all;color:var(--text)">${escHtml(STATE.withdrawAddress)}</div>
+            </div>
+            <button onclick="STATE.withdrawAddress='';renderWithdrawModal()" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:16px;flex-shrink:0">✕</button>
+          </div>`
+        : `<input class="inp" type="text" id="withdraw-addr-input"
+            value="${escHtml(STATE.withdrawAddress)}"
+            placeholder="${isSol?"Dirección Solana (base58)...":"0x... (Polygon)"}"
+            oninput="STATE.withdrawAddress=this.value"/>`
+      }
+      ${!STATE.withdrawAddress && STATE.walletConnected
+        ? `<button class="copy-btn" style="margin-top:6px" onclick="STATE.withdrawAddress=getWithdrawAddressForMethod(STATE.withdrawMethod);renderWithdrawModal()">
+            ↙ ${en?"Use my connected wallet":"Usar mi wallet conectada"}
+           </button>`
+        : ""}
+      <div class="hint" style="margin-top:4px">
+        ${isSol
+          ? (en?"Solana address (base58) — must start with a letter/number, not 0x":"Dirección Solana (base58) — no empieza con 0x")
+          : (en?"Polygon EVM address — must start with 0x":"Dirección Polygon EVM — debe empezar con 0x")}
+      </div>
     </div>
 
     <div class="info-box" style="margin-bottom:16px">
