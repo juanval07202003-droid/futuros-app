@@ -1050,6 +1050,7 @@ async function dbInit(){
     clearTimeout(timeout);
     DB_READY = true;
     dbStartRealtime();
+    startPriceRefresh(); // refresco periódico de precios
     render();
   }catch(e){
     clearTimeout(timeout);
@@ -2525,19 +2526,99 @@ let _marketCloseTimer = null;
 function scheduleMarketCloseRefresh(){
   if(_marketCloseTimer) clearTimeout(_marketCloseTimer);
   const now = Date.now();
-  // Encontrar el próximo mercado que cierra
   const next = STATE.markets
     .filter(m => !m.resolved && m.closesAt && new Date(m.closesAt) > now)
     .map(m => new Date(m.closesAt).getTime())
     .sort((a,b) => a-b)[0];
   if(!next) return;
-  const delay = next - now + 1000; // +1s de margen
-  if(delay > 0 && delay < 86400000){ // solo si es dentro de 24h
+  const delay = next - now + 1000;
+  if(delay > 0 && delay < 86400000){
     _marketCloseTimer = setTimeout(()=>{
       console.log("[Markets] Auto-refresh por cierre de mercado");
       render();
-      scheduleMarketCloseRefresh(); // replanificar para el siguiente
+      scheduleMarketCloseRefresh();
     }, delay);
+  }
+}
+
+// ── Sistema de refresco activo de precios ─────────────────────────
+// Evita que usuarios dejen una pestaña abierta con precio viejo
+const PRICE_REFRESH_INTERVAL = 30000; // 30 segundos
+const STALE_PRICE_THRESHOLD  = 60000; // 60 segundos sin actividad = precio vencido
+let _priceRefreshTimer  = null;
+let _lastPriceRefresh   = Date.now();
+let _pricesStale        = false;
+
+async function refreshMarketPrices(){
+  try{
+    const {data, error} = await db.from("markets")
+      .select("id,q_yes,q_no,total_volume,price_history,oracle_locked,resolved")
+      .eq("resolved", false);
+    if(error || !data) return;
+    let changed = false;
+    data.forEach(row => {
+      const mi = STATE.markets.findIndex(m => m.id === row.id);
+      if(mi < 0) return;
+      const m = STATE.markets[mi];
+      if(m.qYes !== row.q_yes || m.qNo !== row.q_no || m.oracleLocked !== row.oracle_locked){
+        STATE.markets[mi] = {
+          ...m,
+          qYes:        row.q_yes        ?? m.qYes,
+          qNo:         row.q_no         ?? m.qNo,
+          totalVolume: row.total_volume  ?? m.totalVolume,
+          priceHistory: Array.isArray(row.price_history) ? row.price_history : m.priceHistory,
+          oracleLocked: row.oracle_locked ?? m.oracleLocked,
+        };
+        changed = true;
+      }
+    });
+    _lastPriceRefresh = Date.now();
+    if(_pricesStale){
+      _pricesStale = false;
+      // Precios actualizados después de estar vencidos — render obligatorio
+      notify("Precios actualizados ✓", "info");
+      render();
+    } else if(changed){
+      // Solo re-renderizar si el usuario está en una vista de mercados
+      if(["home","market","markets"].includes(STATE.view)) render();
+    }
+  }catch(e){
+    console.warn("[PriceRefresh] Error:", e?.message);
+  }
+}
+
+function startPriceRefresh(){
+  if(_priceRefreshTimer) clearInterval(_priceRefreshTimer);
+  _priceRefreshTimer = setInterval(refreshMarketPrices, PRICE_REFRESH_INTERVAL);
+}
+
+function stopPriceRefresh(){
+  if(_priceRefreshTimer){ clearInterval(_priceRefreshTimer); _priceRefreshTimer = null; }
+}
+
+// Detectar cuando el usuario vuelve a la pestaña
+document.addEventListener("visibilitychange", async () => {
+  if(document.hidden){
+    // Pestaña oculta — detener refresco para no gastar recursos
+    stopPriceRefresh();
+  } else {
+    // Pestaña vuelve a ser visible
+    const awayTime = Date.now() - _lastPriceRefresh;
+    if(awayTime >= STALE_PRICE_THRESHOLD){
+      // Estuvo ausente más de 60s → precios vencidos, refrescar inmediatamente
+      _pricesStale = true;
+      await refreshMarketPrices();
+    }
+    // Reiniciar el timer periódico
+    startPriceRefresh();
+  }
+});
+
+// Detectar cuando el modal de trade está abierto — refrescar precio antes de confirmar
+async function refreshPriceBeforeTrade(){
+  const awayTime = Date.now() - _lastPriceRefresh;
+  if(awayTime > 15000){ // más de 15s desde el último refresh
+    await refreshMarketPrices();
   }
 }
 let carouselTotal=0;
@@ -3396,104 +3477,104 @@ function renderMarket(){
   const pos=u?.positions[m.id]||{YES:0,NO:0},cc=CAT_COLOR[m.category]||"#888";
   let chartHtml=`<div style="color:var(--muted);font-size:13px;padding:20px 0;margin-top:8px;text-align:center">${t("chart_empty")}</div>`;
   if(m.priceHistory.length>1){
-    const data   = m.priceHistory;
-    const dataNo = data.map(v => 1-v);
+    const data = m.priceHistory;
 
-    // Rango Y con padding
-    const allVals = [...data, ...dataNo];
-    const rawMin  = Math.min(...allVals);
-    const rawMax  = Math.max(...allVals);
-    const pad     = Math.max((rawMax-rawMin)*0.15, 0.04);
-    const mn      = Math.max(0, rawMin - pad);
-    const mx      = Math.min(1, rawMax + pad);
-    const rng     = mx - mn || 0.01;
+    // Rango Y solo para SÍ con padding cómodo
+    const rawMin = Math.min(...data);
+    const rawMax = Math.max(...data);
+    const pad    = Math.max((rawMax-rawMin)*0.2, 0.05);
+    const mn     = Math.max(0, rawMin - pad);
+    const mx     = Math.min(1, rawMax + pad);
+    const rng    = mx - mn || 0.01;
 
     // Dimensiones SVG
-    const W=580, H=130, PL=42, PR=10, PT=10, PB=28;
+    const W=580, H=140, PL=42, PR=46, PT=12, PB=28;
     const cW=W-PL-PR, cH=H-PT-PB;
 
-    const toX = i  => PL + (i/(data.length-1))*cW;
-    const toY = v  => PT + cH - ((v-mn)/rng)*cH;
+    const toX = i => PL + (i/(data.length-1))*cW;
+    const toY = v => PT + cH - ((v-mn)/rng)*cH;
 
-    // Puntos YES y NO
-    const ptsYes = data.map((v,i)  => [toX(i), toY(v)]);
-    const ptsNo  = dataNo.map((v,i) => [toX(i), toY(v)]);
+    // Puntos SÍ
+    const ptsYes = data.map((v,i) => [toX(i), toY(v)]);
     const polyYes = ptsYes.map(p=>p.map(n=>n.toFixed(1)).join(",")).join(" ");
-    const polyNo  = ptsNo.map(p=>p.map(n=>n.toFixed(1)).join(",")).join(" ");
-
-    // Área bajo curva YES
     const areaYes = `M${ptsYes[0].map(n=>n.toFixed(1)).join(",")} ${ptsYes.slice(1).map(p=>"L"+p.map(n=>n.toFixed(1)).join(",")).join(" ")} L${(PL+cW).toFixed(1)},${(PT+cH).toFixed(1)} L${PL},${(PT+cH).toFixed(1)} Z`;
 
-    // Etiquetas eje Y (4 niveles)
-    const yLabels = [0,1,2,3].map(i => {
-      const v  = mn + (rng/3)*i;
+    // Etiquetas eje Y (5 niveles)
+    const yLabels = [0,1,2,3,4].map(i => {
+      const v  = mn + (rng/4)*i;
       const yp = toY(v);
       return {v, yp};
     });
 
     // Etiquetas eje X (max 5 puntos)
-    const xStep  = Math.max(1, Math.floor((data.length-1)/4));
+    const xStep = Math.max(1, Math.floor((data.length-1)/4));
     const xLabels = [];
     for(let i=0; i<data.length; i+=xStep) xLabels.push(i);
     if(xLabels[xLabels.length-1] !== data.length-1) xLabels.push(data.length-1);
 
-    // Línea de referencia 50%
-    const y50 = toY(0.5);
-
-    // Stats completas
+    const y50    = toY(0.5);
     const curYes = data[data.length-1];
     const curNo  = 1-curYes;
     const minYes = Math.min(...data), maxYes = Math.max(...data);
-    const minNo  = Math.min(...dataNo), maxNo = Math.max(...dataNo);
+    const minNo  = 1-maxYes, maxNo = 1-minYes;
     const avgYes = Math.round((data.reduce((s,v)=>s+v,0)/data.length)*1000)/1000;
-    const avgNo  = Math.round((dataNo.reduce((s,v)=>s+v,0)/dataNo.length)*1000)/1000;
+    const avgNo  = Math.round((1-avgYes)*1000)/1000;
     const trades = data.length;
+
+    // Color dinámico según posición actual
+    const lineColor = curYes >= 0.5 ? "#00e5a0" : "#e0284a";
+    const areaColor = curYes >= 0.5 ? "#00e5a0" : "#e0284a";
 
     chartHtml=`
     <div style="margin-top:4px">
-      <!-- Leyenda -->
-      <div style="display:flex;gap:16px;justify-content:flex-end;margin-bottom:8px;font-size:11px;font-weight:700">
-        <span style="display:flex;align-items:center;gap:5px"><span style="display:inline-block;width:12px;height:3px;background:#00e5a0;border-radius:2px"></span> SÍ ${pct(curYes)}</span>
-        <span style="display:flex;align-items:center;gap:5px"><span style="display:inline-block;width:12px;height:3px;background:#e0284a;border-radius:2px"></span> NO ${pct(curNo)}</span>
+      <!-- Indicadores actuales arriba -->
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+        <div style="font-size:11px;color:var(--muted)">Probabilidad por operación</div>
+        <div style="display:flex;gap:12px;font-size:13px;font-weight:800">
+          <span style="color:var(--yes)">SÍ ${pct(curYes)}</span>
+          <span style="color:var(--muted)">·</span>
+          <span style="color:var(--no)">NO ${pct(curNo)}</span>
+        </div>
       </div>
 
-      <!-- SVG Chart -->
+      <!-- SVG Chart — una sola línea -->
       <div style="position:relative">
         <svg width="100%" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" style="display:block;overflow:visible">
           <defs>
             <linearGradient id="gYes" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stop-color="#00e5a0" stop-opacity=".2"/>
-              <stop offset="100%" stop-color="#00e5a0" stop-opacity="0"/>
+              <stop offset="0%" stop-color="${areaColor}" stop-opacity=".18"/>
+              <stop offset="100%" stop-color="${areaColor}" stop-opacity="0"/>
             </linearGradient>
             <clipPath id="chartClip">
               <rect x="${PL}" y="${PT}" width="${cW}" height="${cH}"/>
             </clipPath>
           </defs>
 
-          <!-- Fondo del área del chart -->
-          <rect x="${PL}" y="${PT}" width="${cW}" height="${cH}" fill="transparent"/>
-
-          <!-- Líneas de cuadrícula horizontales -->
+          <!-- Grid horizontal -->
           ${yLabels.map(({v,yp})=>`
             <line x1="${PL}" y1="${yp.toFixed(1)}" x2="${PL+cW}" y2="${yp.toFixed(1)}"
               stroke="var(--border)" stroke-width="1" stroke-dasharray="4,4"/>
           `).join("")}
 
-          <!-- Línea 50% especial -->
+          <!-- Línea 50% -->
           <line x1="${PL}" y1="${y50.toFixed(1)}" x2="${PL+cW}" y2="${y50.toFixed(1)}"
-            stroke="var(--muted)" stroke-width="1" stroke-dasharray="6,3" opacity=".5"/>
-          <text x="${(PL-4).toFixed(0)}" y="${(y50+4).toFixed(0)}"
-            text-anchor="end" font-size="9" fill="var(--muted)" opacity=".7">50%</text>
+            stroke="var(--muted)" stroke-width="1.5" stroke-dasharray="6,3" opacity=".6"/>
+          <text x="${(PL-5).toFixed(0)}" y="${(y50+4).toFixed(0)}"
+            text-anchor="end" font-size="9" fill="var(--muted)" opacity=".8">50%</text>
 
-          <!-- Etiquetas eje Y -->
+          <!-- Eje Y: etiquetas SÍ a la izquierda, NO a la derecha -->
           ${yLabels.map(({v,yp})=>`
             <text x="${(PL-5).toFixed(0)}" y="${(yp+4).toFixed(0)}"
-              text-anchor="end" font-size="10" fill="var(--muted)" font-family="inherit">
+              text-anchor="end" font-size="10" fill="var(--yes)" font-family="inherit" opacity=".8">
               ${Math.round(v*100)}%
+            </text>
+            <text x="${(PL+cW+4).toFixed(0)}" y="${(yp+4).toFixed(0)}"
+              text-anchor="start" font-size="10" fill="var(--no)" font-family="inherit" opacity=".6">
+              ${Math.round((1-v)*100)}%
             </text>
           `).join("")}
 
-          <!-- Etiquetas eje X: T=trade number -->
+          <!-- Etiquetas eje X -->
           ${xLabels.map(i=>`
             <text x="${toX(i).toFixed(1)}" y="${(PT+cH+16).toFixed(0)}"
               text-anchor="middle" font-size="10" fill="var(--muted)" font-family="inherit">
@@ -3501,65 +3582,56 @@ function renderMarket(){
             </text>
           `).join("")}
 
-          <!-- Líneas min/max YES punteadas -->
-          <line x1="${PL}" y1="${toY(minYes).toFixed(1)}" x2="${(PL+cW).toFixed(1)}" y2="${toY(minYes).toFixed(1)}"
-            stroke="#00e5a0" stroke-width="1" stroke-dasharray="3,3" opacity=".45" clip-path="url(#chartClip)"/>
-          <line x1="${PL}" y1="${toY(maxYes).toFixed(1)}" x2="${(PL+cW).toFixed(1)}" y2="${toY(maxYes).toFixed(1)}"
-            stroke="#00e5a0" stroke-width="1" stroke-dasharray="3,3" opacity=".45" clip-path="url(#chartClip)"/>
-          <text x="${(PL+cW+3).toFixed(0)}" y="${(toY(minYes)+4).toFixed(0)}" font-size="9" fill="#00e5a0" opacity=".8">${Math.round(minYes*100)}%</text>
-          <text x="${(PL+cW+3).toFixed(0)}" y="${(toY(maxYes)+4).toFixed(0)}" font-size="9" fill="#00e5a0" opacity=".8">${Math.round(maxYes*100)}%</text>
-          <!-- Líneas min/max NO punteadas -->
-          <line x1="${PL}" y1="${toY(minNo).toFixed(1)}" x2="${(PL+cW).toFixed(1)}" y2="${toY(minNo).toFixed(1)}"
-            stroke="#e0284a" stroke-width="1" stroke-dasharray="3,3" opacity=".35" clip-path="url(#chartClip)"/>
-          <line x1="${PL}" y1="${toY(maxNo).toFixed(1)}" x2="${(PL+cW).toFixed(1)}" y2="${toY(maxNo).toFixed(1)}"
-            stroke="#e0284a" stroke-width="1" stroke-dasharray="3,3" opacity=".35" clip-path="url(#chartClip)"/>
-
-          <!-- Área YES -->
+          <!-- Área rellena bajo la curva -->
           <path d="${areaYes}" fill="url(#gYes)" clip-path="url(#chartClip)"/>
 
-          <!-- Línea NO -->
-          <polyline points="${polyNo}" fill="none" stroke="#e0284a"
-            stroke-width="2" stroke-linejoin="round" stroke-linecap="round"
-            clip-path="url(#chartClip)" opacity=".7"/>
+          <!-- Línea punteada min -->
+          <line x1="${PL}" y1="${toY(minYes).toFixed(1)}" x2="${(PL+cW).toFixed(1)}" y2="${toY(minYes).toFixed(1)}"
+            stroke="${lineColor}" stroke-width="1" stroke-dasharray="3,4" opacity=".4" clip-path="url(#chartClip)"/>
+          <!-- Línea punteada max -->
+          <line x1="${PL}" y1="${toY(maxYes).toFixed(1)}" x2="${(PL+cW).toFixed(1)}" y2="${toY(maxYes).toFixed(1)}"
+            stroke="${lineColor}" stroke-width="1" stroke-dasharray="3,4" opacity=".4" clip-path="url(#chartClip)"/>
 
-          <!-- Línea YES -->
-          <polyline points="${polyYes}" fill="none" stroke="#00e5a0"
+          <!-- Línea principal SÍ -->
+          <polyline points="${polyYes}" fill="none" stroke="${lineColor}"
             stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"
             clip-path="url(#chartClip)"/>
 
-          <!-- Punto actual YES -->
+          <!-- Punto final -->
           <circle cx="${toX(data.length-1).toFixed(1)}" cy="${toY(curYes).toFixed(1)}"
-            r="4" fill="#00e5a0" stroke="white" stroke-width="2"/>
+            r="5" fill="${lineColor}" stroke="white" stroke-width="2"/>
+          <!-- Etiqueta del punto final -->
+          <text x="${toX(data.length-1).toFixed(1)}" y="${(toY(curYes)-10).toFixed(0)}"
+            text-anchor="middle" font-size="10" fill="${lineColor}" font-weight="700">
+            ${Math.round(curYes*100)}%
+          </text>
 
-          <!-- Punto actual NO -->
-          <circle cx="${toX(data.length-1).toFixed(1)}" cy="${toY(curNo).toFixed(1)}"
-            r="4" fill="#e0284a" stroke="white" stroke-width="2"/>
-
-          <!-- Eje X -->
+          <!-- Ejes -->
           <line x1="${PL}" y1="${PT+cH}" x2="${PL+cW}" y2="${PT+cH}"
             stroke="var(--border-strong)" stroke-width="1"/>
-          <!-- Eje Y -->
           <line x1="${PL}" y1="${PT}" x2="${PL}" y2="${PT+cH}"
             stroke="var(--border-strong)" stroke-width="1"/>
         </svg>
+        <!-- Leyenda ejes -->
+        <div style="display:flex;justify-content:space-between;margin-top:2px;padding:0 ${PL}px 0 ${PL}px;font-size:9px;color:var(--muted)">
+          <span style="color:var(--yes);font-weight:600">← SÍ</span>
+          <span style="color:var(--no);font-weight:600">NO →</span>
+        </div>
       </div>
 
-      <!-- Stats tabla SÍ / NO -->
+      <!-- Stats tabla -->
       <div style="margin-top:14px;font-size:11px">
         <div style="display:grid;grid-template-columns:80px 1fr 1fr 1fr 1fr;gap:6px;align-items:center">
-          <!-- Header -->
           <div></div>
           <div style="text-align:center;font-weight:700;color:var(--muted);text-transform:uppercase;font-size:10px">Mín</div>
           <div style="text-align:center;font-weight:700;color:var(--muted);text-transform:uppercase;font-size:10px">Prom.</div>
           <div style="text-align:center;font-weight:700;color:var(--muted);text-transform:uppercase;font-size:10px">Máx</div>
           <div style="text-align:center;font-weight:700;color:var(--muted);text-transform:uppercase;font-size:10px">Actual</div>
-          <!-- Fila SÍ -->
           <div style="font-weight:700;color:var(--yes);font-size:12px">● SÍ</div>
           <div style="text-align:center;background:var(--card2);border-radius:6px;padding:6px;font-weight:700;color:var(--yes)">${pct(minYes)}</div>
           <div style="text-align:center;background:var(--card2);border-radius:6px;padding:6px;font-weight:700;color:var(--yes)">${pct(avgYes)}</div>
           <div style="text-align:center;background:var(--card2);border-radius:6px;padding:6px;font-weight:700;color:var(--yes)">${pct(maxYes)}</div>
           <div style="text-align:center;background:rgba(0,229,160,.1);border:1.5px solid rgba(0,229,160,.3);border-radius:6px;padding:6px;font-weight:800;color:var(--yes)">${pct(curYes)}</div>
-          <!-- Fila NO -->
           <div style="font-weight:700;color:var(--no);font-size:12px">● NO</div>
           <div style="text-align:center;background:var(--card2);border-radius:6px;padding:6px;font-weight:700;color:var(--no)">${pct(minNo)}</div>
           <div style="text-align:center;background:var(--card2);border-radius:6px;padding:6px;font-weight:700;color:var(--no)">${pct(avgNo)}</div>
@@ -3567,7 +3639,7 @@ function renderMarket(){
           <div style="text-align:center;background:rgba(224,40,74,.08);border:1.5px solid rgba(224,40,74,.25);border-radius:6px;padding:6px;font-weight:800;color:var(--no)">${pct(curNo)}</div>
         </div>
         <div style="text-align:center;color:var(--muted);margin-top:8px;font-size:10px">
-          ${trades} operaciones · Eje X: T1 = primera operación · T${trades} = última · Eje Y: probabilidad %
+          ${trades} operaciones · Eje izq: prob. SÍ · Eje der: prob. NO · NO = 100% − SÍ
         </div>
       </div>
     </div>`;
@@ -3602,7 +3674,7 @@ function renderMarket(){
     <div style="text-align:right;flex-shrink:0"><div class="mkt-prob-big">${pct(pYes)}</div><div style="color:var(--muted);font-size:12px;margin-top:4px">prob. ${t("detail_yes")}</div></div>
   </div>
   <div class="stats-grid">
-    ${[[t("detail_volume"),fmtVol(m.totalVolume)],[t("detail_closes"),timeLeft(m.closesAt)],[t("detail_liquidity"),b.toFixed(1)],...(u?[[t("detail_positions"),`${t("detail_yes")} ${(pos.YES||0).toFixed(2)} · ${t("detail_no")} ${(pos.NO||0).toFixed(2)}`]]:[[]])].map(([l,v])=>`<div class="card-sm"><div class="lbl">${l}</div><div style="font-size:18px;font-weight:800;color:var(--text)">${v}</div></div>`).join("")}
+    ${[[t("detail_volume"),fmtVol(m.totalVolume)],[t("detail_closes"),timeLeft(m.closesAt)],[t("detail_liquidity"),b.toFixed(1)],...(u?[[t("detail_positions"),`${t("detail_yes")} ${(pos.YES||0).toFixed(2)} · ${t("detail_no")} ${(pos.NO||0).toFixed(2)}`]]:[])].filter(([l,v])=>l&&v!==undefined).map(([l,v])=>`<div class="card-sm"><div class="lbl">${l}</div><div style="font-size:18px;font-weight:800;color:var(--text)">${v}</div></div>`).join("")}
   </div>
   <div class="card" style="margin-bottom:20px"><div class="lbl">${t("detail_price_history")} ${t("detail_yes")}</div>${chartHtml}</div>
   ${bottomAction}
@@ -4591,12 +4663,12 @@ function sharesFromCost(mkt, side, targetCost, iters=52){
 }
 
 function openTrade(marketId,side,mode){
-  // Sell requiere login; buy está abierto en modo simulación para no logueados
   if(mode==="sell"&&!getUser()){navigate("auth");return;}
   STATE.tradeMarketId=marketId;STATE.tradeSide=side;STATE.tradeMode=mode;
   STATE.tradeDollars="";STATE.tradeShares="";
   STATE.tradeOpen=true;
-  renderTradeModal();
+  // Refrescar precio antes de mostrar el modal
+  refreshPriceBeforeTrade().then(()=>renderTradeModal());
 }
 
 function renderTradeModal(){
