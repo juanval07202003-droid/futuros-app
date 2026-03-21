@@ -1050,7 +1050,8 @@ async function dbInit(){
     clearTimeout(timeout);
     DB_READY = true;
     dbStartRealtime();
-    startPriceRefresh(); // refresco periódico de precios
+    startPriceRefresh();
+    checkUrlOnLoad(); // leer URL antes de render
     render();
   }catch(e){
     clearTimeout(timeout);
@@ -2250,20 +2251,89 @@ function notify(msg,type="success"){
 // ═══════════════════════════════════════════════════════════════════
 // NAVIGATION
 // ═══════════════════════════════════════════════════════════════════
+function slugify(text){
+  return (text||"")
+    .toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g,"")
+    .replace(/[^a-z0-9\s-]/g,"")
+    .trim().replace(/\s+/g,"-")
+    .slice(0,60);
+}
+
 function navigate(view,opts={}){
   if((view==="portfolio"||view==="wallet")&&!getUser()){navigate("auth");return;}
   stopCarousel();
-  // Limpiar búsqueda al salir de home
   if(view !== "home") STATE.marketSearch = "";
   STATE.view=view;
   if(opts.marketId) STATE.selectedMarket=opts.marketId;
   if(opts.adminTab) STATE.adminTab=opts.adminTab;
+
+  // Actualizar URL del navegador
+  try{
+    const legalPages=["terms","privacy","cookies","risks","aml","responsible"];
+    let newUrl="/";
+    if(view==="market" && STATE.selectedMarket){
+      const m=getMarket(STATE.selectedMarket);
+      const slug=m?slugify(m.title):STATE.selectedMarket;
+      newUrl=`/market/${STATE.selectedMarket}/${slug}`;
+    } else if(legalPages.includes(view)){
+      newUrl=`/${view}`;
+    } else if(view==="home"){
+      newUrl="/";
+    }
+    history.pushState({view, marketId:STATE.selectedMarket||null}, "", newUrl);
+  }catch(e){}
+
   render();
-  // Cargar comentarios desde DB al abrir un mercado
   if(view==="market" && STATE.selectedMarket){
     dbLoadComments(STATE.selectedMarket);
   }
 }
+
+// Leer URL al cargar y navegar al mercado correcto
+function checkUrlOnLoad(){
+  const path = window.location.pathname;
+  const params = new URLSearchParams(window.location.search);
+
+  // Formato /market/ID/slug
+  const mMatch = path.match(/^\/market\/([^\/]+)/);
+  if(mMatch){
+    const mid = mMatch[1];
+    if(getMarket(mid)){
+      STATE.selectedMarket=mid; STATE.view="market";
+      dbLoadComments(mid); return;
+    }
+  }
+  // Formato legacy ?m=ID
+  const legacyId = params.get("m");
+  if(legacyId && getMarket(legacyId)){
+    STATE.selectedMarket=legacyId; STATE.view="market";
+    const m=getMarket(legacyId);
+    const slug=m?slugify(m.title):legacyId;
+    history.replaceState({view:"market",marketId:legacyId},"",`/market/${legacyId}/${slug}`);
+    dbLoadComments(legacyId); return;
+  }
+  // Páginas legales
+  const page=path.replace(/^\//,"");
+  const legalPages=["terms","privacy","cookies","risks","aml","responsible"];
+  if(legalPages.includes(page)) STATE.view=page;
+}
+
+// Botón Atrás/Adelante del navegador
+window.addEventListener("popstate",(e)=>{
+  const path=window.location.pathname;
+  const mMatch=path.match(/^\/market\/([^\/]+)/);
+  if(mMatch && getMarket(mMatch[1])){
+    STATE.view="market"; STATE.selectedMarket=mMatch[1];
+    dbLoadComments(mMatch[1]);
+  } else if(e.state?.view){
+    STATE.view=e.state.view;
+    if(e.state.marketId) STATE.selectedMarket=e.state.marketId;
+  } else {
+    STATE.view="home";
+  }
+  render();
+});
 
 // ═══════════════════════════════════════════════════════════════════
 // RENDER ENGINE
@@ -3773,21 +3843,24 @@ function renderComments(marketId){
 function shareMarket(marketId, method){
   const m=getMarket(marketId);
   if(!m)return;
+  const en = STATE.lang==="en";
   const title=`⚡ ${m.title}`;
-  const text=`¿Qué crees que va a pasar? Invierte en Futuros y gana si aciertas.`;
-  const url=window.location.href.split('?')[0]+'?m='+marketId;
+  const text= en
+    ? `What do you think will happen? Invest on Futuros and win if you're right.`
+    : `¿Qué crees que va a pasar? Invierte en Futuros y gana si aciertas.`;
+  const slug = slugify(m.title);
+  const base = `${window.location.origin}/market/${marketId}/${slug}`;
+  const url  = base;
 
   if(method==='native' && navigator.share){
     navigator.share({title, text, url}).catch(()=>{});
     return;
   }
-  // Fallback: copiar al portapapeles
-  const copyText=url;
   if(navigator.clipboard){
-    navigator.clipboard.writeText(copyText).then(()=>showCopied(marketId));
+    navigator.clipboard.writeText(url).then(()=>showCopied(marketId));
   } else {
     const ta=document.createElement('textarea');
-    ta.value=copyText;ta.style.position='fixed';ta.style.opacity='0';
+    ta.value=url;ta.style.position='fixed';ta.style.opacity='0';
     document.body.appendChild(ta);ta.select();
     document.execCommand('copy');document.body.removeChild(ta);
     showCopied(marketId);
