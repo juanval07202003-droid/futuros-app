@@ -1081,6 +1081,41 @@ async function dbSaveMarket(market){
   }catch(e){ console.error("[DB] excepción guardando mercado:", e?.message||e); }
 }
 
+// Actualización atómica del mercado — solo modifica los campos que cambiaron
+async function dbUpdateMarketAtomic(marketId, deltaQYes, deltaQNo, deltaVolume, deltaSpread, deltaPaid, newPriceHistory){
+  try{
+    // Leer estado actual desde DB
+    const {data:current} = await db.from("markets")
+      .select("q_yes,q_no,total_volume,spread_pool,total_paid,price_history")
+      .eq("id", marketId).maybeSingle();
+    if(!current) return false;
+    const newRow = {
+      q_yes:        Math.max(0, (current.q_yes||0)      + deltaQYes),
+      q_no:         Math.max(0, (current.q_no||0)       + deltaQNo),
+      total_volume: Math.max(0, (current.total_volume||0)+ deltaVolume),
+      spread_pool:  Math.max(0, (current.spread_pool||0) + deltaSpread),
+      total_paid:   Math.max(0, (current.total_paid||0)  + deltaPaid),
+      price_history: newPriceHistory,
+    };
+    const {error} = await db.from("markets").update(newRow).eq("id", marketId);
+    if(error){ console.error("[DB] atomic market update:", error.message); return false; }
+    return true;
+  }catch(e){ console.error("[DB] excepción atomic market:", e?.message||e); return false; }
+}
+
+// Actualización atómica del balance del usuario
+async function dbUpdateBalanceAtomic(userId, delta){
+  try{
+    const {data:current} = await db.from("users").select("balance").eq("id",userId).maybeSingle();
+    if(!current) return null;
+    const newBalance = Math.round(((current.balance||0) + delta)*100)/100;
+    if(newBalance < 0) return null; // saldo insuficiente
+    const {error} = await db.from("users").update({balance: newBalance}).eq("id", userId);
+    if(error){ console.error("[DB] atomic balance update:", error.message); return null; }
+    return newBalance;
+  }catch(e){ console.error("[DB] excepción atomic balance:", e?.message||e); return null; }
+}
+
 async function dbSaveAllMarkets(){
   try{
     const rows = STATE.markets.map(marketToDbRow);
@@ -5119,32 +5154,42 @@ async function executeTrade(){
       description:`Compra ${side} ${usd(dollars)} → ${netShares.toFixed(4)} shares · ${m.title.slice(0,28)}…`,
       date:new Date().toISOString(),status:"confirmed"};
     STATE.users[ui]={...u,balance:u.balance-dollars,positions:{...u.positions,[m.id]:pos},transactions:[...(u.transactions||[]),tx]};
-    notify(`Compraste ${netShares.toFixed(4)} shares ${side} por ${usd(dollars)} ✓`);
     closeTradeModal();render();
-    // Persistir en DB — en paralelo para no bloquear UI
+    // Persistir en DB con operaciones atómicas
     const updatedUser = STATE.users[ui];
     try{
-      // Guardar secuencialmente para detectar errores
-      await dbSaveMarket(STATE.markets[idx]);
-      await dbSaveUser(updatedUser);
-      const posSaved = await dbSavePositions(updatedUser.id, updatedUser.positions);
-      await dbSaveTransaction(updatedUser.id, tx);
-      // Recargar posiciones desde DB para confirmar
-      const confirmedPositions = await dbLoadPositions(updatedUser.id);
-      const uiNow = STATE.users.findIndex(u=>u.id===updatedUser.id);
-      if(uiNow>=0){
-        if(Object.keys(confirmedPositions).length > 0){
-          STATE.users[uiNow] = {...STATE.users[uiNow], positions: confirmedPositions};
-        } else {
-          // Si DB devuelve vacío pero sabemos que hay posiciones, mantener STATE
-          console.warn("[Trade] DB devolvió posiciones vacías — manteniendo STATE local");
-          // Reintentar guardar una vez más
-          await dbSavePositions(updatedUser.id, updatedUser.positions);
-        }
+      // 1. Actualizar balance atómicamente (resta el costo real)
+      const newBalance = await dbUpdateBalanceAtomic(updatedUser.id, -dollars);
+      if(newBalance !== null){
+        const uiNow = STATE.users.findIndex(u=>u.id===updatedUser.id);
+        if(uiNow>=0) STATE.users[uiNow] = {...STATE.users[uiNow], balance: newBalance};
       }
+      // 2. Actualizar mercado atómicamente (suma deltas)
+      await dbUpdateMarketAtomic(
+        m.id,
+        side==="YES" ? rawShares : 0,
+        side==="NO"  ? rawShares : 0,
+        rawShares, spreadEarned, dollars, nm.priceHistory
+      );
+      // 3. Guardar posiciones y transacción
+      await dbSavePositions(updatedUser.id, updatedUser.positions);
+      await dbSaveTransaction(updatedUser.id, tx);
+      // 4. Recargar mercado desde DB para sincronizar STATE
+      const {data:freshMarket} = await db.from("markets").select("*").eq("id",m.id).maybeSingle();
+      if(freshMarket){
+        const mi = STATE.markets.findIndex(mk=>mk.id===m.id);
+        if(mi>=0) STATE.markets[mi] = {...STATE.markets[mi], ...dbRowToMarket(freshMarket)};
+      }
+      // 5. Confirmar posiciones desde DB
+      const confirmedPositions = await dbLoadPositions(updatedUser.id);
+      const uiNow2 = STATE.users.findIndex(u=>u.id===updatedUser.id);
+      if(uiNow2>=0 && Object.keys(confirmedPositions).length > 0){
+        STATE.users[uiNow2] = {...STATE.users[uiNow2], positions: confirmedPositions};
+      }
+      notify(`Compraste ${netShares.toFixed(4)} shares ${side} por ${usd(dollars)} ✓`);
     }catch(e){
       console.error("[Trade] Error guardando en DB:", e);
-      notify("Trade ejecutado pero hubo un error al guardar — recarga si ves inconsistencias","error");
+      notify("Trade ejecutado pero hubo un error al guardar — recarga la página","error");
     }
   } else {
     const shares=parseFloat(STATE.tradeShares);
@@ -5169,24 +5214,40 @@ async function executeTrade(){
       description:`Venta ${shares.toFixed(4)} ${side} +${usd(ret)} · ${m.title.slice(0,28)}…`,
       date:new Date().toISOString(),status:"confirmed"};
     STATE.users[ui]={...u,balance:u.balance+ret,positions:{...u.positions,[m.id]:np},transactions:[...(u.transactions||[]),tx]};
-    notify(`Vendiste ${shares.toFixed(4)} shares ${side} · +${usd(ret)}`);
     closeTradeModal();render();
-    // Persistir en DB
+    // Persistir en DB con operaciones atómicas
     const updatedUser2 = STATE.users[ui];
     try{
-      await Promise.all([
-        dbSaveMarket(STATE.markets[idx]),
-        dbSaveUser(updatedUser2),
-        dbSavePositions(updatedUser2.id, updatedUser2.positions),
-        dbSaveTransaction(updatedUser2.id, tx),
-      ]);
-      // Recargar posiciones desde DB para confirmar
+      // 1. Actualizar balance atómicamente (suma el retorno real)
+      const newBalance2 = await dbUpdateBalanceAtomic(updatedUser2.id, ret);
+      if(newBalance2 !== null){
+        const uiNow2 = STATE.users.findIndex(u=>u.id===updatedUser2.id);
+        if(uiNow2>=0) STATE.users[uiNow2] = {...STATE.users[uiNow2], balance: newBalance2};
+      }
+      // 2. Actualizar mercado atómicamente
+      await dbUpdateMarketAtomic(
+        m.id,
+        side==="YES" ? -shares : 0,
+        side==="NO"  ? -shares : 0,
+        -shares, 0, 0, nm.priceHistory
+      );
+      // 3. Guardar posiciones y transacción
+      await dbSavePositions(updatedUser2.id, updatedUser2.positions);
+      await dbSaveTransaction(updatedUser2.id, tx);
+      // 4. Recargar mercado desde DB
+      const {data:freshMarket2} = await db.from("markets").select("*").eq("id",m.id).maybeSingle();
+      if(freshMarket2){
+        const mi2 = STATE.markets.findIndex(mk=>mk.id===m.id);
+        if(mi2>=0) STATE.markets[mi2] = {...STATE.markets[mi2], ...dbRowToMarket(freshMarket2)};
+      }
+      // 5. Confirmar posiciones desde DB
       const confirmedPos2 = await dbLoadPositions(updatedUser2.id);
-      const uiNow2 = STATE.users.findIndex(u=>u.id===updatedUser2.id);
-      if(uiNow2>=0) STATE.users[uiNow2] = {...STATE.users[uiNow2], positions: confirmedPos2};
+      const uiNow2b = STATE.users.findIndex(u=>u.id===updatedUser2.id);
+      if(uiNow2b>=0) STATE.users[uiNow2b] = {...STATE.users[uiNow2b], positions: confirmedPos2};
+      notify(`Vendiste ${shares.toFixed(4)} shares ${side} · +${usd(ret)}`);
     }catch(e){
       console.error("[Trade] Error guardando en DB:", e);
-      notify("Venta ejecutada pero hubo un error al guardar — recarga si ves inconsistencias","error");
+      notify("Venta ejecutada pero hubo un error al guardar — recarga la página","error");
     }
   }
 }
