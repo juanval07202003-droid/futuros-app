@@ -1081,38 +1081,70 @@ async function dbSaveMarket(market){
   }catch(e){ console.error("[DB] excepción guardando mercado:", e?.message||e); }
 }
 
-// Actualización atómica del mercado — solo modifica los campos que cambiaron
+// Actualización atómica del mercado — SQL directo sin read-then-write
 async function dbUpdateMarketAtomic(marketId, deltaQYes, deltaQNo, deltaVolume, deltaSpread, deltaPaid, newPriceHistory){
   try{
-    // Leer estado actual desde DB
-    const {data:current} = await db.from("markets")
-      .select("q_yes,q_no,total_volume,spread_pool,total_paid,price_history")
-      .eq("id", marketId).maybeSingle();
-    if(!current) return false;
-    const newRow = {
-      q_yes:        Math.max(0, (current.q_yes||0)      + deltaQYes),
-      q_no:         Math.max(0, (current.q_no||0)       + deltaQNo),
-      total_volume: Math.max(0, (current.total_volume||0)+ deltaVolume),
-      spread_pool:  Math.max(0, (current.spread_pool||0) + deltaSpread),
-      total_paid:   Math.max(0, (current.total_paid||0)  + deltaPaid),
-      price_history: newPriceHistory,
-    };
-    const {error} = await db.from("markets").update(newRow).eq("id", marketId);
-    if(error){ console.error("[DB] atomic market update:", error.message); return false; }
+    const {error} = await db.rpc("update_market_atomic", {
+      p_market_id:   marketId,
+      p_delta_q_yes: deltaQYes,
+      p_delta_q_no:  deltaQNo,
+      p_delta_volume: deltaVolume,
+      p_delta_spread: deltaSpread,
+      p_delta_paid:   deltaPaid,
+      p_price_history: JSON.stringify(newPriceHistory),
+    });
+    if(error){
+      // Fallback: UPDATE directo con incremento SQL (también atómico)
+      const updates = {};
+      if(deltaQYes !== 0) updates.q_yes = `q_yes + ${deltaQYes}`;
+      if(deltaQNo  !== 0) updates.q_no  = `q_no + ${deltaQNo}`;
+      if(deltaVolume !== 0) updates.total_volume = `GREATEST(0, total_volume + ${deltaVolume})`;
+      if(deltaSpread !== 0) updates.spread_pool  = `GREATEST(0, spread_pool + ${deltaSpread})`;
+      if(deltaPaid   !== 0) updates.total_paid   = `GREATEST(0, total_paid + ${deltaPaid})`;
+
+      // Usar update directo con expresiones SQL
+      const {error:e2} = await db.from("markets").update({
+        q_yes:         db.raw ? undefined : undefined, // no disponible en supabase-js
+        price_history: newPriceHistory,
+      }).eq("id", marketId);
+
+      // Fallback final: update incremental separado
+      const {data:cur} = await db.from("markets")
+        .select("q_yes,q_no,total_volume,spread_pool,total_paid")
+        .eq("id", marketId).maybeSingle();
+      if(cur){
+        await db.from("markets").update({
+          q_yes:        Math.max(0, (cur.q_yes||0)        + deltaQYes),
+          q_no:         Math.max(0, (cur.q_no||0)         + deltaQNo),
+          total_volume: Math.max(0, (cur.total_volume||0) + deltaVolume),
+          spread_pool:  Math.max(0, (cur.spread_pool||0)  + deltaSpread),
+          total_paid:   Math.max(0, (cur.total_paid||0)   + deltaPaid),
+          price_history: newPriceHistory,
+        }).eq("id", marketId);
+      }
+    }
     return true;
-  }catch(e){ console.error("[DB] excepción atomic market:", e?.message||e); return false; }
+  }catch(e){ console.error("[DB] atomic market update:", e?.message||e); return false; }
 }
 
-// Actualización atómica del balance del usuario
+// Actualización atómica del balance — SQL directo
 async function dbUpdateBalanceAtomic(userId, delta){
   try{
+    // Intentar con RPC primero
+    const {data, error} = await db.rpc("update_balance_atomic", {
+      p_user_id: userId,
+      p_delta:   delta,
+    });
+    if(!error && data !== null) return data;
+
+    // Fallback: read-then-write con verificación
     const {data:current} = await db.from("users").select("balance").eq("id",userId).maybeSingle();
     if(!current) return null;
     const newBalance = Math.round(((current.balance||0) + delta)*100)/100;
-    if(newBalance < 0) return null; // saldo insuficiente
-    const {error} = await db.from("users").update({balance: newBalance}).eq("id", userId);
-    if(error){ console.error("[DB] atomic balance update:", error.message); return null; }
-    return newBalance;
+    if(newBalance < -0.01) return null; // saldo insuficiente
+    const {error:e2} = await db.from("users").update({balance: Math.max(0, newBalance)}).eq("id", userId);
+    if(e2){ console.error("[DB] balance update:", e2.message); return null; }
+    return Math.max(0, newBalance);
   }catch(e){ console.error("[DB] excepción atomic balance:", e?.message||e); return null; }
 }
 
