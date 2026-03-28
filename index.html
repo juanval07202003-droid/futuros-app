@@ -1402,12 +1402,36 @@ function dbStartRealtime(){
       if(!updated) return;
       const mi = STATE.markets.findIndex(m => m.id === updated.id);
       if(mi < 0) return;
-      // Preservar datos locales que no vienen de DB
+
+      const oldMarket = STATE.markets[mi];
+      const oldPrice  = oldMarket ? getPrice(oldMarket,"YES") : null;
+
+      // Actualizar STATE con datos frescos de DB
       STATE.markets[mi] = {
         ...STATE.markets[mi],
         ...dbRowToMarket(updated),
       };
-      // Re-renderizar solo si el usuario está viendo ese mercado o el home
+
+      const newPrice = getPrice(STATE.markets[mi],"YES");
+
+      // Si el modal de trade está abierto para este mercado → actualizarlo
+      if(STATE.tradeOpen && STATE.tradeMarketId === updated.id){
+        // Notificar al usuario que el precio cambió
+        if(oldPrice !== null && Math.abs(newPrice - oldPrice) > 0.001){
+          const dir   = newPrice > oldPrice ? "▲" : "▼";
+          const color = newPrice > oldPrice ? "var(--yes)" : "var(--no)";
+          const el    = document.getElementById("trade-price-update");
+          if(el){
+            el.innerHTML = `<span style="color:${color};font-weight:700;font-size:12px">${dir} Precio actualizado: ${Math.round(newPrice*100)}%</span>`;
+            setTimeout(()=>{ if(el) el.innerHTML=""; }, 3000);
+          }
+        }
+        // Re-renderizar el modal con el precio nuevo
+        renderTradeModal();
+        return;
+      }
+
+      // Re-renderizar la vista si corresponde
       if(STATE.view === "home" || STATE.view === "markets" ||
         (STATE.view === "market" && STATE.selectedMarket === updated.id)){
         render();
@@ -3672,59 +3696,57 @@ function renderMarket(){
   const pos=u?.positions[m.id]||{YES:0,NO:0},cc=CAT_COLOR[m.category]||"#888";
   let chartHtml=`<div style="color:var(--muted);font-size:13px;padding:20px 0;margin-top:8px;text-align:center">${t("chart_empty")}</div>`;
   if(m.priceHistory.length>1){
-    const data = m.priceHistory;
+    const data     = m.priceHistory;
+    const curYes   = data[data.length-1];
+    const curNo    = 1 - curYes;
+    const minYes   = Math.min(...data), maxYes = Math.max(...data);
+    const minNo    = 1-maxYes, maxNo = 1-minYes;
+    const avgYes   = Math.round((data.reduce((s,v)=>s+v,0)/data.length)*1000)/1000;
+    const avgNo    = Math.round((1-avgYes)*1000)/1000;
+    const trades   = data.length;
+    const lineColor = "#00e5a0";
+    const areaColor = "#00e5a0";
 
-    // Rango Y solo para SÍ con padding cómodo
-    const rawMin = Math.min(...data);
-    const rawMax = Math.max(...data);
-    const pad    = Math.max((rawMax-rawMin)*0.2, 0.05);
-    const mn     = Math.max(0, rawMin - pad);
-    const mx     = Math.min(1, rawMax + pad);
-    const rng    = mx - mn || 0.01;
-
-    // Dimensiones SVG
-    const W=580, H=140, PL=42, PR=46, PT=12, PB=28;
+    // ── Dimensiones ──────────────────────────────────────────────
+    const W=580, H=150, PL=8, PR=44, PT=16, PB=32;
     const cW=W-PL-PR, cH=H-PT-PB;
 
-    const toX = i => PL + (i/(data.length-1))*cW;
-    const toY = v => PT + cH - ((v-mn)/rng)*cH;
+    // ── Eje Y: siempre 0–100%, marcas cada 20% ────────────────
+    const toY = v => PT + cH - (v * cH); // v ya está en 0-1
+    const yMarks = [0, 0.2, 0.4, 0.6, 0.8, 1.0];
 
-    // Puntos SÍ
-    const ptsYes = data.map((v,i) => [toX(i), toY(v)]);
+    // ── Eje X: tiempo real desde createdAt hasta ahora ────────
+    const startMs = m.createdAt ? new Date(m.createdAt).getTime() : Date.now() - (trades-1)*3600000;
+    const endMs   = Date.now();
+    const totalMs = endMs - startMs || 1;
+    const toX = i => PL + (i/(data.length-1)) * cW;
+
+    // Calcular etiquetas de fecha distribuidas
+    function fmtDateLabel(ms){
+      const d = new Date(ms);
+      const months = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
+      return months[d.getMonth()] + " " + d.getDate();
+    }
+    // Generar 4-5 marcas de fecha distribuidas uniformemente
+    const xDateLabels = [];
+    const numXMarks = Math.min(5, trades);
+    for(let k=0; k<numXMarks; k++){
+      const frac = k/(numXMarks-1||1);
+      const ms   = startMs + frac * totalMs;
+      const xi   = PL + frac * cW;
+      xDateLabels.push({xi, label: fmtDateLabel(ms)});
+    }
+
+    // ── Puntos de la línea ────────────────────────────────────
+    const ptsYes  = data.map((v,i) => [toX(i), toY(v)]);
     const polyYes = ptsYes.map(p=>p.map(n=>n.toFixed(1)).join(",")).join(" ");
     const areaYes = `M${ptsYes[0].map(n=>n.toFixed(1)).join(",")} ${ptsYes.slice(1).map(p=>"L"+p.map(n=>n.toFixed(1)).join(",")).join(" ")} L${(PL+cW).toFixed(1)},${(PT+cH).toFixed(1)} L${PL},${(PT+cH).toFixed(1)} Z`;
 
-    // Etiquetas eje Y (5 niveles)
-    const yLabels = [0,1,2,3,4].map(i => {
-      const v  = mn + (rng/4)*i;
-      const yp = toY(v);
-      return {v, yp};
-    });
-
-    // Etiquetas eje X (max 5 puntos)
-    const xStep = Math.max(1, Math.floor((data.length-1)/4));
-    const xLabels = [];
-    for(let i=0; i<data.length; i+=xStep) xLabels.push(i);
-    if(xLabels[xLabels.length-1] !== data.length-1) xLabels.push(data.length-1);
-
-    const y50    = toY(0.5);
-    const curYes = data[data.length-1];
-    const curNo  = 1-curYes;
-    const minYes = Math.min(...data), maxYes = Math.max(...data);
-    const minNo  = 1-maxYes, maxNo = 1-minYes;
-    const avgYes = Math.round((data.reduce((s,v)=>s+v,0)/data.length)*1000)/1000;
-    const avgNo  = Math.round((1-avgYes)*1000)/1000;
-    const trades = data.length;
-
-    // Color dinámico según posición actual
-    const lineColor = curYes >= 0.5 ? "#00e5a0" : "#e0284a";
-    const areaColor = curYes >= 0.5 ? "#00e5a0" : "#e0284a";
-
     chartHtml=`
     <div style="margin-top:4px">
-      <!-- Indicadores actuales arriba -->
+      <!-- Header con valores actuales -->
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-        <div style="font-size:11px;color:var(--muted)">Probabilidad por operación</div>
+        <div style="font-size:11px;color:var(--muted)">Historial de precio</div>
         <div style="display:flex;gap:12px;font-size:13px;font-weight:800">
           <span style="color:var(--yes)">SÍ ${pct(curYes)}</span>
           <span style="color:var(--muted)">·</span>
@@ -3732,12 +3754,12 @@ function renderMarket(){
         </div>
       </div>
 
-      <!-- SVG Chart — una sola línea -->
+      <!-- SVG Chart -->
       <div style="position:relative">
         <svg width="100%" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" style="display:block;overflow:visible">
           <defs>
             <linearGradient id="gYes" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stop-color="${areaColor}" stop-opacity=".18"/>
+              <stop offset="0%"   stop-color="${areaColor}" stop-opacity=".15"/>
               <stop offset="100%" stop-color="${areaColor}" stop-opacity="0"/>
             </linearGradient>
             <clipPath id="chartClip">
@@ -3745,96 +3767,75 @@ function renderMarket(){
             </clipPath>
           </defs>
 
-          <!-- Grid horizontal -->
-          ${yLabels.map(({v,yp})=>`
-            <line x1="${PL}" y1="${yp.toFixed(1)}" x2="${PL+cW}" y2="${yp.toFixed(1)}"
-              stroke="var(--border)" stroke-width="1" stroke-dasharray="4,4"/>
-          `).join("")}
+          <!-- Líneas horizontales cada 20% — muy sutiles y punteadas -->
+          ${yMarks.map(v=>{
+            const yp = toY(v);
+            return `<line x1="${PL}" y1="${yp.toFixed(1)}" x2="${(PL+cW).toFixed(1)}" y2="${yp.toFixed(1)}"
+              stroke="var(--border)"
+              stroke-width="0.8"
+              stroke-dasharray="3,5"
+              opacity="0.4"/>`;
+          }).join("")}
 
-          <!-- Línea 50% -->
-          <line x1="${PL}" y1="${y50.toFixed(1)}" x2="${PL+cW}" y2="${y50.toFixed(1)}"
-            stroke="var(--muted)" stroke-width="1.5" stroke-dasharray="6,3" opacity=".6"/>
-          <text x="${(PL-5).toFixed(0)}" y="${(y50+4).toFixed(0)}"
-            text-anchor="end" font-size="9" fill="var(--muted)" opacity=".8">50%</text>
-
-          <!-- Eje Y: etiquetas SÍ a la izquierda, NO a la derecha -->
-          ${yLabels.map(({v,yp})=>`
-            <text x="${(PL-5).toFixed(0)}" y="${(yp+4).toFixed(0)}"
-              text-anchor="end" font-size="10" fill="var(--yes)" font-family="inherit" opacity=".8">
+          <!-- Etiquetas eje Y — derecha, 0-100% -->
+          ${yMarks.map(v=>{
+            const yp = toY(v);
+            return `<text x="${(PL+cW+6).toFixed(0)}" y="${(yp+3.5).toFixed(0)}"
+              text-anchor="start" font-size="9.5" fill="var(--muted)" font-family="inherit" opacity=".7">
               ${Math.round(v*100)}%
-            </text>
-            <text x="${(PL+cW+4).toFixed(0)}" y="${(yp+4).toFixed(0)}"
-              text-anchor="start" font-size="10" fill="var(--no)" font-family="inherit" opacity=".6">
-              ${Math.round((1-v)*100)}%
-            </text>
-          `).join("")}
+            </text>`;
+          }).join("")}
 
-          <!-- Etiquetas eje X -->
-          ${xLabels.map(i=>`
-            <text x="${toX(i).toFixed(1)}" y="${(PT+cH+16).toFixed(0)}"
-              text-anchor="middle" font-size="10" fill="var(--muted)" font-family="inherit">
-              T${i+1}
-            </text>
-          `).join("")}
-
-          <!-- Área rellena bajo la curva -->
+          <!-- Área rellena -->
           <path d="${areaYes}" fill="url(#gYes)" clip-path="url(#chartClip)"/>
 
-          <!-- Línea punteada min -->
-          <line x1="${PL}" y1="${toY(minYes).toFixed(1)}" x2="${(PL+cW).toFixed(1)}" y2="${toY(minYes).toFixed(1)}"
-            stroke="${lineColor}" stroke-width="1" stroke-dasharray="3,4" opacity=".4" clip-path="url(#chartClip)"/>
-          <!-- Línea punteada max -->
-          <line x1="${PL}" y1="${toY(maxYes).toFixed(1)}" x2="${(PL+cW).toFixed(1)}" y2="${toY(maxYes).toFixed(1)}"
-            stroke="${lineColor}" stroke-width="1" stroke-dasharray="3,4" opacity=".4" clip-path="url(#chartClip)"/>
-
-          <!-- Línea principal SÍ -->
+          <!-- Línea principal -->
           <polyline points="${polyYes}" fill="none" stroke="${lineColor}"
-            stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"
+            stroke-width="2" stroke-linejoin="round" stroke-linecap="round"
             clip-path="url(#chartClip)"/>
 
           <!-- Punto final -->
           <circle cx="${toX(data.length-1).toFixed(1)}" cy="${toY(curYes).toFixed(1)}"
-            r="5" fill="${lineColor}" stroke="white" stroke-width="2"/>
-          <!-- Etiqueta del punto final -->
-          <text x="${toX(data.length-1).toFixed(1)}" y="${(toY(curYes)-10).toFixed(0)}"
-            text-anchor="middle" font-size="10" fill="${lineColor}" font-weight="700">
+            r="4" fill="${lineColor}" stroke="white" stroke-width="2"/>
+          <text x="${toX(data.length-1).toFixed(1)}" y="${(toY(curYes)-9).toFixed(0)}"
+            text-anchor="middle" font-size="9.5" fill="${lineColor}" font-weight="700">
             ${Math.round(curYes*100)}%
           </text>
 
-          <!-- Ejes -->
-          <line x1="${PL}" y1="${PT+cH}" x2="${PL+cW}" y2="${PT+cH}"
-            stroke="var(--border-strong)" stroke-width="1"/>
-          <line x1="${PL}" y1="${PT}" x2="${PL}" y2="${PT+cH}"
-            stroke="var(--border-strong)" stroke-width="1"/>
+          <!-- Eje X inferior -->
+          <line x1="${PL}" y1="${(PT+cH).toFixed(1)}" x2="${(PL+cW).toFixed(1)}" y2="${(PT+cH).toFixed(1)}"
+            stroke="var(--border)" stroke-width="1"/>
+
+          <!-- Etiquetas eje X — fechas reales -->
+          ${xDateLabels.map(({xi,label})=>`
+            <line x1="${xi.toFixed(1)}" y1="${(PT+cH).toFixed(1)}" x2="${xi.toFixed(1)}" y2="${(PT+cH+4).toFixed(0)}"
+              stroke="var(--border)" stroke-width="1"/>
+            <text x="${xi.toFixed(1)}" y="${(PT+cH+14).toFixed(0)}"
+              text-anchor="middle" font-size="9.5" fill="var(--muted)" font-family="inherit">
+              ${label}
+            </text>
+          `).join("")}
         </svg>
-        <!-- Leyenda ejes -->
-        <div style="display:flex;justify-content:space-between;margin-top:2px;padding:0 ${PL}px 0 ${PL}px;font-size:9px;color:var(--muted)">
-          <span style="color:var(--yes);font-weight:600">← SÍ</span>
-          <span style="color:var(--no);font-weight:600">NO →</span>
-        </div>
       </div>
 
       <!-- Stats tabla -->
       <div style="margin-top:14px;font-size:11px">
-        <div style="display:grid;grid-template-columns:80px 1fr 1fr 1fr 1fr;gap:6px;align-items:center">
+        <div style="display:grid;grid-template-columns:60px 1fr 1fr 1fr 1fr;gap:5px;align-items:center">
           <div></div>
-          <div style="text-align:center;font-weight:700;color:var(--muted);text-transform:uppercase;font-size:10px">Mín</div>
-          <div style="text-align:center;font-weight:700;color:var(--muted);text-transform:uppercase;font-size:10px">Prom.</div>
-          <div style="text-align:center;font-weight:700;color:var(--muted);text-transform:uppercase;font-size:10px">Máx</div>
-          <div style="text-align:center;font-weight:700;color:var(--muted);text-transform:uppercase;font-size:10px">Actual</div>
-          <div style="font-weight:700;color:var(--yes);font-size:12px">● SÍ</div>
-          <div style="text-align:center;background:var(--card2);border-radius:6px;padding:6px;font-weight:700;color:var(--yes)">${pct(minYes)}</div>
-          <div style="text-align:center;background:var(--card2);border-radius:6px;padding:6px;font-weight:700;color:var(--yes)">${pct(avgYes)}</div>
-          <div style="text-align:center;background:var(--card2);border-radius:6px;padding:6px;font-weight:700;color:var(--yes)">${pct(maxYes)}</div>
-          <div style="text-align:center;background:rgba(0,229,160,.1);border:1.5px solid rgba(0,229,160,.3);border-radius:6px;padding:6px;font-weight:800;color:var(--yes)">${pct(curYes)}</div>
-          <div style="font-weight:700;color:var(--no);font-size:12px">● NO</div>
-          <div style="text-align:center;background:var(--card2);border-radius:6px;padding:6px;font-weight:700;color:var(--no)">${pct(minNo)}</div>
-          <div style="text-align:center;background:var(--card2);border-radius:6px;padding:6px;font-weight:700;color:var(--no)">${pct(avgNo)}</div>
-          <div style="text-align:center;background:var(--card2);border-radius:6px;padding:6px;font-weight:700;color:var(--no)">${pct(maxNo)}</div>
-          <div style="text-align:center;background:rgba(224,40,74,.08);border:1.5px solid rgba(224,40,74,.25);border-radius:6px;padding:6px;font-weight:800;color:var(--no)">${pct(curNo)}</div>
-        </div>
-        <div style="text-align:center;color:var(--muted);margin-top:8px;font-size:10px">
-          ${trades} operaciones · Eje izq: prob. SÍ · Eje der: prob. NO · NO = 100% − SÍ
+          <div style="text-align:center;font-weight:700;color:var(--muted);text-transform:uppercase;font-size:9px;letter-spacing:.4px">Mín</div>
+          <div style="text-align:center;font-weight:700;color:var(--muted);text-transform:uppercase;font-size:9px;letter-spacing:.4px">Prom.</div>
+          <div style="text-align:center;font-weight:700;color:var(--muted);text-transform:uppercase;font-size:9px;letter-spacing:.4px">Máx</div>
+          <div style="text-align:center;font-weight:700;color:var(--muted);text-transform:uppercase;font-size:9px;letter-spacing:.4px">Actual</div>
+          <div style="font-weight:700;color:var(--yes);font-size:11px">● SÍ</div>
+          <div style="text-align:center;background:var(--card2);border-radius:6px;padding:5px;font-weight:700;color:var(--yes)">${pct(minYes)}</div>
+          <div style="text-align:center;background:var(--card2);border-radius:6px;padding:5px;font-weight:700;color:var(--yes)">${pct(avgYes)}</div>
+          <div style="text-align:center;background:var(--card2);border-radius:6px;padding:5px;font-weight:700;color:var(--yes)">${pct(maxYes)}</div>
+          <div style="text-align:center;background:rgba(0,229,160,.1);border:1.5px solid rgba(0,229,160,.3);border-radius:6px;padding:5px;font-weight:800;color:var(--yes)">${pct(curYes)}</div>
+          <div style="font-weight:700;color:var(--no);font-size:11px">● NO</div>
+          <div style="text-align:center;background:var(--card2);border-radius:6px;padding:5px;font-weight:700;color:var(--no)">${pct(minNo)}</div>
+          <div style="text-align:center;background:var(--card2);border-radius:6px;padding:5px;font-weight:700;color:var(--no)">${pct(avgNo)}</div>
+          <div style="text-align:center;background:var(--card2);border-radius:6px;padding:5px;font-weight:700;color:var(--no)">${pct(maxNo)}</div>
+          <div style="text-align:center;background:rgba(224,40,74,.08);border:1.5px solid rgba(224,40,74,.25);border-radius:6px;padding:5px;font-weight:800;color:var(--no)">${pct(curNo)}</div>
         </div>
       </div>
     </div>`;
@@ -4961,6 +4962,9 @@ function renderTradeModal(){
   const html=`<div class="overlay" id="trade-overlay" onclick="closeTradeIfBg(event)">
   <div class="modal" onclick="event.stopPropagation()">
 
+    <!-- Notificación de precio actualizado por otro usuario -->
+    <div id="trade-price-update" style="min-height:18px;margin-bottom:4px;text-align:center;transition:all .3s"></div>
+
     <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px">
       <div>
         <div style="font-weight:900;font-size:19px;margin-bottom:3px">
@@ -5145,141 +5149,166 @@ async function executeTrade(){
   if(now - _lastTradeTime < 2000) return notify("Espera un momento antes de hacer otro trade","error");
   _lastTradeTime = now;
   const u=getUser();if(!u)return;
-  const m=getMarket(STATE.tradeMarketId);
-  if(!m || isMarketClosed(m)){
-    notify(m?.resolved ? "Mercado ya resuelto" : "Este mercado está cerrado — no se aceptan más posiciones","error");
-    render(); // refresh UI to show closed state
-    return;
+  const{tradeSide:side,tradeMode:mode,tradeMarketId:marketId}=STATE;
+  const ui=STATE.users.findIndex(x=>x.id===u.id);
+
+  // ── PASO 1: Leer mercado FRESCO desde DB antes de calcular ────────
+  // Esto garantiza que usamos el precio real actual, no el que tenía
+  // el usuario cuando abrió el modal (puede estar desactualizado)
+  const {data:freshMarketRow} = await db.from("markets").select("*").eq("id",marketId).maybeSingle();
+  if(!freshMarketRow){ notify("Mercado no encontrado","error"); return; }
+  const freshM = dbRowToMarket(freshMarketRow);
+
+  // Sincronizar STATE con el mercado fresco
+  const idx = STATE.markets.findIndex(mk=>mk.id===marketId);
+  if(idx>=0) STATE.markets[idx] = {...STATE.markets[idx], ...freshM};
+
+  if(isMarketClosed(freshM)){
+    notify(freshM.resolved ? "Mercado ya resuelto" : "Este mercado está cerrado","error");
+    render(); return;
   }
-  const{tradeSide:side,tradeMode:mode}=STATE;
-  const ui=STATE.users.indexOf(u);
+
   if(mode==="buy"){
     const dollars=parseFloat(STATE.tradeDollars);
     if(!dollars||dollars<=0)return notify("Ingresa un monto válido","error");
-    // Verificar saldo real desde DB para evitar manipulación del STATE en cliente
+
+    // ── PASO 2: Verificar saldo fresco de DB ─────────────────────
     const {data:freshUser} = await db.from("users").select("balance").eq("id",u.id).maybeSingle();
     const freshBalance = freshUser?.balance ?? u.balance;
     if(dollars>freshBalance)return notify("Saldo insuficiente — deposita más fondos","error");
-    // Sync STATE with DB balance
     STATE.users[ui]={...STATE.users[ui], balance:freshBalance};
-    const maxBet=getMaxBet(m);
-    if(dollars>maxBet)return notify(`Inversión máxima en este momento: ${usd(maxBet)} · La liquidez crece con el volumen.`,"error");
-    const rawShares = rawSharesFromCost(m, side, dollars);
-    const p_yes     = getPrice(m, "YES");
-    const sRate     = dynamicSpread(p_yes, side);
-    const netShares = rawShares * (1 - sRate);
-    const spreadEarned = spreadOnBuy(m, side, dollars);
-    const idx=STATE.markets.indexOf(m);
+
+    // ── PASO 3: Calcular con el mercado FRESCO de DB ─────────────
+    const maxBet=getMaxBet(freshM);
+    if(dollars>maxBet)return notify(`Inversión máxima: ${usd(maxBet)}`,"error");
+    const rawShares    = rawSharesFromCost(freshM, side, dollars);
+    const p_yes        = getPrice(freshM, "YES");
+    const sRate        = dynamicSpread(p_yes, side);
+    const netShares    = rawShares * (1 - sRate);
+    const spreadEarned = spreadOnBuy(freshM, side, dollars);
+
+    // Estado local optimista para UI inmediata
     const nm={
-      ...m,
-      qYes:        side==="YES"?m.qYes+rawShares:m.qYes,
-      qNo:         side==="NO" ?m.qNo +rawShares:m.qNo,
-      totalVolume: m.totalVolume+rawShares,
-      totalPaid:   (m.totalPaid||0)+dollars,
-      spreadPool:  (m.spreadPool||0)+spreadEarned,
+      ...freshM,
+      qYes:        side==="YES"?freshM.qYes+rawShares:freshM.qYes,
+      qNo:         side==="NO" ?freshM.qNo +rawShares:freshM.qNo,
+      totalVolume: freshM.totalVolume+rawShares,
+      totalPaid:   (freshM.totalPaid||0)+dollars,
+      spreadPool:  (freshM.spreadPool||0)+spreadEarned,
     };
-    nm.priceHistory=[...m.priceHistory,getPrice(nm,"YES")].slice(-60);
-    STATE.markets[idx]=nm;
-    const pos={...(u.positions[m.id]||{YES:0,NO:0})};
+    nm.priceHistory=[...freshM.priceHistory,getPrice(nm,"YES")].slice(-60);
+    if(idx>=0) STATE.markets[idx]=nm;
+
+    const pos={...(u.positions[marketId]||{YES:0,NO:0})};
     pos[side]=(pos[side]||0)+netShares;
     const tx={id:"tx_"+genId(),type:"trade",amount:dollars,network:"internal",
-      description:`Compra ${side} ${usd(dollars)} → ${netShares.toFixed(4)} shares · ${m.title.slice(0,28)}…`,
+      description:`Compra ${side} ${usd(dollars)} → ${netShares.toFixed(4)} shares · ${freshM.title.slice(0,28)}…`,
       date:new Date().toISOString(),status:"confirmed"};
-    STATE.users[ui]={...u,balance:u.balance-dollars,positions:{...u.positions,[m.id]:pos},transactions:[...(u.transactions||[]),tx]};
+    STATE.users[ui]={...STATE.users[ui],balance:freshBalance-dollars,
+      positions:{...u.positions,[marketId]:pos},
+      transactions:[...(u.transactions||[]),tx]};
     closeTradeModal();render();
-    // Persistir en DB con operaciones atómicas
-    const updatedUser = STATE.users[ui];
+
+    // ── PASO 4: Persistir en DB atómicamente ─────────────────────
     try{
-      // 1. Actualizar balance atómicamente (resta el costo real)
-      const newBalance = await dbUpdateBalanceAtomic(updatedUser.id, -dollars);
-      if(newBalance !== null){
-        const uiNow = STATE.users.findIndex(u=>u.id===updatedUser.id);
-        if(uiNow>=0) STATE.users[uiNow] = {...STATE.users[uiNow], balance: newBalance};
+      const newBalance = await dbUpdateBalanceAtomic(u.id, -dollars);
+      if(newBalance!==null){
+        const uiNow=STATE.users.findIndex(x=>x.id===u.id);
+        if(uiNow>=0) STATE.users[uiNow]={...STATE.users[uiNow],balance:newBalance};
       }
-      // 2. Actualizar mercado atómicamente (suma deltas)
-      await dbUpdateMarketAtomic(
-        m.id,
-        side==="YES" ? rawShares : 0,
-        side==="NO"  ? rawShares : 0,
-        rawShares, spreadEarned, dollars, nm.priceHistory
-      );
-      // 3. Guardar posiciones y transacción
-      await dbSavePositions(updatedUser.id, updatedUser.positions);
-      await dbSaveTransaction(updatedUser.id, tx);
-      // 4. Recargar mercado desde DB para sincronizar STATE
-      const {data:freshMarket} = await db.from("markets").select("*").eq("id",m.id).maybeSingle();
-      if(freshMarket){
-        const mi = STATE.markets.findIndex(mk=>mk.id===m.id);
-        if(mi>=0) STATE.markets[mi] = {...STATE.markets[mi], ...dbRowToMarket(freshMarket)};
+      await dbUpdateMarketAtomic(marketId,
+        side==="YES"?rawShares:0, side==="NO"?rawShares:0,
+        rawShares, spreadEarned, dollars, nm.priceHistory);
+      await dbSavePositions(u.id, STATE.users[ui]?.positions||pos);
+      await dbSaveTransaction(u.id, tx);
+
+      // ── PASO 5: Recargar TODO desde DB para mostrar estado real ──
+      const {data:confirmedMarket} = await db.from("markets").select("*").eq("id",marketId).maybeSingle();
+      if(confirmedMarket){
+        const mi=STATE.markets.findIndex(mk=>mk.id===marketId);
+        if(mi>=0) STATE.markets[mi]={...STATE.markets[mi],...dbRowToMarket(confirmedMarket)};
       }
-      // 5. Confirmar posiciones desde DB
-      const confirmedPositions = await dbLoadPositions(updatedUser.id);
-      const uiNow2 = STATE.users.findIndex(u=>u.id===updatedUser.id);
-      if(uiNow2>=0 && Object.keys(confirmedPositions).length > 0){
-        STATE.users[uiNow2] = {...STATE.users[uiNow2], positions: confirmedPositions};
+      const confirmedPos=await dbLoadPositions(u.id);
+      const {data:confirmedUser}=await db.from("users").select("balance").eq("id",u.id).maybeSingle();
+      const uiF=STATE.users.findIndex(x=>x.id===u.id);
+      if(uiF>=0){
+        STATE.users[uiF]={...STATE.users[uiF],
+          positions: Object.keys(confirmedPos).length>0?confirmedPos:STATE.users[uiF].positions,
+          balance:   confirmedUser?.balance??STATE.users[uiF].balance,
+        };
       }
+      render();
       notify(`Compraste ${netShares.toFixed(4)} shares ${side} por ${usd(dollars)} ✓`);
     }catch(e){
-      console.error("[Trade] Error guardando en DB:", e);
-      notify("Trade ejecutado pero hubo un error al guardar — recarga la página","error");
+      console.error("[Trade] Error:", e);
+      notify("Error al guardar — recarga la página","error");
     }
+
   } else {
+    // ── VENTA ──────────────────────────────────────────────────────
     const shares=parseFloat(STATE.tradeShares);
     if(!shares||shares<=0)return notify("Ingresa cantidad válida","error");
-    const pos=u.positions[m.id],held=(pos&&pos[side])||0;
-    // Verificar shares desde DB
-    const {data:freshPos} = await db.from("positions").select("yes_shares,no_shares").eq("user_id",u.id).eq("market_id",m.id).maybeSingle();
-    const freshHeld = freshPos ? (side==="YES"?(freshPos.yes_shares||0):(freshPos.no_shares||0)) : held;
-    if(shares>freshHeld)return notify("No tienes suficientes shares","error");
-    const ret=calcSellReturn(m,side,shares);
-    const idx=STATE.markets.indexOf(m);
-    const nm={
-      ...m,
-      qYes:side==="YES"?Math.max(0,m.qYes-shares):m.qYes,
-      qNo: side==="NO" ?Math.max(0,m.qNo -shares):m.qNo,
-      totalVolume:Math.max(0,m.totalVolume-shares),
+
+    // Verificar shares frescos desde DB
+    const {data:freshPos}=await db.from("positions").select("yes_shares,no_shares")
+      .eq("user_id",u.id).eq("market_id",marketId).maybeSingle();
+    const freshHeld=freshPos?(side==="YES"?(freshPos.yes_shares||0):(freshPos.no_shares||0)):0;
+    if(shares>freshHeld+0.0001)return notify("No tienes suficientes shares","error");
+
+    // ── Calcular retorno con mercado FRESCO ───────────────────────
+    const ret=calcSellReturn(freshM,side,shares);
+
+    const nm2={
+      ...freshM,
+      qYes:side==="YES"?Math.max(0,freshM.qYes-shares):freshM.qYes,
+      qNo: side==="NO" ?Math.max(0,freshM.qNo -shares):freshM.qNo,
+      totalVolume:Math.max(0,freshM.totalVolume-shares),
     };
-    nm.priceHistory=[...m.priceHistory,getPrice(nm,"YES")].slice(-60);
-    STATE.markets[idx]=nm;
-    const np={...(u.positions[m.id]||{YES:0,NO:0})};np[side]=Math.max(0,(np[side]||0)-shares);
-    const tx={id:"tx_"+genId(),type:"trade",amount:ret,network:"internal",
-      description:`Venta ${shares.toFixed(4)} ${side} +${usd(ret)} · ${m.title.slice(0,28)}…`,
+    nm2.priceHistory=[...freshM.priceHistory,getPrice(nm2,"YES")].slice(-60);
+    if(idx>=0) STATE.markets[idx]=nm2;
+
+    const np={...(u.positions[marketId]||{YES:0,NO:0})};
+    np[side]=Math.max(0,(np[side]||0)-shares);
+    const tx2={id:"tx_"+genId(),type:"trade",amount:ret,network:"internal",
+      description:`Venta ${shares.toFixed(4)} ${side} +${usd(ret)} · ${freshM.title.slice(0,28)}…`,
       date:new Date().toISOString(),status:"confirmed"};
-    STATE.users[ui]={...u,balance:u.balance+ret,positions:{...u.positions,[m.id]:np},transactions:[...(u.transactions||[]),tx]};
+    STATE.users[ui]={...STATE.users[ui],balance:(STATE.users[ui].balance||0)+ret,
+      positions:{...u.positions,[marketId]:np},
+      transactions:[...(u.transactions||[]),tx2]};
     closeTradeModal();render();
-    // Persistir en DB con operaciones atómicas
-    const updatedUser2 = STATE.users[ui];
+
     try{
-      // 1. Actualizar balance atómicamente (suma el retorno real)
-      const newBalance2 = await dbUpdateBalanceAtomic(updatedUser2.id, ret);
-      if(newBalance2 !== null){
-        const uiNow2 = STATE.users.findIndex(u=>u.id===updatedUser2.id);
-        if(uiNow2>=0) STATE.users[uiNow2] = {...STATE.users[uiNow2], balance: newBalance2};
+      const newBal2=await dbUpdateBalanceAtomic(u.id, ret);
+      if(newBal2!==null){
+        const uiNow=STATE.users.findIndex(x=>x.id===u.id);
+        if(uiNow>=0) STATE.users[uiNow]={...STATE.users[uiNow],balance:newBal2};
       }
-      // 2. Actualizar mercado atómicamente
-      await dbUpdateMarketAtomic(
-        m.id,
-        side==="YES" ? -shares : 0,
-        side==="NO"  ? -shares : 0,
-        -shares, 0, 0, nm.priceHistory
-      );
-      // 3. Guardar posiciones y transacción
-      await dbSavePositions(updatedUser2.id, updatedUser2.positions);
-      await dbSaveTransaction(updatedUser2.id, tx);
-      // 4. Recargar mercado desde DB
-      const {data:freshMarket2} = await db.from("markets").select("*").eq("id",m.id).maybeSingle();
-      if(freshMarket2){
-        const mi2 = STATE.markets.findIndex(mk=>mk.id===m.id);
-        if(mi2>=0) STATE.markets[mi2] = {...STATE.markets[mi2], ...dbRowToMarket(freshMarket2)};
+      await dbUpdateMarketAtomic(marketId,
+        side==="YES"?-shares:0, side==="NO"?-shares:0,
+        -shares,0,0,nm2.priceHistory);
+      await dbSavePositions(u.id, STATE.users[ui]?.positions||np);
+      await dbSaveTransaction(u.id, tx2);
+
+      // Recargar estado real desde DB
+      const {data:cm2}=await db.from("markets").select("*").eq("id",marketId).maybeSingle();
+      if(cm2){
+        const mi2=STATE.markets.findIndex(mk=>mk.id===marketId);
+        if(mi2>=0) STATE.markets[mi2]={...STATE.markets[mi2],...dbRowToMarket(cm2)};
       }
-      // 5. Confirmar posiciones desde DB
-      const confirmedPos2 = await dbLoadPositions(updatedUser2.id);
-      const uiNow2b = STATE.users.findIndex(u=>u.id===updatedUser2.id);
-      if(uiNow2b>=0) STATE.users[uiNow2b] = {...STATE.users[uiNow2b], positions: confirmedPos2};
+      const cp2=await dbLoadPositions(u.id);
+      const {data:cu2}=await db.from("users").select("balance").eq("id",u.id).maybeSingle();
+      const uiF2=STATE.users.findIndex(x=>x.id===u.id);
+      if(uiF2>=0){
+        STATE.users[uiF2]={...STATE.users[uiF2],
+          positions:Object.keys(cp2).length>0?cp2:STATE.users[uiF2].positions,
+          balance:cu2?.balance??STATE.users[uiF2].balance,
+        };
+      }
+      render();
       notify(`Vendiste ${shares.toFixed(4)} shares ${side} · +${usd(ret)}`);
     }catch(e){
-      console.error("[Trade] Error guardando en DB:", e);
-      notify("Venta ejecutada pero hubo un error al guardar — recarga la página","error");
+      console.error("[Trade] Error:", e);
+      notify("Error al guardar — recarga la página","error");
     }
   }
 }
