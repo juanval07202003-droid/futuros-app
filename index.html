@@ -1817,6 +1817,9 @@ const STATE={
   adminStats: null,
   adminStatsLoaded: false,
   adminMktData: null,
+  statsFilter: "all",       // "7d" | "30d" | "90d" | "1y" | "all" | "custom"
+  statsDateFrom: "",        // ISO date string para filtro custom
+  statsDateTo: "",          // ISO date string para filtro custom
   withdrawals:[],
   // trade modal
   tradeOpen:false,tradeMarketId:null,tradeSide:"YES",tradeMode:"buy",tradeShares:"",tradeDollars:"",
@@ -5452,15 +5455,59 @@ function renderAdminStats(){
 
   return`<div class="slide-in">
 
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
-      <div>
-        <div style="font-size:18px;font-weight:900">📊 Dashboard de la Plataforma</div>
-        <div style="font-size:12px;color:var(--muted);margin-top:2px">Actualizado: ${new Date().toLocaleString("es-CO",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"})}</div>
+    <!-- Header con filtros de fecha -->
+    <div style="margin-bottom:20px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px;margin-bottom:14px">
+        <div>
+          <div style="font-size:18px;font-weight:900">📊 Dashboard de la Plataforma</div>
+          <div style="font-size:12px;color:var(--muted);margin-top:2px">Actualizado: ${new Date().toLocaleString("es-CO",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"})}</div>
+        </div>
+        <button class="btn-ghost" style="font-size:12px;padding:7px 14px;flex-shrink:0"
+          onclick="STATE.adminStatsLoaded=false;STATE.adminStats=null;STATE.adminMktData=null;render()">
+          🔄 Actualizar
+        </button>
       </div>
-      <button class="btn-ghost" style="font-size:12px;padding:7px 14px"
-        onclick="STATE.adminStatsLoaded=false;STATE.adminStats=null;STATE.adminMktData=null;render()">
-        🔄 Actualizar
-      </button>
+
+      <!-- Filtros de período -->
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+        ${["7d","30d","90d","1y","all","custom"].map(f=>{
+          const labels={"7d":"7 días","30d":"Último mes","90d":"3 meses","1y":"Último año","all":"Todo","custom":"Personalizado"};
+          const active=STATE.statsFilter===f;
+          return`<button onclick="applyStatsFilter('${f}')"
+            style="padding:6px 14px;border-radius:20px;font-size:12px;font-weight:700;cursor:pointer;border:1.5px solid ${active?"var(--accent)":"var(--border)"};background:${active?"var(--accent)":"transparent"};color:${active?"white":"var(--muted)"};transition:all .15s">
+            ${labels[f]}
+          </button>`;
+        }).join("")}
+      </div>
+
+      <!-- Inputs de fecha custom -->
+      ${STATE.statsFilter==="custom"?`
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px;padding:12px;background:var(--card2);border-radius:10px">
+        <div style="font-size:12px;font-weight:600;color:var(--muted)">Desde:</div>
+        <input type="date" class="inp" style="width:160px;padding:6px 10px;font-size:13px"
+          value="${STATE.statsDateFrom}"
+          onchange="STATE.statsDateFrom=this.value"/>
+        <div style="font-size:12px;font-weight:600;color:var(--muted)">Hasta:</div>
+        <input type="date" class="inp" style="width:160px;padding:6px 10px;font-size:13px"
+          value="${STATE.statsDateTo||new Date().toISOString().split('T')[0]}"
+          onchange="STATE.statsDateTo=this.value"/>
+        <button class="btn-green" style="padding:7px 16px;font-size:12px"
+          onclick="STATE.adminStatsLoaded=false;STATE.adminStats=null;render()">
+          Aplicar
+        </button>
+      </div>`:""}
+
+      <!-- Etiqueta del período activo -->
+      <div style="margin-top:8px;font-size:11px;color:var(--muted)">
+        ${(()=>{
+          const {from,to}=getStatsDateRange();
+          if(STATE.statsFilter==="all") return "Mostrando: todos los datos históricos";
+          if(STATE.statsFilter==="custom" && STATE.statsDateFrom)
+            return `Mostrando: ${STATE.statsDateFrom} → ${STATE.statsDateTo||"hoy"}`;
+          const labels={"7d":"últimos 7 días","30d":"último mes","90d":"últimos 3 meses","1y":"último año"};
+          return `Mostrando: ${labels[STATE.statsFilter]||""} (${from?from.toLocaleDateString("es-CO",{day:"2-digit",month:"short"}):"?"} → hoy)`;
+        })()}
+      </div>
     </div>
 
     ${section("💰 Finanzas de la plataforma","var(--yes)")}
@@ -5518,15 +5565,34 @@ function renderAdminStats(){
   </div>`;
 }
 
+function getStatsDateRange(){
+  const filter = STATE.statsFilter;
+  const now = new Date();
+  let from = null;
+  if(filter === "7d")  from = new Date(now - 7  *86400000);
+  if(filter === "30d") from = new Date(now - 30 *86400000);
+  if(filter === "90d") from = new Date(now - 90 *86400000);
+  if(filter === "1y")  from = new Date(now - 365*86400000);
+  if(filter === "custom" && STATE.statsDateFrom) from = new Date(STATE.statsDateFrom);
+  const to = filter === "custom" && STATE.statsDateTo ? new Date(STATE.statsDateTo+"T23:59:59") : now;
+  return {from, to};
+}
+
 async function loadAdminStats(){
   try{
-    const {data:txs} = await db.from("transactions")
+    const {from, to} = getStatsDateRange();
+
+    // Build query with optional date filter
+    let q = db.from("transactions")
       .select("user_id,type,amount,status,created_at")
-      .eq("status","confirmed");
+      .eq("status","confirmed")
+      .lte("created_at", to.toISOString());
+    if(from) q = q.gte("created_at", from.toISOString());
+    const {data:txs} = await q;
 
     const stats = [];
     for(const user of STATE.users.filter(u=>u.role!=="admin")){
-      const userTxs  = (txs||[]).filter(t=>t.user_id===user.id);
+      const userTxs   = (txs||[]).filter(t=>t.user_id===user.id);
       const deposited = userTxs.filter(t=>t.type==="deposit") .reduce((s,t)=>s+Number(t.amount),0);
       const withdrawn = userTxs.filter(t=>t.type==="withdraw").reduce((s,t)=>s+Number(t.amount),0);
       const balance   = user.balance||0;
@@ -5540,9 +5606,10 @@ async function loadAdminStats(){
         withdrawn:     Math.round(withdrawn*100)/100,
         balance:       Math.round(balance*100)/100,
         pnl,
+        txCount:       userTxs.length,
       });
     }
-    STATE.adminStats      = stats;
+    STATE.adminStats       = stats;
     STATE.adminStatsLoaded = true;
     render();
   }catch(e){
@@ -5551,6 +5618,13 @@ async function loadAdminStats(){
     STATE.adminStats       = [];
     render();
   }
+}
+
+function applyStatsFilter(filter){
+  STATE.statsFilter      = filter;
+  STATE.adminStatsLoaded = false;
+  STATE.adminStats       = null;
+  render();
 }
 
 function renderAdminAccounts(){
