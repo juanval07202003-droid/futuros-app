@@ -5771,7 +5771,15 @@ function renderAdminResolve(){
               <button class="btn-red-soft" style="padding:8px 20px;font-size:14px;font-weight:800" onclick="adminResolve('${m.id}','NO')">✓ NO</button>
             </div>
             ${m.oracleLocked?`<button class="btn-ghost" style="font-size:11px;padding:4px 10px" onclick="adminUnlockMarket('${m.id}')">🔓 Desbloquear oracle</button>`:""}
-          `:mkTag("✓ "+t("detail_resolved")+": "+m.resolution,"var(--yes)")}
+          `:`<div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px">
+            ${mkTag("✓ "+t("detail_resolved")+": "+m.resolution,"var(--yes)")}
+            <button onclick="adminDeleteMarket('${m.id}')"
+              style="font-size:11px;padding:4px 12px;border-radius:8px;border:1px solid var(--border);background:transparent;color:var(--muted);cursor:pointer;transition:all .15s"
+              onmouseover="this.style.borderColor='var(--no)';this.style.color='var(--no)'"
+              onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--muted)'">
+              🗑️ Eliminar
+            </button>
+          </div>`}
         </div>
       </div>
     </div>`;
@@ -5792,13 +5800,70 @@ function renderAdminResolve(){
       ${pending.map(m=>renderRow(m)).join("")}
     `:""}
     ${resolved.length>0?`
-      <div style="font-size:12px;font-weight:700;color:var(--muted);letter-spacing:.6px;text-transform:uppercase;margin:20px 0 10px">
-        Resueltos (${resolved.length})
+      <div style="display:flex;justify-content:space-between;align-items:center;margin:20px 0 10px">
+        <div style="font-size:12px;font-weight:700;color:var(--muted);letter-spacing:.6px;text-transform:uppercase">
+          Resueltos (${resolved.length})
+        </div>
+        <button class="btn-ghost" style="font-size:11px;padding:5px 12px;color:var(--no);border-color:var(--no)"
+          onclick="adminDeleteAllResolved()">
+          🗑️ Eliminar todos los resueltos
+        </button>
       </div>
       ${resolved.map(m=>renderRow(m)).join("")}
     `:""}
     ${STATE.markets.length===0?`<p style="color:var(--muted);padding:24px 0">No hay mercados aún</p>`:""}
   </div>`;
+}
+
+async function adminDeleteMarket(id){
+  if(!isAdmin()) return notify("Sin permisos","error");
+  const m = STATE.markets.find(mk=>mk.id===id);
+  if(!m) return;
+  if(!m.resolved) return notify("Solo se pueden eliminar mercados resueltos","error");
+
+  // Confirmación
+  const confirmed = window.confirm(`¿Eliminar el mercado "${m.title}"?\n\nEsta acción es irreversible. Se eliminarán también las posiciones y transacciones asociadas.`);
+  if(!confirmed) return;
+
+  try{
+    // Eliminar posiciones del mercado
+    await db.from("positions").delete().eq("market_id", id);
+    // Eliminar el mercado
+    const {error} = await db.from("markets").delete().eq("id", id);
+    if(error){ notify("Error al eliminar: "+error.message,"error"); return; }
+
+    // Actualizar STATE
+    STATE.markets = STATE.markets.filter(mk=>mk.id!==id);
+    notify(`Mercado "${m.title.slice(0,30)}…" eliminado ✓`,"success");
+    render();
+  }catch(e){
+    notify("Error: "+(e?.message||e),"error");
+  }
+}
+
+async function adminDeleteAllResolved(){
+  if(!isAdmin()) return notify("Sin permisos","error");
+  const resolved = STATE.markets.filter(m=>m.resolved);
+  if(!resolved.length) return notify("No hay mercados resueltos","error");
+
+  const confirmed = window.confirm(`¿Eliminar los ${resolved.length} mercados resueltos?\n\nEsta acción es irreversible.`);
+  if(!confirmed) return;
+
+  notify("Eliminando mercados...","info");
+  try{
+    const ids = resolved.map(m=>m.id);
+    // Eliminar posiciones de todos
+    await db.from("positions").delete().in("market_id", ids);
+    // Eliminar mercados
+    const {error} = await db.from("markets").delete().in("id", ids);
+    if(error){ notify("Error: "+error.message,"error"); return; }
+
+    STATE.markets = STATE.markets.filter(m=>!m.resolved);
+    notify(`${ids.length} mercados eliminados ✓`,"success");
+    render();
+  }catch(e){
+    notify("Error: "+(e?.message||e),"error");
+  }
 }
 
 async function adminUnlockMarket(id){
