@@ -1816,6 +1816,7 @@ const STATE={
   adminTab:"accounts",
   adminStats: null,
   adminStatsLoaded: false,
+  adminMktData: null,
   withdrawals:[],
   // trade modal
   tradeOpen:false,tradeMarketId:null,tradeSide:"YES",tradeMode:"buy",tradeShares:"",tradeDollars:"",
@@ -5347,160 +5348,207 @@ function renderAdmin(){
 function setAdminTab(tab){
   STATE.adminTab=tab;
   if(tab==="withdrawals") dbLoadWithdrawals();
-  else if(tab==="stats"){ STATE.adminStatsLoaded=false; STATE.adminStats=null; render(); }
+  else if(tab==="stats"){
+    STATE.adminStatsLoaded=false;
+    STATE.adminStats=null;
+    STATE.adminMktData=null;
+    render();
+    // Auto-refresh cada 30s mientras está en stats
+    if(window._statsRefreshTimer) clearInterval(window._statsRefreshTimer);
+    window._statsRefreshTimer = setInterval(()=>{
+      if(STATE.adminTab==="stats" && isAdmin()){
+        STATE.adminStatsLoaded=false;
+        STATE.adminStats=null;
+        loadAdminStats();
+      } else {
+        clearInterval(window._statsRefreshTimer);
+      }
+    }, 30000);
+  }
   else render();
 }
 
 function renderAdminStats(){
-  // Calcular stats por usuario desde sus transacciones en DB
-  // Usamos STATE.users + cargamos transacciones si no están
-  if(!STATE.adminStatsLoaded) {
-    STATE.adminStatsLoaded = false;
+  if(!STATE.adminStatsLoaded){
     loadAdminStats();
-    return`<div class="slide-in" style="text-align:center;padding:48px 0;color:var(--muted)">
+    return`<div class="slide-in" style="text-align:center;padding:60px 0;color:var(--muted)">
       <div style="font-size:32px;margin-bottom:12px">⏳</div>
-      <div>Cargando estadísticas...</div>
+      <div style="font-weight:600">Cargando estadísticas...</div>
     </div>`;
   }
 
-  const stats = STATE.adminStats || [];
-  if(!stats.length) return`<div class="slide-in"><p style="color:var(--muted);padding:24px 0">No hay datos aún</p></div>`;
+  const stats   = STATE.adminStats     || [];
+  const mktData = STATE.adminMktData   || {};
 
-  const gainers = stats.filter(s => s.pnl > 0).sort((a,b) => b.pnl - a.pnl);
-  const losers  = stats.filter(s => s.pnl <= 0).sort((a,b) => a.pnl - b.pnl);
+  // ── Métricas de usuarios ──────────────────────────────────────
+  const nonAdmin      = stats.filter(s=>s.role!=="admin");
+  const gainers       = nonAdmin.filter(s=>s.pnl>0).sort((a,b)=>b.pnl-a.pnl);
+  const losers        = nonAdmin.filter(s=>s.pnl<=0).sort((a,b)=>a.pnl-b.pnl);
+  const totalDep      = nonAdmin.reduce((s,u)=>s+u.deposited,0);
+  const totalWd       = nonAdmin.reduce((s,u)=>s+u.withdrawn,0);
+  const totalBal      = nonAdmin.reduce((s,u)=>s+u.balance,0);
+  const totalPnlUsers = nonAdmin.reduce((s,u)=>s+u.pnl,0);
 
-  // Totales globales
-  const totalDeposited = stats.reduce((s,u) => s + u.deposited, 0);
-  const totalWithdrawn = stats.reduce((s,u) => s + u.withdrawn, 0);
-  const totalBalance   = stats.reduce((s,u) => s + u.balance,   0);
-  const totalPnl       = stats.reduce((s,u) => s + u.pnl,       0);
+  // ── Métricas de mercados (desde STATE.markets) ────────────────
+  const activeMarkets   = STATE.markets.filter(m=>!m.resolved);
+  const resolvedMarkets = STATE.markets.filter(m=>m.resolved);
+  const totalVolume     = STATE.markets.reduce((s,m)=>s+(m.totalVolume||0),0);
+  const totalSpread     = STATE.markets.reduce((s,m)=>s+(m.spreadPool||0),0);
+  const totalPaid       = STATE.markets.reduce((s,m)=>s+(m.totalPaid||0),0);
 
-  const renderRow = (s, i) => {
-    const pnlColor = s.pnl > 0 ? "var(--yes)" : s.pnl < 0 ? "var(--no)" : "var(--muted)";
-    const pnlIcon  = s.pnl > 0 ? "▲" : s.pnl < 0 ? "▼" : "—";
-    return`
-    <div class="card" style="margin-bottom:8px;padding:14px 16px">
-      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-        <div style="width:28px;height:28px;border-radius:50%;background:var(--card2);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;color:var(--muted);flex-shrink:0">${i+1}</div>
-        <div style="flex:1;min-width:120px">
-          <div style="font-weight:700;font-size:14px">@${escHtml(s.username)}</div>
-          <div style="font-size:11px;color:var(--muted)">${s.walletAddress?s.walletAddress.slice(0,8)+"…":"Sin wallet"}</div>
+  // ── Market Cap: valor total de todas las posiciones abiertas ─
+  const marketCap = activeMarkets.reduce((sum,m)=>{
+    const b=computeB(m.alpha,m.totalVolume,m.seedLiquidity);
+    return sum + b*Math.log(2);
+  },0);
+
+  // ── Utilidad de la plataforma ─────────────────────────────────
+  // Spread cobrado en trades activos + liquidez no pagada en mercados resueltos
+  const spreadRevenue  = totalSpread;
+  const platformProfit = spreadRevenue + (mktData.resolvedProfit||0);
+
+  // ── Liquidez total del sistema ────────────────────────────────
+  const totalLiquidity = STATE.markets.reduce((s,m)=>s+computeB(m.alpha,m.totalVolume,m.seedLiquidity),0);
+
+  // ── Exposición máxima (máx que debe pagar la plataforma) ─────
+  const maxExposure = activeMarkets.reduce((s,m)=>{
+    const b=computeB(m.alpha,m.totalVolume,m.seedLiquidity);
+    return s + b*Math.log(2);
+  },0);
+
+  // ── Ratio de salud financiera ─────────────────────────────────
+  const healthRatio = totalDep > 0 ? ((totalBal/totalDep)*100).toFixed(1) : "100.0";
+
+  const statCard = (label, value, sub="", color="var(--text)", icon="") => `
+    <div class="card" style="padding:18px;text-align:center">
+      ${icon?`<div style="font-size:20px;margin-bottom:6px">${icon}</div>`:""}
+      <div style="font-size:10px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.6px;margin-bottom:6px">${label}</div>
+      <div style="font-size:22px;font-weight:900;color:${color};line-height:1.1">${value}</div>
+      ${sub?`<div style="font-size:11px;color:var(--muted);margin-top:5px">${sub}</div>`:""}
+    </div>`;
+
+  const renderUserRow = (s,i) => {
+    const pnlColor = s.pnl>0?"var(--yes)":s.pnl<0?"var(--no)":"var(--muted)";
+    const pnlIcon  = s.pnl>0?"▲":s.pnl<0?"▼":"—";
+    return`<div class="card" style="margin-bottom:8px;padding:12px 16px">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <div style="width:26px;height:26px;border-radius:50%;background:var(--card2);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;color:var(--muted);flex-shrink:0">${i+1}</div>
+        <div style="flex:1;min-width:100px">
+          <div style="font-weight:700;font-size:13px">@${escHtml(s.username)}</div>
+          <div style="font-size:10px;color:var(--muted)">${s.walletAddress?s.walletAddress.slice(0,10)+"…":"Sin wallet"}</div>
         </div>
-        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;text-align:right;flex:2;min-width:280px">
-          <div>
-            <div style="font-size:10px;color:var(--muted);font-weight:600;text-transform:uppercase;margin-bottom:2px">Depositado</div>
-            <div style="font-weight:700;font-size:13px;color:var(--accent)">${usd(s.deposited)}</div>
-          </div>
-          <div>
-            <div style="font-size:10px;color:var(--muted);font-weight:600;text-transform:uppercase;margin-bottom:2px">Retirado</div>
-            <div style="font-weight:700;font-size:13px;color:var(--text)">${usd(s.withdrawn)}</div>
-          </div>
-          <div>
-            <div style="font-size:10px;color:var(--muted);font-weight:600;text-transform:uppercase;margin-bottom:2px">Gan/Pérd</div>
-            <div style="font-weight:800;font-size:13px;color:${pnlColor}">${pnlIcon} ${usd(Math.abs(s.pnl))}</div>
-          </div>
-          <div>
-            <div style="font-size:10px;color:var(--muted);font-weight:600;text-transform:uppercase;margin-bottom:2px">Saldo</div>
-            <div style="font-weight:800;font-size:13px;color:var(--text)">${usd(s.balance)}</div>
-          </div>
+        <div style="display:grid;grid-template-columns:repeat(4,minmax(70px,1fr));gap:10px;text-align:right;flex:2">
+          <div><div style="font-size:9px;color:var(--muted);font-weight:700;text-transform:uppercase">Depositado</div><div style="font-weight:700;font-size:12px;color:var(--accent)">${usd(s.deposited)}</div></div>
+          <div><div style="font-size:9px;color:var(--muted);font-weight:700;text-transform:uppercase">Retirado</div><div style="font-weight:700;font-size:12px">${usd(s.withdrawn)}</div></div>
+          <div><div style="font-size:9px;color:var(--muted);font-weight:700;text-transform:uppercase">P&L</div><div style="font-weight:800;font-size:12px;color:${pnlColor}">${pnlIcon}${usd(Math.abs(s.pnl))}</div></div>
+          <div><div style="font-size:9px;color:var(--muted);font-weight:700;text-transform:uppercase">Saldo</div><div style="font-weight:800;font-size:12px">${usd(s.balance)}</div></div>
         </div>
       </div>
     </div>`;
   };
 
+  const section = (title, color="var(--muted)") =>
+    `<div style="font-size:11px;font-weight:800;color:${color};letter-spacing:.7px;text-transform:uppercase;margin:20px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--border)">${title}</div>`;
+
   return`<div class="slide-in">
 
-    <!-- Resumen global -->
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:24px">
-      <div class="card" style="text-align:center;padding:16px">
-        <div style="font-size:11px;color:var(--muted);font-weight:700;text-transform:uppercase;margin-bottom:6px">Total usuarios</div>
-        <div style="font-size:24px;font-weight:900">${stats.length}</div>
-        <div style="font-size:11px;color:var(--yes)">${gainers.length} en ganancia · ${losers.length} en pérdida</div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
+      <div>
+        <div style="font-size:18px;font-weight:900">📊 Dashboard de la Plataforma</div>
+        <div style="font-size:12px;color:var(--muted);margin-top:2px">Actualizado: ${new Date().toLocaleString("es-CO",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"})}</div>
       </div>
-      <div class="card" style="text-align:center;padding:16px">
-        <div style="font-size:11px;color:var(--muted);font-weight:700;text-transform:uppercase;margin-bottom:6px">Total depositado</div>
-        <div style="font-size:24px;font-weight:900;color:var(--accent)">${usd(totalDeposited)}</div>
-      </div>
-      <div class="card" style="text-align:center;padding:16px">
-        <div style="font-size:11px;color:var(--muted);font-weight:700;text-transform:uppercase;margin-bottom:6px">Total retirado</div>
-        <div style="font-size:24px;font-weight:900">${usd(totalWithdrawn)}</div>
-      </div>
-      <div class="card" style="text-align:center;padding:16px">
-        <div style="font-size:11px;color:var(--muted);font-weight:700;text-transform:uppercase;margin-bottom:6px">Saldo total</div>
-        <div style="font-size:24px;font-weight:900;color:var(--text)">${usd(totalBalance)}</div>
-      </div>
-      <div class="card" style="text-align:center;padding:16px">
-        <div style="font-size:11px;color:var(--muted);font-weight:700;text-transform:uppercase;margin-bottom:6px">P&L global</div>
-        <div style="font-size:24px;font-weight:900;color:${totalPnl>=0?"var(--yes)":"var(--no)"}">${totalPnl>=0?"▲":"▼"} ${usd(Math.abs(totalPnl))}</div>
-      </div>
+      <button class="btn-ghost" style="font-size:12px;padding:7px 14px"
+        onclick="STATE.adminStatsLoaded=false;STATE.adminStats=null;STATE.adminMktData=null;render()">
+        🔄 Actualizar
+      </button>
     </div>
 
-    <div style="display:flex;justify-content:flex-end;margin-bottom:16px">
-      <button class="btn-ghost" style="font-size:12px;padding:7px 14px" onclick="STATE.adminStatsLoaded=false;STATE.adminStats=null;render()">🔄 Actualizar</button>
+    ${section("💰 Finanzas de la plataforma","var(--yes)")}
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:8px">
+      ${statCard("Utilidad (spread)", usd(spreadRevenue), "Spread cobrado en trades", "var(--yes)", "💵")}
+      ${statCard("Market Cap", usd(marketCap), "Valor total en posiciones", "var(--accent)", "📈")}
+      ${statCard("Exposición máx.", usd(maxExposure), "Máximo a pagar si ganan todos", "var(--no)", "⚠️")}
+      ${statCard("Liquidez total", usd(totalLiquidity), "b acumulado en mercados activos", "var(--gold)", "🏦")}
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px">
+      ${statCard("Volumen total", usd(totalVolume), "Shares comprados/vendidos", "var(--text)", "📊")}
+      ${statCard("Total recibido", usd(totalPaid), "Dinero real invertido", "var(--accent)", "💳")}
+      ${statCard("Salud financiera", healthRatio+"%", "Saldo usuarios / Total depositado", Number(healthRatio)>=90?"var(--yes)":"var(--gold)", "❤️")}
+      ${statCard("Mercados activos", activeMarkets.length+"", resolvedMarkets.length+" resueltos", "var(--text)", "🎯")}
     </div>
 
-    <!-- En ganancia -->
-    ${gainers.length>0?`
-    <div style="font-size:12px;font-weight:800;color:var(--yes);letter-spacing:.6px;text-transform:uppercase;margin-bottom:10px;display:flex;align-items:center;gap:8px">
-      <span>▲ En ganancia (${gainers.length})</span>
+    ${section("👥 Usuarios","var(--accent)")}
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px">
+      ${statCard("Total usuarios", nonAdmin.length+"", gainers.length+" ganando · "+losers.length+" perdiendo", "var(--text)", "👤")}
+      ${statCard("Total depositado", usd(totalDep), "Suma de todos los depósitos", "var(--accent)", "⬇️")}
+      ${statCard("Total retirado", usd(totalWd), "Suma de todos los retiros", "var(--text)", "⬆️")}
+      ${statCard("Saldo en cuentas", usd(totalBal), "Dinero disponible usuarios", "var(--yes)", "💰")}
     </div>
-    ${gainers.map((s,i)=>renderRow(s,i)).join("")}
-    <div style="height:20px"></div>
-    `:""}
 
-    <!-- En pérdida -->
-    ${losers.length>0?`
-    <div style="font-size:12px;font-weight:800;color:var(--no);letter-spacing:.6px;text-transform:uppercase;margin-bottom:10px">
-      ▼ En pérdida (${losers.length})
-    </div>
-    ${losers.map((s,i)=>renderRow(s,i)).join("")}
-    `:""}
+    ${section("🏆 Mercados por volumen","var(--gold)")}
+    ${[...STATE.markets].sort((a,b)=>(b.totalVolume||0)-(a.totalVolume||0)).slice(0,5).map((m,i)=>{
+      const vol  = m.totalVolume||0;
+      const sp   = m.spreadPool||0;
+      const pct  = totalVolume>0 ? ((vol/totalVolume)*100).toFixed(1) : "0";
+      return`<div class="card" style="margin-bottom:6px;padding:12px 16px">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <div style="font-size:12px;font-weight:800;color:var(--muted);width:18px">${i+1}</div>
+          <div style="flex:1;min-width:120px">
+            <div style="font-weight:700;font-size:13px">${escHtml(m.emoji)} ${escHtml(m.title.slice(0,40))}${m.title.length>40?"…":""}</div>
+            <div style="font-size:10px;color:var(--muted);margin-top:2px">${m.category} · ${m.resolved?"✓ Resuelto":"Activo"}</div>
+          </div>
+          <div style="display:flex;gap:16px;text-align:right;flex-shrink:0">
+            <div><div style="font-size:9px;color:var(--muted);text-transform:uppercase;font-weight:700">Volumen</div><div style="font-weight:800;font-size:13px;color:var(--accent)">${usd(vol)}</div></div>
+            <div><div style="font-size:9px;color:var(--muted);text-transform:uppercase;font-weight:700">Spread</div><div style="font-weight:800;font-size:13px;color:var(--yes)">${usd(sp)}</div></div>
+            <div><div style="font-size:9px;color:var(--muted);text-transform:uppercase;font-weight:700">% Vol</div><div style="font-weight:800;font-size:13px">${pct}%</div></div>
+          </div>
+        </div>
+        <div style="margin-top:8px;background:var(--border);border-radius:4px;height:4px;overflow:hidden">
+          <div style="height:100%;background:var(--accent);border-radius:4px;width:${pct}%;transition:width .5s"></div>
+        </div>
+      </div>`;
+    }).join("")}
+
+    ${section("▲ Usuarios en ganancia ("+gainers.length+")","var(--yes)")}
+    ${gainers.length ? gainers.map((s,i)=>renderUserRow(s,i)).join("") : `<p style="color:var(--muted);padding:8px 0">Ningún usuario en ganancia aún</p>`}
+
+    ${section("▼ Usuarios en pérdida ("+losers.length+")","var(--no)")}
+    ${losers.length ? losers.map((s,i)=>renderUserRow(s,i)).join("") : `<p style="color:var(--muted);padding:8px 0">Ningún usuario en pérdida aún</p>`}
 
   </div>`;
 }
 
 async function loadAdminStats(){
   try{
-    // Cargar todas las transacciones de todos los usuarios
-    const { data: txs } = await db.from("transactions")
-      .select("user_id,type,amount,status")
-      .in("status",["confirmed","pending"])
-      .order("created_at",{ascending:true});
+    const {data:txs} = await db.from("transactions")
+      .select("user_id,type,amount,status,created_at")
+      .eq("status","confirmed");
 
     const stats = [];
     for(const user of STATE.users.filter(u=>u.role!=="admin")){
-      const userTxs = (txs||[]).filter(t=>t.user_id===user.id && t.status==="confirmed");
-
-      const deposited = userTxs
-        .filter(t=>t.type==="deposit")
-        .reduce((s,t)=>s+Number(t.amount),0);
-
-      const withdrawn = userTxs
-        .filter(t=>t.type==="withdraw")
-        .reduce((s,t)=>s+Number(t.amount),0);
-
-      const balance = user.balance||0;
-      // P&L = saldo actual + retirado - depositado
-      const pnl = Math.round((balance + withdrawn - deposited)*100)/100;
-
+      const userTxs  = (txs||[]).filter(t=>t.user_id===user.id);
+      const deposited = userTxs.filter(t=>t.type==="deposit") .reduce((s,t)=>s+Number(t.amount),0);
+      const withdrawn = userTxs.filter(t=>t.type==="withdraw").reduce((s,t)=>s+Number(t.amount),0);
+      const balance   = user.balance||0;
+      const pnl       = Math.round((balance+withdrawn-deposited)*100)/100;
       stats.push({
         id:            user.id,
         username:      user.username||user.id.slice(0,8),
         walletAddress: user.walletAddress||null,
+        role:          user.role||"user",
         deposited:     Math.round(deposited*100)/100,
         withdrawn:     Math.round(withdrawn*100)/100,
         balance:       Math.round(balance*100)/100,
         pnl,
       });
     }
-
-    STATE.adminStats = stats;
+    STATE.adminStats      = stats;
     STATE.adminStatsLoaded = true;
     render();
   }catch(e){
     console.error("[Stats]",e);
     STATE.adminStatsLoaded = true;
-    STATE.adminStats = [];
+    STATE.adminStats       = [];
     render();
   }
 }
