@@ -3856,9 +3856,9 @@ function renderMarket(){
         </text>
 
         <!-- Crosshair line (hidden by default) -->
-        <line id="${chartId}_cross" x1="0" y1="${PT}" x2="0" y2="${PT+cH}"
+        <line id="${chartId}_cross" x1="-100" y1="${PT}" x2="-100" y2="${PT+cH}"
           stroke="var(--muted)" stroke-width="1" stroke-dasharray="4,3" opacity="0.6" display="none"/>
-        <circle id="${chartId}_dot" cx="0" cy="0" r="5"
+        <circle id="${chartId}_dot" cx="-100" cy="-100" r="5"
           fill="${lineColor}" stroke="white" stroke-width="2" display="none"/>
 
         <!-- X axis -->
@@ -7130,45 +7130,58 @@ function chartMouseMove(e, svgEl, chartId){
   const pts = JSON.parse(svgEl.dataset.pts||"[]");
   if(!pts.length) return;
 
-  const rect  = svgEl.getBoundingClientRect();
-  const scaleX = (svgEl.viewBox.baseVal.width) / rect.width;
-  const mx    = (e.clientX - rect.left) * scaleX;
+  const rect   = svgEl.getBoundingClientRect();
+  const scaleX = svgEl.viewBox.baseVal.width / rect.width;
+  const scaleY = svgEl.viewBox.baseVal.height / rect.height;
+  const mx     = (e.clientX - rect.left) * scaleX;
 
-  // Find nearest point
+  // Find nearest point by X distance
   let nearest = pts[0], minDist = Infinity;
   for(const p of pts){
     const d = Math.abs(p.x - mx);
     if(d < minDist){ minDist = d; nearest = p; }
   }
 
-  // Show crosshair
+  // Move crosshair vertical line
   const cross = document.getElementById(chartId+"_cross");
-  const dot   = document.getElementById(chartId+"_dot");
-  if(cross){ cross.setAttribute("x1",nearest.x); cross.setAttribute("x2",nearest.x); cross.removeAttribute("display"); }
-  if(dot){   dot.setAttribute("cx",nearest.x);   dot.setAttribute("cy",nearest.y);   dot.removeAttribute("display"); }
+  if(cross){
+    cross.setAttribute("x1", nearest.x);
+    cross.setAttribute("x2", nearest.x);
+    cross.removeAttribute("display");
+  }
 
-  // Show tooltip
-  const tip      = document.getElementById(chartId+"_tip");
-  const tipDate  = document.getElementById(chartId+"_date");
-  const tipVal   = document.getElementById(chartId+"_val");
+  // Move dot to exact point on line
+  const dot = document.getElementById(chartId+"_dot");
+  if(dot){
+    dot.setAttribute("cx", nearest.x);
+    dot.setAttribute("cy", nearest.y);
+    dot.removeAttribute("display");
+  }
+
+  // Update tooltip content — IDs match the HTML: chartId_tip_date / chartId_tip_val
+  const tip     = document.getElementById(chartId+"_tip");
+  const tipDate = document.getElementById(chartId+"_tip_date");
+  const tipVal  = document.getElementById(chartId+"_tip_val");
   if(!tip) return;
 
   const months = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
   const d = new Date(nearest.ms);
-  const dateStr = months[d.getMonth()]+" "+d.getDate()+", "+d.getHours()+":"+String(d.getMinutes()).padStart(2,"0");
+  const dateStr = months[d.getMonth()]+" "+d.getDate()+", "+
+    String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0");
 
-  if(tipDate) document.getElementById(chartId+"_tip_date").textContent = dateStr;
-  if(tipVal)  document.getElementById(chartId+"_tip_val").textContent  = "SÍ "+Math.round(nearest.v*100)+"% · NO "+Math.round((1-nearest.v)*100)+"%";
+  if(tipDate) tipDate.textContent = dateStr;
+  if(tipVal)  tipVal.textContent  = "SÍ "+Math.round(nearest.v*100)+"% · NO "+Math.round((1-nearest.v)*100)+"%";
 
-  // Position tooltip
+  // Position tooltip — flip left if too close to right edge
   const wrap = document.getElementById(chartId+"_wrap");
   if(wrap){
     const wRect = wrap.getBoundingClientRect();
-    const tipW  = 160;
-    let   left  = e.clientX - wRect.left + 12;
-    if(left + tipW > wRect.width) left = e.clientX - wRect.left - tipW - 12;
-    tip.style.left = left + "px";
-    tip.style.top  = (e.clientY - wRect.top - 40) + "px";
+    const tipW  = 170;
+    let left    = e.clientX - wRect.left + 14;
+    if(left + tipW > wRect.width) left = e.clientX - wRect.left - tipW - 14;
+    const top   = Math.max(4, e.clientY - wRect.top - 52);
+    tip.style.left    = left + "px";
+    tip.style.top     = top  + "px";
     tip.style.display = "block";
   }
 }
