@@ -1342,6 +1342,7 @@ function dbRowToUser(row){
     evmAddress: row.evm_address||null,
     createdAt: row.created_at,
     active: row.active!==false,
+    avatarUrl: row.avatar_url||null,
   };
 }
 
@@ -1358,6 +1359,7 @@ function userToDbRow(u){
     // NOTE: passwords are never stored — wallet-only auth platform
     active: u.active!==false,
     created_at: u.createdAt||new Date().toISOString(),
+    avatar_url: u.avatarUrl||null,
   };
 }
 
@@ -3894,6 +3896,22 @@ function avatarColor(name){
 }
 function avatarInitial(name){return(name||'?')[0].toUpperCase();}
 
+// Renderiza el avatar del usuario (foto o inicial)
+function renderAvatar(username, avatarUrl, size=36, fontSize=15){
+  if(avatarUrl){
+    return `<img src="${escHtml(avatarUrl)}" alt="@${escHtml(username)}"
+      style="width:${size}px;height:${size}px;border-radius:50%;object-fit:cover;display:block;flex-shrink:0"
+      onerror="this.style.display='none';this.nextSibling.style.display='flex'">
+      <div style="display:none;width:${size}px;height:${size}px;border-radius:50%;background:${avatarColor(username)};
+        align-items:center;justify-content:center;font-size:${fontSize}px;font-weight:800;color:white;flex-shrink:0">
+        ${avatarInitial(username)}
+      </div>`;
+  }
+  return `<div style="width:${size}px;height:${size}px;border-radius:50%;background:${avatarColor(username)};
+    display:flex;align-items:center;justify-content:center;font-size:${fontSize}px;
+    font-weight:800;color:white;flex-shrink:0">${avatarInitial(username)}</div>`;
+}
+
 function timeAgo(isoStr){
   const diff=Math.floor((Date.now()-new Date(isoStr))/1000);
   if(diff<60)return t("time_just_now");
@@ -3917,7 +3935,7 @@ function renderComments(marketId){
     <div class="comment-form-footer">
       <div class="comment-author-tag">
         ${u
-          ?`<div class="comment-avatar" style="width:24px;height:24px;font-size:11px;background:${avatarColor(u.username)}">${avatarInitial(u.username)}</div>
+          ?`<div class="comment-avatar" style="width:24px;height:24px;overflow:hidden;padding:0">${renderAvatar(u.username,u.avatarUrl,24,10)}</div>
              @${escHtml(u.username)}`
           :`<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--muted)"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
              ${t("comment_guest")}`
@@ -3935,7 +3953,7 @@ function renderComments(marketId){
       return`<div class="comment-card">
         <div class="comment-header">
           <div class="comment-meta">
-            <div class="comment-avatar" style="background:${color}">${avatarInitial(c.author)}</div>
+            <div class="comment-avatar" style="overflow:hidden;padding:0">${(()=>{const cu=STATE.users.find(u=>u.username===c.author);return renderAvatar(c.author,cu?.avatarUrl||null);})()}</div>
             <div>
               <span class="comment-username">${escHtml(c.author)}</span>
               ${c.isGuest?`<span class="comment-guest-badge" style="margin-left:4px">${t("comment_guest")}</span>`:''}
@@ -4085,13 +4103,36 @@ function renderPortfolio(){
     return sum + yesVal + noVal;
   },0);
   return`<div class="container-sm fade-up">
-  <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px;margin-bottom:28px">
-    <div><h2 style="margin-bottom:4px">${t("portfolio_title")}</h2><p style="color:var(--muted)">${t("wallet_balance")}: <strong style="color:var(--yes)">${usd(u.balance)}</strong></p></div>
-    <div style="text-align:right">
-      <div style="font-size:11px;color:var(--muted);margin-bottom:2px">${t("position_value")}</div>
-      <div style="font-size:22px;font-weight:800;color:var(--accent)">${usd(totalValue)}</div>
+
+  <!-- Perfil de usuario -->
+  <div class="card" style="margin-bottom:24px;padding:20px">
+    <div style="display:flex;align-items:center;gap:16px">
+      <!-- Avatar clickeable -->
+      <div style="position:relative;cursor:pointer" onclick="openAvatarModal()" title="Cambiar foto de perfil">
+        ${renderAvatar(u.username, u.avatarUrl, 64, 26)}
+        <div style="position:absolute;bottom:0;right:0;width:22px;height:22px;background:var(--accent);
+          border-radius:50%;display:flex;align-items:center;justify-content:center;border:2px solid var(--bg)">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/>
+            <circle cx="12" cy="13" r="4"/>
+          </svg>
+        </div>
+      </div>
+      <!-- Info -->
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:900;font-size:18px">@${escHtml(u.username)}</div>
+        ${u.walletAddress?`<div style="font-size:11px;color:var(--muted);font-family:monospace;margin-top:2px">${u.walletAddress.slice(0,10)}…${u.walletAddress.slice(-6)}</div>`:""}
+        <div style="font-size:11px;color:var(--muted);margin-top:4px">Miembro desde ${u.createdAt?new Date(u.createdAt).toLocaleDateString("es-CO",{month:"short",year:"numeric"}):"—"}</div>
+      </div>
+      <!-- Balance -->
+      <div style="text-align:right;flex-shrink:0">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:2px">${t("wallet_balance")}</div>
+        <div style="font-size:22px;font-weight:900;color:var(--yes)">${usd(u.balance)}</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:4px">${t("position_value")}: <strong style="color:var(--accent)">${usd(totalValue)}</strong></div>
+      </div>
     </div>
   </div>
+
   <div style="display:flex;gap:8px;margin-bottom:24px">
     <button class="btn-green" style="padding:10px 20px" onclick="openDeposit()">💳 ${t("wallet_deposit")}</button>
     <button class="btn-ghost" style="padding:10px 20px" onclick="openWithdraw()">↑ ${t("wallet_withdraw")}</button>
@@ -4926,10 +4967,10 @@ function renderTradeModal(){
             oninput="STATE.tradeDollars=this.value;updateTradePreview()"/>
         </div>
         <div style="display:flex;gap:5px;margin-top:8px">
-          ${[5,10,25,50,100].map(a=>`<button onclick="setTradeDollars(${a})"
+          ${[5,10,25,50,100].map(a=>`<button onclick="addTradeDollars(${a})"
             style="flex:1;padding:5px 0;border-radius:7px;border:1px solid var(--border);
             background:transparent;color:var(--muted);font-size:12px;font-weight:700;
-            cursor:pointer;font-family:inherit">$${a}</button>`).join("")}
+            cursor:pointer;font-family:inherit">+$${a}</button>`).join("")}
         </div>
         <div style="font-size:11px;color:var(--muted);margin-top:7px">${balanceHint}</div>
       </div>`
@@ -5035,11 +5076,6 @@ function buildPreviewHtml(preview,isBuy){
           <span style="color:var(--muted)">Precio promedio (Avg. Price)</span>
           <span style="font-weight:700;color:var(--text)">${preview.avgPrice ? pct(preview.avgPrice) : pct(preview.entryPrice)}</span>
         </div>
-        <div style="display:flex;justify-content:space-between">
-          <span style="color:var(--muted)">Precio actual → después</span>
-          <span style="font-weight:600;color:var(--muted)">${pct(preview.entryPrice)} → <span style="color:var(--text)">${pct(preview.newPrice)}</span></span>
-        </div>
-
         <div style="height:1px;background:rgba(0,168,112,.15);margin:2px 0"></div>
 
         <div style="display:flex;justify-content:space-between;align-items:center;
@@ -5079,6 +5115,15 @@ function setTradeDollars(amt){
   STATE.tradeDollars=String(amt);
   const el=document.getElementById("trade-dollar-input");
   if(el){el.value=amt;}
+  updateTradePreview();
+}
+
+function addTradeDollars(amt){
+  const current=parseFloat(STATE.tradeDollars)||0;
+  const newAmt=Math.round((current+amt)*100)/100;
+  STATE.tradeDollars=String(newAmt);
+  const el=document.getElementById("trade-dollar-input");
+  if(el){el.value=newAmt;}
   updateTradePreview();
 }
 
@@ -7020,6 +7065,86 @@ responsible_en:`
 `,
 };
 // ═══════════════════════════════════════════════════════════════════
+// AVATAR / FOTO DE PERFIL
+// ═══════════════════════════════════════════════════════════════════
+function openAvatarModal(){
+  const existing=document.getElementById("avatar-modal-overlay");
+  if(existing)existing.remove();
+  const u=getUser();if(!u)return;
+  const html=`<div class="overlay" id="avatar-modal-overlay" onclick="closeAvatarModal(event)">
+    <div class="modal" onclick="event.stopPropagation()" style="max-width:380px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
+        <h3 style="margin:0;font-size:17px">📷 Foto de perfil</h3>
+        <button onclick="document.getElementById('avatar-modal-overlay').remove()"
+          style="background:none;border:none;font-size:22px;cursor:pointer;color:var(--muted)">×</button>
+      </div>
+      <div style="display:flex;justify-content:center;margin-bottom:20px">
+        <div id="avatar-preview">${renderAvatar(u.username,u.avatarUrl,90,36)}</div>
+      </div>
+      <div class="form-group">
+        <label class="lbl">Subir desde tu dispositivo</label>
+        <input type="file" accept="image/*" id="avatar-file-input" style="display:none" onchange="handleAvatarFile(this)"/>
+        <button class="btn-ghost" style="width:100%;padding:10px" onclick="document.getElementById('avatar-file-input').click()">
+          📁 Seleccionar imagen
+        </button>
+        <div class="hint">JPG, PNG o GIF · Máx 2MB</div>
+      </div>
+      <div class="form-group">
+        <label class="lbl">O pega una URL de imagen</label>
+        <input class="inp" type="url" id="avatar-url-input"
+          placeholder="https://..."
+          value="${escHtml(u.avatarUrl||'')}"
+          oninput="previewAvatarUrl(this.value)"/>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:4px">
+        <button class="btn-green" style="flex:1;padding:11px" onclick="saveAvatar()">✓ Guardar foto</button>
+        ${u.avatarUrl?`<button class="btn-ghost" style="padding:11px 16px;color:var(--no);border-color:var(--no)" onclick="removeAvatar()">🗑️</button>`:""}
+      </div>
+    </div>
+  </div>`;
+  document.body.insertAdjacentHTML("beforeend",html);
+}
+function closeAvatarModal(e){if(e.target.id==="avatar-modal-overlay")document.getElementById("avatar-modal-overlay")?.remove();}
+function previewAvatarUrl(url){
+  const preview=document.getElementById("avatar-preview");if(!preview)return;
+  const u=getUser();if(!u)return;
+  preview.innerHTML=renderAvatar(u.username,url||null,90,36);
+}
+function handleAvatarFile(input){
+  const file=input.files[0];if(!file)return;
+  if(file.size>2*1024*1024){notify("La imagen no puede superar 2MB","error");return;}
+  const reader=new FileReader();
+  reader.onload=e=>{
+    const dataUrl=e.target.result;
+    previewAvatarUrl(dataUrl);
+    const urlInput=document.getElementById("avatar-url-input");
+    if(urlInput)urlInput.value=dataUrl;
+  };
+  reader.readAsDataURL(file);
+}
+async function saveAvatar(){
+  const u=getUser();if(!u)return;
+  const urlInput=document.getElementById("avatar-url-input");
+  const newUrl=urlInput?.value?.trim()||null;
+  if(newUrl&&!newUrl.startsWith("data:")&&!newUrl.startsWith("http")){notify("URL inválida","error");return;}
+  const {error}=await db.from("users").update({avatar_url:newUrl}).eq("id",u.id);
+  if(error){notify("Error guardando: "+error.message,"error");return;}
+  const ui=STATE.users.findIndex(x=>x.id===u.id);
+  if(ui>=0)STATE.users[ui]={...STATE.users[ui],avatarUrl:newUrl};
+  document.getElementById("avatar-modal-overlay")?.remove();
+  notify("✅ Foto de perfil actualizada","success");
+  render();
+}
+async function removeAvatar(){
+  const u=getUser();if(!u)return;
+  await db.from("users").update({avatar_url:null}).eq("id",u.id);
+  const ui=STATE.users.findIndex(x=>x.id===u.id);
+  if(ui>=0)STATE.users[ui]={...STATE.users[ui],avatarUrl:null};
+  document.getElementById("avatar-modal-overlay")?.remove();
+  notify("Foto de perfil eliminada","info");
+  render();
+}
+
 if(window.ethereum){
   window.ethereum.on("accountsChanged",accs=>{if(!accs.length)disconnectWallet();});
   window.ethereum.on("chainChanged",()=>location.reload());
