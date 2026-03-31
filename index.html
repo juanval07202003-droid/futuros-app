@@ -55,6 +55,9 @@ body{
   --shadow-sm:0 1px 4px rgba(0,0,0,.06),0 4px 16px rgba(0,0,0,.04);
   --shadow-md:0 4px 20px rgba(0,0,0,.08),0 1px 4px rgba(0,0,0,.05);
   --shadow-lg:0 8px 40px rgba(0,0,0,.12),0 2px 8px rgba(0,0,0,.06);
+  --radius:18px;
+  --radius-sm:12px;
+  --radius-lg:18px;
   --nav-h:60px;/* ─── ANIMATIONS ─────────────────────────────── */
 @keyframes fadeUp{from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:translateY(0);}}
 @keyframes slideIn{from{opacity:0;transform:translateX(-8px);}to{opacity:1;transform:translateX(0);}}
@@ -126,22 +129,22 @@ button:active{transform:scale(.97);}
   padding:10px 16px;font-weight:600;font-size:13px;cursor:pointer;
 }
 .btn-ghost:hover{background:var(--card2);}
-.btn-red-soft{background:var(--no-bg);color:var(--no);border:none;border-radius:8px;padding:6px 11px;font-size:12px;font-weight:700;cursor:pointer;}
-.btn-yes-soft{background:var(--yes-bg);color:var(--yes);border:1px solid rgba(0,168,112,.2);border-radius:8px;padding:10px 0;font-weight:700;font-size:13px;cursor:pointer;flex:1;}
+.btn-red-soft{background:var(--no-bg);color:var(--no);border:none;border-radius:10px;padding:6px 11px;font-size:12px;font-weight:700;cursor:pointer;}
+.btn-yes-soft{background:var(--yes-bg);color:var(--yes);border:1px solid rgba(0,168,112,.2);border-radius:14px;padding:10px 0;font-weight:700;font-size:13px;cursor:pointer;flex:1;}
 .btn-yes-soft:hover{background:#d4f0e6;}
-.btn-no-soft{background:var(--no-bg);color:var(--no);border:1px solid rgba(224,40,74,.15);border-radius:8px;padding:10px 0;font-weight:700;font-size:13px;cursor:pointer;flex:1;}
+.btn-no-soft{background:var(--no-bg);color:var(--no);border:1px solid rgba(224,40,74,.15);border-radius:14px;padding:10px 0;font-weight:700;font-size:13px;cursor:pointer;flex:1;}
 .btn-no-soft:hover{background:#fcd5db;}
-.btn-sell-sm{background:transparent;color:var(--muted);border:1px solid var(--border-strong);border-radius:8px;padding:10px 12px;font-size:12px;font-weight:600;cursor:pointer;}
+.btn-sell-sm{background:transparent;color:var(--muted);border:1px solid var(--border-strong);border-radius:14px;padding:10px 12px;font-size:12px;font-weight:600;cursor:pointer;}
 .btn-sell-sm:hover{background:var(--card2);}
-.btn-deactivate{background:var(--no-bg);color:var(--no);border:none;border-radius:8px;padding:6px 11px;font-size:12px;font-weight:700;cursor:pointer;}
-.btn-activate{background:var(--yes-bg);color:var(--yes);border:none;border-radius:8px;padding:6px 11px;font-size:12px;font-weight:700;cursor:pointer;}
-.btn-adjust{background:var(--accent-bg);color:var(--accent);border:none;border-radius:8px;padding:6px 11px;font-size:12px;font-weight:700;cursor:pointer;}
-.btn-delete{background:var(--no-bg);color:var(--no);border:none;border-radius:8px;padding:6px 11px;font-size:12px;font-weight:700;cursor:pointer;}
-.btn-confirm-sm{background:var(--yes-bg);color:var(--yes);border:none;border-radius:7px;padding:6px 10px;font-size:12px;font-weight:700;cursor:pointer;}
-.btn-cancel-sm{background:transparent;color:var(--muted);border:none;border-radius:7px;padding:6px 8px;font-size:12px;cursor:pointer;}
-.btn-feat-on{background:var(--yes-bg);color:var(--yes);border:1.5px solid rgba(0,168,112,.3);border-radius:8px;padding:6px 12px;font-size:12px;font-weight:800;cursor:pointer;display:inline-flex;align-items:center;gap:5px;transition:all .15s;}
+.btn-deactivate{background:var(--no-bg);color:var(--no);border:none;border-radius:10px;padding:6px 11px;font-size:12px;font-weight:700;cursor:pointer;}
+.btn-activate{background:var(--yes-bg);color:var(--yes);border:none;border-radius:10px;padding:6px 11px;font-size:12px;font-weight:700;cursor:pointer;}
+.btn-adjust{background:var(--accent-bg);color:var(--accent);border:none;border-radius:10px;padding:6px 11px;font-size:12px;font-weight:700;cursor:pointer;}
+.btn-delete{background:var(--no-bg);color:var(--no);border:none;border-radius:10px;padding:6px 11px;font-size:12px;font-weight:700;cursor:pointer;}
+.btn-confirm-sm{background:var(--yes-bg);color:var(--yes);border:none;border-radius:10px;padding:6px 10px;font-size:12px;font-weight:700;cursor:pointer;}
+.btn-cancel-sm{background:transparent;color:var(--muted);border:none;border-radius:10px;padding:6px 8px;font-size:12px;cursor:pointer;}
+.btn-feat-on{background:var(--yes-bg);color:var(--yes);border:1.5px solid rgba(0,168,112,.3);border-radius:14px;padding:6px 12px;font-size:12px;font-weight:800;cursor:pointer;display:inline-flex;align-items:center;gap:5px;transition:all .15s;}
 .btn-feat-on:hover{background:rgba(0,168,112,.15);}
-.btn-feat-off{background:var(--card2);color:var(--muted);border:1.5px solid var(--border);border-radius:8px;padding:6px 12px;font-size:12px;font-weight:700;cursor:pointer;display:inline-flex;align-items:center;gap:5px;transition:all .15s;}
+.btn-feat-off{background:var(--card2);color:var(--muted);border:1.5px solid var(--border);border-radius:14px;padding:6px 12px;font-size:12px;font-weight:700;cursor:pointer;display:inline-flex;align-items:center;gap:5px;transition:all .15s;}
 .btn-feat-off:hover{background:var(--yes-bg);color:var(--yes);border-color:rgba(0,168,112,.3);}
 .feat-market-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 16px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--card);margin-bottom:8px;transition:border-color .15s;}
 .feat-market-row.is-featured{border-color:rgba(0,168,112,.3);background:var(--yes-bg);}
@@ -150,8 +153,8 @@ button:active{transform:scale(.97);}
 .feat-market-meta{font-size:11px;color:var(--muted);margin-top:2px;}
 
 /* ─── PAYMENT BUTTONS ────────────────────────── */
-.btn-polygon{display:flex;align-items:center;justify-content:center;gap:10px;background:linear-gradient(135deg,#6c32cc,#9060ee);color:#fff;border:none;border-radius:12px;padding:15px;font-weight:800;font-size:15px;cursor:pointer;width:100%;}
-.btn-metamask{display:flex;align-items:center;justify-content:center;gap:10px;background:linear-gradient(135deg,#e07010,#d06010);color:#fff;border:none;border-radius:12px;padding:15px;font-weight:800;font-size:15px;cursor:pointer;width:100%;}
+.btn-polygon{display:flex;align-items:center;justify-content:center;gap:10px;background:linear-gradient(135deg,#6c32cc,#9060ee);color:#fff;border:none;border-radius:14px;padding:15px;font-weight:800;font-size:15px;cursor:pointer;width:100%;}
+.btn-metamask{display:flex;align-items:center;justify-content:center;gap:10px;background:linear-gradient(135deg,#e07010,#d06010);color:#fff;border:none;border-radius:14px;padding:15px;font-weight:800;font-size:15px;cursor:pointer;width:100%;}
 
 /* ─── CARDS ──────────────────────────────────── */
 .card{
@@ -260,7 +263,7 @@ button:active{transform:scale(.97);}
 /* ─── PAYMENT METHOD SELECTOR ────────────────── */
 .pay-methods{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:20px;margin-top:12px;}
 .pay-method{
-  border:2px solid var(--border);border-radius:12px;padding:14px 10px;
+  border:2px solid var(--border);border-radius:14px;padding:14px 10px;
   cursor:pointer;text-align:center;transition:all .2s;background:transparent;
   display:flex;flex-direction:column;align-items:center;gap:6px;
 }
@@ -349,7 +352,7 @@ option{background:var(--card);}
 .market-search-wrap{position:relative;margin-bottom:16px;}
 .market-search-input{
   width:100%;padding:11px 16px 11px 42px;
-  border:1.5px solid var(--border-strong);border-radius:12px;
+  border:1.5px solid var(--border-strong);border-radius:14px;
   background:var(--card);color:var(--text);font-size:14px;
   font-family:inherit;outline:none;transition:border-color .2s;
   box-sizing:border-box;
@@ -408,7 +411,7 @@ option{background:var(--card);}
 .auth-sub{font-size:13px;color:var(--muted);margin-bottom:32px;line-height:1.5;}
 .wallet-btn{
   width:100%;display:flex;align-items:center;gap:14px;
-  padding:15px 18px;border-radius:14px;border:1.5px solid var(--border);
+  padding:15px 18px;border-radius:16px;border:1.5px solid var(--border);
   background:var(--card2);cursor:pointer;font-family:inherit;
   transition:all .18s;margin-bottom:12px;
 }
@@ -450,7 +453,7 @@ td{padding:12px;vertical-align:middle;color:var(--text-2);}
 /* ─── NOTIFICATION ───────────────────────────── */
 #notification{
   position:fixed;top:72px;right:16px;z-index:999;
-  padding:12px 18px;border-radius:12px;font-weight:700;font-size:13px;
+  padding:12px 18px;border-radius:14px;font-weight:700;font-size:13px;
   box-shadow:var(--shadow-lg);
   animation:fadeUp .25s ease;display:none;
   max-width:min(340px, calc(100vw - 32px));
@@ -484,20 +487,20 @@ td{padding:12px;vertical-align:middle;color:var(--text-2);}
 }
 .big-action-row{display:flex;gap:10px;margin-top:20px;flex-wrap:wrap;}
 .btn-big-yes{
-  flex:1;min-width:120px;padding:16px;border-radius:12px;border:none;
+  flex:1;min-width:120px;padding:16px;border-radius:14px;border:none;
   background:linear-gradient(135deg,#00a870,#0077cc);
   color:#fff;font-weight:800;font-size:16px;cursor:pointer;font-family:inherit;
   box-shadow:0 2px 12px rgba(0,168,112,.3);
 }
 .btn-big-yes:hover{box-shadow:0 4px 20px rgba(0,168,112,.4);transform:translateY(-1px);}
 .btn-big-no{
-  flex:1;min-width:120px;padding:16px;border-radius:12px;border:none;
+  flex:1;min-width:120px;padding:16px;border-radius:14px;border:none;
   background:var(--no-bg);color:var(--no);
   font-weight:800;font-size:16px;cursor:pointer;font-family:inherit;
   border:1.5px solid rgba(224,40,74,.2);
 }
 .btn-big-sell{
-  padding:16px 20px;border-radius:12px;background:var(--card2);
+  padding:16px 20px;border-radius:14px;background:var(--card2);
   color:var(--text-2);border:1.5px solid var(--border-strong);
   font-weight:700;font-size:15px;cursor:pointer;font-family:inherit;
 }
@@ -665,9 +668,9 @@ td{padding:12px;vertical-align:middle;color:var(--text-2);}
 #bottom-nav{display:none;}
 
 .big-action-row{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;}
-.btn-big-yes{flex:1;min-width:120px;padding:16px;border-radius:12px;background:rgba(0,229,160,.12);color:var(--yes);border:1px solid rgba(0,229,160,.3);font-weight:800;font-size:15px;cursor:pointer;font-family:inherit;}
-.btn-big-no{flex:1;min-width:120px;padding:16px;border-radius:12px;background:rgba(255,77,109,.1);color:var(--no);border:1px solid rgba(255,77,109,.25);font-weight:800;font-size:15px;cursor:pointer;font-family:inherit;}
-.resolved-banner{text-align:center;padding:14px;background:rgba(0,229,160,.07);border:1px solid rgba(0,229,160,.2);border-radius:12px;font-weight:700;font-size:14px;color:var(--yes);}
+.btn-big-yes{flex:1;min-width:120px;padding:16px;border-radius:14px;background:rgba(0,229,160,.12);color:var(--yes);border:1px solid rgba(0,229,160,.3);font-weight:800;font-size:15px;cursor:pointer;font-family:inherit;}
+.btn-big-no{flex:1;min-width:120px;padding:16px;border-radius:14px;background:rgba(255,77,109,.1);color:var(--no);border:1px solid rgba(255,77,109,.25);font-weight:800;font-size:15px;cursor:pointer;font-family:inherit;}
+.resolved-banner{text-align:center;padding:14px;background:rgba(0,229,160,.07);border:1px solid rgba(0,229,160,.2);border-radius:14px;font-weight:700;font-size:14px;color:var(--yes);}
 
 /* ─── MISC ───────────────────────────────────── */
 .fade-up{animation:fadeUp .3s ease;}
@@ -3469,7 +3472,7 @@ function showSolanaPaymentInstructions(tokenName, amount, address, userId, usern
       <p style="color:var(--muted);font-size:13px;margin-bottom:20px">
         Abre <strong>Phantom → Send</strong> y envía exactamente:
       </p>
-      <div style="background:linear-gradient(135deg,#9945ff15,#9945ff08);border:2px solid #9945ff33;border-radius:14px;padding:16px;margin-bottom:16px">
+      <div style="background:linear-gradient(135deg,#9945ff15,#9945ff08);border:2px solid #9945ff33;border-radius:16px;padding:16px;margin-bottom:16px">
         <div style="font-size:36px;font-weight:900;color:#9945ff">${amount.toFixed(2)} ${tokenName}</div>
         <div style="font-size:12px;color:var(--muted);margin-top:4px">Red Solana únicamente</div>
       </div>
@@ -3479,7 +3482,7 @@ function showSolanaPaymentInstructions(tokenName, amount, address, userId, usern
         <div style="color:var(--accent);font-size:11px;margin-top:6px">📋 Toca para copiar</div>
       </div>
 
-      <div style="background:#f0eafa;border:2px solid #9945ff44;border-radius:12px;padding:14px;margin-bottom:14px;text-align:left">
+      <div style="background:#f0eafa;border:2px solid #9945ff44;border-radius:14px;padding:14px;margin-bottom:14px;text-align:left">
         <div style="font-size:12px;font-weight:800;color:#9945ff;margin-bottom:8px">🔑 MEMO OBLIGATORIO — para acreditar automáticamente</div>
         <div style="background:white;border-radius:8px;padding:10px;font-family:monospace;font-size:13px;font-weight:700;color:#1a1a2e;word-break:break-all;cursor:pointer;margin-bottom:6px" onclick="copyText('${memo}');this.style.background='#e8f8f2'">
           ${memo}
@@ -3700,152 +3703,200 @@ function renderMarket(){
   if(!m)return`<div class="container"><p>${t("market_not_found")}</p></div>`;
   const u=getUser(),pYes=getPrice(m,"YES"),b=computeB(m.alpha,m.totalVolume,m.seedLiquidity);
   const pos=u?.positions[m.id]||{YES:0,NO:0},cc=CAT_COLOR[m.category]||"#888";
-  let chartHtml=`<div style="color:var(--muted);font-size:13px;padding:20px 0;margin-top:8px;text-align:center">${t("chart_empty")}</div>`;
-  if(m.priceHistory.length>1){
-    const data     = m.priceHistory;
-    const curYes   = data[data.length-1];
-    const curNo    = 1 - curYes;
-    const minYes   = Math.min(...data), maxYes = Math.max(...data);
-    const minNo    = 1-maxYes, maxNo = 1-minYes;
-    const avgYes   = Math.round((data.reduce((s,v)=>s+v,0)/data.length)*1000)/1000;
-    const avgNo    = Math.round((1-avgYes)*1000)/1000;
-    const trades   = data.length;
-    const lineColor = "#00e5a0";
-    const areaColor = "#00e5a0";
+  // ── Chart state (per market) ─────────────────────────────────
+  const chartId    = "chart_" + m.id.replace(/[^a-z0-9]/gi,"_");
+  const chartRange = STATE.chartRange?.[m.id] || "all";
 
-    // ── Dimensiones ──────────────────────────────────────────────
-    const W=580, H=150, PL=8, PR=44, PT=16, PB=32;
-    const cW=W-PL-PR, cH=H-PT-PB;
+  // ── Build filtered data based on range ──────────────────────
+  const fullData    = m.priceHistory;
+  const startMs     = m.createdAt ? new Date(m.createdAt).getTime() : Date.now() - fullData.length*3600000;
+  const endMs       = Date.now();
+  const totalMs     = Math.max(endMs - startMs, 1);
+  const pointIntervalMs = totalMs / Math.max(fullData.length - 1, 1);
 
-    // ── Eje Y: siempre 0–100%, marcas cada 20% ────────────────
-    const toY = v => PT + cH - (v * cH); // v ya está en 0-1
-    const yMarks = [0, 0.2, 0.4, 0.6, 0.8, 1.0];
-
-    // ── Eje X: tiempo real desde createdAt hasta ahora ────────
-    const startMs = m.createdAt ? new Date(m.createdAt).getTime() : Date.now() - (trades-1)*3600000;
-    const endMs   = Date.now();
-    const totalMs = endMs - startMs || 1;
-    const toX = i => PL + (i/(data.length-1)) * cW;
-
-    // Calcular etiquetas de fecha distribuidas
-    function fmtDateLabel(ms){
-      const d = new Date(ms);
-      const months = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
-      return months[d.getMonth()] + " " + d.getDate();
-    }
-    // Generar 4-5 marcas de fecha distribuidas uniformemente
-    const xDateLabels = [];
-    const numXMarks = Math.min(5, trades);
-    for(let k=0; k<numXMarks; k++){
-      const frac = k/(numXMarks-1||1);
-      const ms   = startMs + frac * totalMs;
-      const xi   = PL + frac * cW;
-      xDateLabels.push({xi, label: fmtDateLabel(ms)});
-    }
-
-    // ── Puntos de la línea ────────────────────────────────────
-    const ptsYes  = data.map((v,i) => [toX(i), toY(v)]);
-    const polyYes = ptsYes.map(p=>p.map(n=>n.toFixed(1)).join(",")).join(" ");
-    const areaYes = `M${ptsYes[0].map(n=>n.toFixed(1)).join(",")} ${ptsYes.slice(1).map(p=>"L"+p.map(n=>n.toFixed(1)).join(",")).join(" ")} L${(PL+cW).toFixed(1)},${(PT+cH).toFixed(1)} L${PL},${(PT+cH).toFixed(1)} Z`;
-
-    chartHtml=`
-    <div style="margin-top:4px">
-      <!-- Header con valores actuales -->
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-        <div style="font-size:11px;color:var(--muted)">Historial de precio</div>
-        <div style="display:flex;gap:12px;font-size:13px;font-weight:800">
-          <span style="color:var(--yes)">SÍ ${pct(curYes)}</span>
-          <span style="color:var(--muted)">·</span>
-          <span style="color:var(--no)">NO ${pct(curNo)}</span>
-        </div>
-      </div>
-
-      <!-- SVG Chart -->
-      <div style="position:relative">
-        <svg width="100%" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" style="display:block;overflow:visible">
-          <defs>
-            <linearGradient id="gYes" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%"   stop-color="${areaColor}" stop-opacity=".15"/>
-              <stop offset="100%" stop-color="${areaColor}" stop-opacity="0"/>
-            </linearGradient>
-            <clipPath id="chartClip">
-              <rect x="${PL}" y="${PT}" width="${cW}" height="${cH}"/>
-            </clipPath>
-          </defs>
-
-          <!-- Líneas horizontales cada 20% — muy sutiles y punteadas -->
-          ${yMarks.map(v=>{
-            const yp = toY(v);
-            return `<line x1="${PL}" y1="${yp.toFixed(1)}" x2="${(PL+cW).toFixed(1)}" y2="${yp.toFixed(1)}"
-              stroke="var(--border)"
-              stroke-width="0.8"
-              stroke-dasharray="3,5"
-              opacity="0.4"/>`;
-          }).join("")}
-
-          <!-- Etiquetas eje Y — derecha, 0-100% -->
-          ${yMarks.map(v=>{
-            const yp = toY(v);
-            return `<text x="${(PL+cW+6).toFixed(0)}" y="${(yp+3.5).toFixed(0)}"
-              text-anchor="start" font-size="9.5" fill="var(--muted)" font-family="inherit" opacity=".7">
-              ${Math.round(v*100)}%
-            </text>`;
-          }).join("")}
-
-          <!-- Área rellena -->
-          <path d="${areaYes}" fill="url(#gYes)" clip-path="url(#chartClip)"/>
-
-          <!-- Línea principal -->
-          <polyline points="${polyYes}" fill="none" stroke="${lineColor}"
-            stroke-width="2" stroke-linejoin="round" stroke-linecap="round"
-            clip-path="url(#chartClip)"/>
-
-          <!-- Punto final -->
-          <circle cx="${toX(data.length-1).toFixed(1)}" cy="${toY(curYes).toFixed(1)}"
-            r="4" fill="${lineColor}" stroke="white" stroke-width="2"/>
-          <text x="${toX(data.length-1).toFixed(1)}" y="${(toY(curYes)-9).toFixed(0)}"
-            text-anchor="middle" font-size="9.5" fill="${lineColor}" font-weight="700">
-            ${Math.round(curYes*100)}%
-          </text>
-
-          <!-- Eje X inferior -->
-          <line x1="${PL}" y1="${(PT+cH).toFixed(1)}" x2="${(PL+cW).toFixed(1)}" y2="${(PT+cH).toFixed(1)}"
-            stroke="var(--border)" stroke-width="1"/>
-
-          <!-- Etiquetas eje X — fechas reales -->
-          ${xDateLabels.map(({xi,label})=>`
-            <line x1="${xi.toFixed(1)}" y1="${(PT+cH).toFixed(1)}" x2="${xi.toFixed(1)}" y2="${(PT+cH+4).toFixed(0)}"
-              stroke="var(--border)" stroke-width="1"/>
-            <text x="${xi.toFixed(1)}" y="${(PT+cH+14).toFixed(0)}"
-              text-anchor="middle" font-size="9.5" fill="var(--muted)" font-family="inherit">
-              ${label}
-            </text>
-          `).join("")}
-        </svg>
-      </div>
-
-      <!-- Stats tabla -->
-      <div style="margin-top:14px;font-size:11px">
-        <div style="display:grid;grid-template-columns:60px 1fr 1fr 1fr 1fr;gap:5px;align-items:center">
-          <div></div>
-          <div style="text-align:center;font-weight:700;color:var(--muted);text-transform:uppercase;font-size:9px;letter-spacing:.4px">Mín</div>
-          <div style="text-align:center;font-weight:700;color:var(--muted);text-transform:uppercase;font-size:9px;letter-spacing:.4px">Prom.</div>
-          <div style="text-align:center;font-weight:700;color:var(--muted);text-transform:uppercase;font-size:9px;letter-spacing:.4px">Máx</div>
-          <div style="text-align:center;font-weight:700;color:var(--muted);text-transform:uppercase;font-size:9px;letter-spacing:.4px">Actual</div>
-          <div style="font-weight:700;color:var(--yes);font-size:11px">● SÍ</div>
-          <div style="text-align:center;background:var(--card2);border-radius:6px;padding:5px;font-weight:700;color:var(--yes)">${pct(minYes)}</div>
-          <div style="text-align:center;background:var(--card2);border-radius:6px;padding:5px;font-weight:700;color:var(--yes)">${pct(avgYes)}</div>
-          <div style="text-align:center;background:var(--card2);border-radius:6px;padding:5px;font-weight:700;color:var(--yes)">${pct(maxYes)}</div>
-          <div style="text-align:center;background:rgba(0,229,160,.1);border:1.5px solid rgba(0,229,160,.3);border-radius:6px;padding:5px;font-weight:800;color:var(--yes)">${pct(curYes)}</div>
-          <div style="font-weight:700;color:var(--no);font-size:11px">● NO</div>
-          <div style="text-align:center;background:var(--card2);border-radius:6px;padding:5px;font-weight:700;color:var(--no)">${pct(minNo)}</div>
-          <div style="text-align:center;background:var(--card2);border-radius:6px;padding:5px;font-weight:700;color:var(--no)">${pct(avgNo)}</div>
-          <div style="text-align:center;background:var(--card2);border-radius:6px;padding:5px;font-weight:700;color:var(--no)">${pct(maxNo)}</div>
-          <div style="text-align:center;background:rgba(224,40,74,.08);border:1.5px solid rgba(224,40,74,.25);border-radius:6px;padding:5px;font-weight:800;color:var(--no)">${pct(curNo)}</div>
-        </div>
-      </div>
-    </div>`;
+  function getFilteredData(range){
+    const now = Date.now();
+    const cutoffs = {"1h":3600000,"6h":6*3600000,"1d":86400000,"1w":7*86400000,"1m":30*86400000};
+    if(range==="all"||!cutoffs[range]) return fullData.map((v,i)=>({v,i,ms:startMs+i*pointIntervalMs}));
+    const cutMs = now - cutoffs[range];
+    return fullData.map((v,i)=>({v,i,ms:startMs+i*pointIntervalMs})).filter(p=>p.ms>=cutMs);
   }
+
+  const filtered = getFilteredData(chartRange);
+  const data     = filtered.length>1 ? filtered : fullData.map((v,i)=>({v,i,ms:startMs+i*pointIntervalMs}));
+
+  const curYes = data[data.length-1].v;
+  const curNo  = 1-curYes;
+  const minYes = Math.min(...data.map(p=>p.v));
+  const maxYes = Math.max(...data.map(p=>p.v));
+  const minNo  = 1-maxYes, maxNo = 1-minYes;
+  const avgYes = Math.round((data.reduce((s,p)=>s+p.v,0)/data.length)*1000)/1000;
+  const avgNo  = Math.round((1-avgYes)*1000)/1000;
+
+  const lineColor = "#00e5a0";
+  const areaColor = "#00e5a0";
+
+  // ── Dimensiones SVG ───────────────────────────────────────────
+  const W=580, H=160, PL=8, PR=44, PT=16, PB=32;
+  const cW=W-PL-PR, cH=H-PT-PB;
+
+  const toY  = v  => PT + cH - (v * cH);
+  const toXd = (idx) => PL + (idx/(data.length-1||1)) * cW;
+
+  const yMarks = [0,0.2,0.4,0.6,0.8,1.0];
+
+  // ── Date labels for X axis ────────────────────────────────────
+  const months=["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
+  function fmtDate(ms){const d=new Date(ms);return months[d.getMonth()]+" "+d.getDate();}
+  function fmtDateHour(ms){
+    const d=new Date(ms);
+    return months[d.getMonth()]+" "+d.getDate()+", "+d.getHours()+":"+String(d.getMinutes()).padStart(2,"0");
+  }
+
+  const xDateLabels=[];
+  const numX=Math.min(5,data.length);
+  for(let k=0;k<numX;k++){
+    const frac=k/(numX-1||1);
+    const idx=Math.round(frac*(data.length-1));
+    const xi=PL+frac*cW;
+    xDateLabels.push({xi,label:fmtDate(data[idx].ms)});
+  }
+
+  // ── SVG polyline points ───────────────────────────────────────
+  const ptsYes  = data.map((p,i)=>[toXd(i),toY(p.v)]);
+  const polyYes = ptsYes.map(p=>p.map(n=>n.toFixed(1)).join(",")).join(" ");
+  const areaYes = `M${ptsYes[0].map(n=>n.toFixed(1)).join(",")} ${ptsYes.slice(1).map(p=>"L"+p.map(n=>n.toFixed(1)).join(",")).join(" ")} L${(PL+cW).toFixed(1)},${(PT+cH).toFixed(1)} L${PL},${(PT+cH).toFixed(1)} Z`;
+
+  // ── Tooltip data embedded as JSON ────────────────────────────
+  const tooltipData = JSON.stringify(data.map((p,i)=>({
+    x: parseFloat(toXd(i).toFixed(1)),
+    y: parseFloat(toY(p.v).toFixed(1)),
+    v: p.v,
+    ms: p.ms,
+  })));
+
+  let chartHtml=`
+  <div style="margin-top:4px">
+
+    <!-- Header: % actual + vol + fecha cierre -->
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;flex-wrap:wrap;gap:6px">
+      <div>
+        <div style="font-size:28px;font-weight:900;color:var(--yes);line-height:1">${Math.round(curYes*100)}%</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:2px">probabilidad SÍ</div>
+      </div>
+      <div style="text-align:right;font-size:12px;color:var(--muted)">
+        <div><strong style="color:var(--text)">${fmtVol(m.totalVolume)}</strong> Vol.</div>
+        <div style="margin-top:2px">Cierra: <strong style="color:var(--text)">${timeLeft(m.closesAt)}</strong></div>
+      </div>
+    </div>
+
+    <!-- Filtros de rango -->
+    <div style="display:flex;gap:4px;margin-bottom:10px">
+      ${["1h","6h","1d","1w","1m","all"].map(r=>{
+        const active=chartRange===r;
+        const labels={"1h":"1H","6h":"6H","1d":"1D","1w":"1W","1m":"1M","all":"ALL"};
+        return`<button onclick="setChartRange('${m.id}','${r}')"
+          style="padding:3px 9px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;
+            border:1px solid ${active?"var(--yes)":"var(--border)"};
+            background:${active?"rgba(0,229,160,.12)":"transparent"};
+            color:${active?"var(--yes)":"var(--muted)"}">
+          ${labels[r]}
+        </button>`;
+      }).join("")}
+    </div>
+
+    <!-- SVG Chart con tooltip interactivo -->
+    <div style="position:relative" id="${chartId}_wrap">
+      <!-- Tooltip flotante -->
+      <div id="${chartId}_tip" style="display:none;position:absolute;background:var(--card);border:1px solid var(--border);
+        border-radius:8px;padding:6px 10px;font-size:11px;pointer-events:none;z-index:10;white-space:nowrap;
+        box-shadow:0 4px 12px rgba(0,0,0,.15)">
+        <div id="${chartId}_tip_date" style="color:var(--muted);margin-bottom:2px"></div>
+        <div id="${chartId}_tip_val" style="font-weight:800;color:var(--yes)"></div>
+      </div>
+
+      <svg id="${chartId}_svg" width="100%" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet"
+        style="display:block;overflow:visible;cursor:crosshair"
+        data-pts='${tooltipData}'
+        onmousemove="chartMouseMove(event,this,'${chartId}')"
+        onmouseleave="chartMouseLeave('${chartId}')">
+        <defs>
+          <linearGradient id="gYes_${chartId}" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%"   stop-color="${areaColor}" stop-opacity=".15"/>
+            <stop offset="100%" stop-color="${areaColor}" stop-opacity="0"/>
+          </linearGradient>
+          <clipPath id="clip_${chartId}">
+            <rect x="${PL}" y="${PT}" width="${cW}" height="${cH}"/>
+          </clipPath>
+        </defs>
+
+        <!-- Grid lines -->
+        ${yMarks.map(v=>`<line x1="${PL}" y1="${toY(v).toFixed(1)}" x2="${(PL+cW).toFixed(1)}" y2="${toY(v).toFixed(1)}"
+          stroke="var(--border)" stroke-width="0.8" stroke-dasharray="3,5" opacity="0.4"/>`).join("")}
+
+        <!-- Y axis labels -->
+        ${yMarks.map(v=>`<text x="${(PL+cW+6).toFixed(0)}" y="${(toY(v)+3.5).toFixed(0)}"
+          text-anchor="start" font-size="9.5" fill="var(--muted)" font-family="inherit" opacity=".7">
+          ${Math.round(v*100)}%</text>`).join("")}
+
+        <!-- Area fill -->
+        <path d="${areaYes}" fill="url(#gYes_${chartId})" clip-path="url(#clip_${chartId})"/>
+
+        <!-- Main line -->
+        <polyline points="${polyYes}" fill="none" stroke="${lineColor}"
+          stroke-width="2" stroke-linejoin="round" stroke-linecap="round"
+          clip-path="url(#clip_${chartId})"/>
+
+        <!-- End dot + label -->
+        <circle cx="${toXd(data.length-1).toFixed(1)}" cy="${toY(curYes).toFixed(1)}"
+          r="4" fill="${lineColor}" stroke="white" stroke-width="2"/>
+        <text x="${toXd(data.length-1).toFixed(1)}" y="${(toY(curYes)-9).toFixed(0)}"
+          text-anchor="middle" font-size="9.5" fill="${lineColor}" font-weight="700">
+          ${Math.round(curYes*100)}%
+        </text>
+
+        <!-- Crosshair line (hidden by default) -->
+        <line id="${chartId}_cross" x1="0" y1="${PT}" x2="0" y2="${PT+cH}"
+          stroke="var(--muted)" stroke-width="1" stroke-dasharray="4,3" opacity="0.6" display="none"/>
+        <circle id="${chartId}_dot" cx="0" cy="0" r="5"
+          fill="${lineColor}" stroke="white" stroke-width="2" display="none"/>
+
+        <!-- X axis -->
+        <line x1="${PL}" y1="${(PT+cH).toFixed(1)}" x2="${(PL+cW).toFixed(1)}" y2="${(PT+cH).toFixed(1)}"
+          stroke="var(--border)" stroke-width="1"/>
+
+        <!-- X date labels -->
+        ${xDateLabels.map(({xi,label})=>`
+          <line x1="${xi.toFixed(1)}" y1="${(PT+cH).toFixed(1)}" x2="${xi.toFixed(1)}" y2="${(PT+cH+4).toFixed(0)}"
+            stroke="var(--border)" stroke-width="1"/>
+          <text x="${xi.toFixed(1)}" y="${(PT+cH+14).toFixed(0)}"
+            text-anchor="middle" font-size="9.5" fill="var(--muted)" font-family="inherit">
+            ${label}
+          </text>`).join("")}
+      </svg>
+    </div>
+
+    <!-- Stats tabla -->
+    <div style="margin-top:14px;font-size:11px">
+      <div style="display:grid;grid-template-columns:60px 1fr 1fr 1fr 1fr;gap:5px;align-items:center">
+        <div></div>
+        <div style="text-align:center;font-weight:700;color:var(--muted);text-transform:uppercase;font-size:9px;letter-spacing:.4px">Mín</div>
+        <div style="text-align:center;font-weight:700;color:var(--muted);text-transform:uppercase;font-size:9px;letter-spacing:.4px">Prom.</div>
+        <div style="text-align:center;font-weight:700;color:var(--muted);text-transform:uppercase;font-size:9px;letter-spacing:.4px">Máx</div>
+        <div style="text-align:center;font-weight:700;color:var(--muted);text-transform:uppercase;font-size:9px;letter-spacing:.4px">Actual</div>
+        <div style="font-weight:700;color:var(--yes);font-size:11px">● SÍ</div>
+        <div style="text-align:center;background:var(--card2);border-radius:6px;padding:5px;font-weight:700;color:var(--yes)">${pct(minYes)}</div>
+        <div style="text-align:center;background:var(--card2);border-radius:6px;padding:5px;font-weight:700;color:var(--yes)">${pct(avgYes)}</div>
+        <div style="text-align:center;background:var(--card2);border-radius:6px;padding:5px;font-weight:700;color:var(--yes)">${pct(maxYes)}</div>
+        <div style="text-align:center;background:rgba(0,229,160,.1);border:1.5px solid rgba(0,229,160,.3);border-radius:6px;padding:5px;font-weight:800;color:var(--yes)">${pct(curYes)}</div>
+        <div style="font-weight:700;color:var(--no);font-size:11px">● NO</div>
+        <div style="text-align:center;background:var(--card2);border-radius:6px;padding:5px;font-weight:700;color:var(--no)">${pct(minNo)}</div>
+        <div style="text-align:center;background:var(--card2);border-radius:6px;padding:5px;font-weight:700;color:var(--no)">${pct(avgNo)}</div>
+        <div style="text-align:center;background:var(--card2);border-radius:6px;padding:5px;font-weight:700;color:var(--no)">${pct(maxNo)}</div>
+        <div style="text-align:center;background:rgba(224,40,74,.08);border:1.5px solid rgba(224,40,74,.25);border-radius:6px;padding:5px;font-weight:800;color:var(--no)">${pct(curNo)}</div>
+      </div>
+    </div>
+  </div>`;
   const closed = isMarketClosed(m);
   const bottomAction = m.resolved
     ?`<div class="resolved-banner">✅ ${t("detail_resolved")}: ${escHtml(m.resolution)}</div>`
@@ -5060,7 +5111,7 @@ function buildPreviewHtml(preview,isBuy){
     const roi=preview.dollars>0?((preview.potentialProfit/preview.dollars)*100).toFixed(1):"0.0";
     const spreadLabel=preview.spreadPct!=null?preview.spreadPct.toFixed(2)+"%":"—";
     return`<div style="background:var(--yes-bg);border:1.5px solid rgba(0,168,112,.2);
-        border-radius:12px;padding:16px;margin-bottom:14px;animation:fadeUp .15s ease">
+        border-radius:14px;padding:16px;margin-bottom:14px;animation:fadeUp .15s ease">
 
       <div style="display:flex;justify-content:space-between;align-items:center;
           padding-bottom:12px;margin-bottom:12px;border-bottom:1px solid rgba(0,168,112,.15)">
@@ -7064,6 +7115,73 @@ responsible_en:`
 
 `,
 };
+// ═══════════════════════════════════════════════════════════════════
+// CHART INTERACTIONS — tooltip + range filter
+// ═══════════════════════════════════════════════════════════════════
+if(!STATE.chartRange) STATE.chartRange = {};
+
+function setChartRange(marketId, range){
+  if(!STATE.chartRange) STATE.chartRange = {};
+  STATE.chartRange[marketId] = range;
+  render();
+}
+
+function chartMouseMove(e, svgEl, chartId){
+  const pts = JSON.parse(svgEl.dataset.pts||"[]");
+  if(!pts.length) return;
+
+  const rect  = svgEl.getBoundingClientRect();
+  const scaleX = (svgEl.viewBox.baseVal.width) / rect.width;
+  const mx    = (e.clientX - rect.left) * scaleX;
+
+  // Find nearest point
+  let nearest = pts[0], minDist = Infinity;
+  for(const p of pts){
+    const d = Math.abs(p.x - mx);
+    if(d < minDist){ minDist = d; nearest = p; }
+  }
+
+  // Show crosshair
+  const cross = document.getElementById(chartId+"_cross");
+  const dot   = document.getElementById(chartId+"_dot");
+  if(cross){ cross.setAttribute("x1",nearest.x); cross.setAttribute("x2",nearest.x); cross.removeAttribute("display"); }
+  if(dot){   dot.setAttribute("cx",nearest.x);   dot.setAttribute("cy",nearest.y);   dot.removeAttribute("display"); }
+
+  // Show tooltip
+  const tip      = document.getElementById(chartId+"_tip");
+  const tipDate  = document.getElementById(chartId+"_date");
+  const tipVal   = document.getElementById(chartId+"_val");
+  if(!tip) return;
+
+  const months = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
+  const d = new Date(nearest.ms);
+  const dateStr = months[d.getMonth()]+" "+d.getDate()+", "+d.getHours()+":"+String(d.getMinutes()).padStart(2,"0");
+
+  if(tipDate) document.getElementById(chartId+"_tip_date").textContent = dateStr;
+  if(tipVal)  document.getElementById(chartId+"_tip_val").textContent  = "SÍ "+Math.round(nearest.v*100)+"% · NO "+Math.round((1-nearest.v)*100)+"%";
+
+  // Position tooltip
+  const wrap = document.getElementById(chartId+"_wrap");
+  if(wrap){
+    const wRect = wrap.getBoundingClientRect();
+    const tipW  = 160;
+    let   left  = e.clientX - wRect.left + 12;
+    if(left + tipW > wRect.width) left = e.clientX - wRect.left - tipW - 12;
+    tip.style.left = left + "px";
+    tip.style.top  = (e.clientY - wRect.top - 40) + "px";
+    tip.style.display = "block";
+  }
+}
+
+function chartMouseLeave(chartId){
+  const cross = document.getElementById(chartId+"_cross");
+  const dot   = document.getElementById(chartId+"_dot");
+  const tip   = document.getElementById(chartId+"_tip");
+  if(cross) cross.setAttribute("display","none");
+  if(dot)   dot.setAttribute("display","none");
+  if(tip)   tip.style.display = "none";
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // AVATAR / FOTO DE PERFIL
 // ═══════════════════════════════════════════════════════════════════
