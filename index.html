@@ -6,11 +6,11 @@
 <meta http-equiv="X-Content-Type-Options" content="nosniff"/>
 <link rel="canonical" href="https://futuros.bet"/>
 <meta property="og:url" content="https://futuros.bet"/>
-<meta property="og:title" content="⚡ Futuros — Prediction Market"/>
+<meta property="og:title" content="Futuros — Prediction Market"/>
 <meta property="og:description" content="Predice el futuro, gana en el presente. Mercados de predicción con criptomonedas."/>
 <meta name="twitter:card" content="summary"/>
 <meta http-equiv="Referrer-Policy" content="strict-origin-when-cross-origin"/>
-<title>⚡ Futuros — Prediction Market | futuros.bet</title>
+<title>Futuros — Prediction Market | futuros.bet</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2300c896'/%3E%3Cpolygon points='19,3 9,18 15,18 13,29 23,14 17,14' fill='white'/%3E%3C/svg%3E"/>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700;9..40,800;9..40,900&display=swap" rel="stylesheet"/>
@@ -1825,6 +1825,8 @@ const STATE={
   statsFilter: "all",       // "7d" | "30d" | "90d" | "1y" | "all" | "custom"
   statsDateFrom: "",        // ISO date string para filtro custom
   statsDateTo: "",          // ISO date string para filtro custom
+  marketTab: {},            // {[marketId]: "comments"|"holders"|"positions"}
+  marketHolders: {},        // {[marketId]: [{userId,username,yes,no}]}
   withdrawals:[],
   // trade modal
   tradeOpen:false,tradeMarketId:null,tradeSide:"YES",tradeMode:"buy",tradeShares:"",tradeDollars:"",
@@ -2438,6 +2440,10 @@ function navigate(view,opts={}){
   render();
   if(view==="market" && STATE.selectedMarket){
     dbLoadComments(STATE.selectedMarket);
+    // Precargar holders para que estén listos cuando el usuario cambie de tab
+    if(!STATE.marketHolders?.[STATE.selectedMarket]){
+      loadMarketHolders(STATE.selectedMarket);
+    }
   }
 }
 
@@ -3931,8 +3937,268 @@ function renderMarket(){
   </div>
   <div class="card" style="margin-bottom:20px"><div class="lbl">${t("detail_price_history")} ${t("detail_yes")}</div>${chartHtml}</div>
   ${bottomAction}
-  ${renderComments(m.id)}
+  ${renderMarketTabs(m.id)}
 </div>`;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// MARKET TABS — Comentarios / Top Holders / Posiciones
+// ═══════════════════════════════════════════════════════════════════
+function renderMarketTabs(marketId){
+  const tab = STATE.marketTab?.[marketId] || "comments";
+  const tabs = [
+    {k:"comments",   label:"💬 Comentarios"},
+    {k:"holders",    label:"🏆 Top Holders"},
+    {k:"positions",  label:"📊 Posiciones"},
+  ];
+
+  const tabBar = `<div style="display:flex;gap:0;border-bottom:2px solid var(--border);margin-bottom:20px">
+    ${tabs.map(t=>`
+      <button onclick="setMarketTab('${marketId}','${t.k}')"
+        style="padding:10px 18px;font-size:13px;font-weight:700;cursor:pointer;border:none;
+          background:transparent;font-family:inherit;
+          color:${tab===t.k?"var(--accent)":"var(--muted)"};
+          border-bottom:2px solid ${tab===t.k?"var(--accent)":"transparent"};
+          margin-bottom:-2px;transition:all .15s">
+        ${t.label}
+      </button>`).join("")}
+  </div>`;
+
+  let content = "";
+  if(tab==="comments") content = renderComments(marketId);
+  else if(tab==="holders")   content = renderTopHolders(marketId);
+  else if(tab==="positions") content = renderMarketPositions(marketId);
+
+  return `<div id="market-tabs-${marketId}">${tabBar}${content}</div>`;
+}
+
+function setMarketTab(marketId, tab){
+  if(!STATE.marketTab) STATE.marketTab = {};
+  STATE.marketTab[marketId] = tab;
+  const el = document.getElementById("market-tabs-"+marketId);
+  if(!el) return;
+  // Re-render just the tabs section
+  if(tab==="holders" && !STATE.marketHolders?.[marketId]){
+    loadMarketHolders(marketId);
+  }
+  el.outerHTML = renderMarketTabs(marketId);
+}
+
+function renderTopHolders(marketId){
+  const holders = STATE.marketHolders?.[marketId];
+  if(!holders){
+    loadMarketHolders(marketId);
+    return`<div style="text-align:center;padding:40px 0;color:var(--muted)">
+      <div style="font-size:24px;margin-bottom:8px">⏳</div>
+      <div style="font-weight:600">Cargando holders...</div>
+    </div>`;
+  }
+  if(!holders.length) return`<div style="text-align:center;padding:32px 0;color:var(--muted)">
+    <div style="font-size:32px;margin-bottom:8px">📭</div>
+    <div>Sin posiciones abiertas aún</div>
+  </div>`;
+
+  const yesHolders = holders.filter(h=>h.yes>0).sort((a,b)=>b.yes-a.yes).slice(0,5);
+  const noHolders  = holders.filter(h=>h.no>0) .sort((a,b)=>b.no -a.no ).slice(0,5);
+  const maxYes = yesHolders[0]?.yes || 1;
+  const maxNo  = noHolders[0]?.no   || 1;
+
+  const renderRow = (h, side, rank) => {
+    const shares = side==="YES" ? h.yes : h.no;
+    const max    = side==="YES" ? maxYes : maxNo;
+    const pct    = Math.round((shares/max)*100);
+    const color  = side==="YES" ? "var(--yes)" : "var(--no)";
+    const bgColor= side==="YES" ? "rgba(0,168,112,.08)" : "rgba(224,40,74,.06)";
+    const user   = STATE.users.find(u=>u.id===h.userId);
+    const badge  = ["🥇","🥈","🥉","4","5"][rank-1] || rank;
+    return`<div style="display:flex;align-items:center;gap:10px;padding:10px 12px;
+        border-radius:12px;margin-bottom:4px;background:${bgColor};transition:background .15s"
+        onmouseover="this.style.background='${side==="YES"?"rgba(0,168,112,.13)":"rgba(224,40,74,.1)"}'"
+        onmouseout="this.style.background='${bgColor}'">
+      <!-- Rank -->
+      <div style="width:20px;text-align:center;font-size:13px;flex-shrink:0">${badge}</div>
+      <!-- Avatar -->
+      <div style="flex-shrink:0;position:relative">
+        ${renderAvatar(h.username, user?.avatarUrl||null, 38, 15)}
+        <div style="position:absolute;bottom:-2px;right:-2px;width:16px;height:16px;border-radius:50%;
+          background:${color};display:flex;align-items:center;justify-content:center;
+          font-size:8px;font-weight:900;color:white;border:2px solid var(--card)">
+          ${side==="YES"?"S":"N"}
+        </div>
+      </div>
+      <!-- Info -->
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:700;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+          @${escHtml(h.username)}
+        </div>
+        <!-- Barra de progreso -->
+        <div style="margin-top:4px;height:3px;background:var(--border);border-radius:3px;overflow:hidden">
+          <div style="height:100%;width:${pct}%;background:${color};border-radius:3px;transition:width .5s"></div>
+        </div>
+      </div>
+      <!-- Shares -->
+      <div style="text-align:right;flex-shrink:0">
+        <div style="font-weight:800;font-size:13px;color:${color}">${shares.toFixed(1)}</div>
+        <div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.3px">shares</div>
+      </div>
+    </div>`;
+  };
+
+  return`<div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <!-- YES holders -->
+      <div>
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:12px">
+          <div style="width:8px;height:8px;border-radius:50%;background:var(--yes)"></div>
+          <span style="font-size:12px;font-weight:800;color:var(--yes);text-transform:uppercase;letter-spacing:.5px">SÍ holders</span>
+          <span style="font-size:11px;color:var(--muted)">(${yesHolders.length})</span>
+        </div>
+        ${yesHolders.length
+          ? yesHolders.map((h,i)=>renderRow(h,"YES",i+1)).join("")
+          : `<p style="color:var(--muted);font-size:13px;padding:8px 0">Sin holders</p>`}
+      </div>
+      <!-- NO holders -->
+      <div>
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:12px">
+          <div style="width:8px;height:8px;border-radius:50%;background:var(--no)"></div>
+          <span style="font-size:12px;font-weight:800;color:var(--no);text-transform:uppercase;letter-spacing:.5px">NO holders</span>
+          <span style="font-size:11px;color:var(--muted)">(${noHolders.length})</span>
+        </div>
+        ${noHolders.length
+          ? noHolders.map((h,i)=>renderRow(h,"NO",i+1)).join("")
+          : `<p style="color:var(--muted);font-size:13px;padding:8px 0">Sin holders</p>`}
+      </div>
+    </div>
+    <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border);
+        font-size:11px;color:var(--muted);text-align:center">
+      ${holders.length} participante${holders.length!==1?"s":""} en total ·
+      <button onclick="setMarketTab('${marketId}','positions')"
+        style="background:none;border:none;color:var(--accent);font-size:11px;cursor:pointer;font-family:inherit;padding:0">
+        Ver todas las posiciones →
+      </button>
+    </div>
+  </div>`;
+}
+
+function renderMarketPositions(marketId){
+  const holders = STATE.marketHolders?.[marketId];
+  if(!holders){
+    loadMarketHolders(marketId);
+    return`<div style="text-align:center;padding:40px 0;color:var(--muted)">
+      <div style="font-size:24px;margin-bottom:8px">⏳</div>
+      <div style="font-weight:600">Cargando posiciones...</div>
+    </div>`;
+  }
+
+  const m = getMarket(marketId);
+  const all = holders.filter(h=>h.yes>0||h.no>0)
+    .map(h=>({
+      ...h,
+      yesVal: h.yes>0 && m ? calcSellReturn(m,"YES",h.yes) : 0,
+      noVal:  h.no >0 && m ? calcSellReturn(m,"NO", h.no)  : 0,
+    }))
+    .sort((a,b)=>(b.yesVal+b.noVal)-(a.yesVal+a.noVal));
+
+  if(!all.length) return`<div style="text-align:center;padding:32px 0;color:var(--muted)">
+    <div style="font-size:32px;margin-bottom:8px">📭</div>
+    <div>Sin posiciones abiertas aún</div>
+  </div>`;
+
+  const totalVal = all.reduce((s,h)=>s+h.yesVal+h.noVal,0);
+
+  return`<div>
+    <!-- Summary bar -->
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:16px">
+      <div style="background:var(--yes-bg);border-radius:12px;padding:10px 14px;text-align:center">
+        <div style="font-size:10px;color:var(--yes);font-weight:700;text-transform:uppercase;letter-spacing:.4px">Holders SÍ</div>
+        <div style="font-size:18px;font-weight:900;color:var(--yes)">${all.filter(h=>h.yes>0).length}</div>
+      </div>
+      <div style="background:var(--no-bg);border-radius:12px;padding:10px 14px;text-align:center">
+        <div style="font-size:10px;color:var(--no);font-weight:700;text-transform:uppercase;letter-spacing:.4px">Holders NO</div>
+        <div style="font-size:18px;font-weight:900;color:var(--no)">${all.filter(h=>h.no>0).length}</div>
+      </div>
+      <div style="background:var(--card2);border-radius:12px;padding:10px 14px;text-align:center">
+        <div style="font-size:10px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.4px">Valor total</div>
+        <div style="font-size:18px;font-weight:900;color:var(--accent)">${usd(totalVal)}</div>
+      </div>
+    </div>
+
+    <!-- Header -->
+    <div style="display:grid;grid-template-columns:1fr 70px 70px 80px;gap:6px;
+        font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;
+        letter-spacing:.4px;padding:6px 12px;border-bottom:1px solid var(--border);margin-bottom:4px">
+      <div>Usuario</div>
+      <div style="text-align:right">SÍ</div>
+      <div style="text-align:right">NO</div>
+      <div style="text-align:right">Valor</div>
+    </div>
+
+    <!-- Rows -->
+    ${all.slice(0,20).map((h,i)=>{
+      const user  = STATE.users.find(u=>u.id===h.userId);
+      const total = h.yesVal + h.noVal;
+      return`<div style="display:grid;grid-template-columns:1fr 70px 70px 80px;gap:6px;
+          align-items:center;padding:9px 12px;border-radius:10px;margin-bottom:2px;
+          transition:background .15s"
+          onmouseover="this.style.background='var(--card2)'"
+          onmouseout="this.style.background='transparent'">
+        <div style="display:flex;align-items:center;gap:8px;min-width:0">
+          <div style="font-size:11px;color:var(--muted);width:16px;flex-shrink:0;font-weight:700">${i+1}</div>
+          <div style="flex-shrink:0">${renderAvatar(h.username,user?.avatarUrl||null,30,12)}</div>
+          <div style="font-weight:700;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+            @${escHtml(h.username)}
+          </div>
+        </div>
+        <div style="text-align:right">
+          ${h.yes>0
+            ?`<div style="font-weight:700;font-size:12px;color:var(--yes)">${h.yes.toFixed(1)}</div>`
+            :`<div style="color:var(--border);font-size:12px">—</div>`}
+        </div>
+        <div style="text-align:right">
+          ${h.no>0
+            ?`<div style="font-weight:700;font-size:12px;color:var(--no)">${h.no.toFixed(1)}</div>`
+            :`<div style="color:var(--border);font-size:12px">—</div>`}
+        </div>
+        <div style="text-align:right">
+          <div style="font-weight:800;font-size:13px;color:var(--accent)">${usd(total)}</div>
+        </div>
+      </div>`;
+    }).join("")}
+
+    ${all.length>20?`<div style="text-align:center;padding:12px;font-size:12px;color:var(--muted)">
+      Mostrando top 20 de ${all.length} participantes
+    </div>`:""}
+  </div>`;
+}
+
+async function loadMarketHolders(marketId){
+  try{
+    const {data, error} = await db.from("positions")
+      .select("user_id, yes_shares, no_shares")
+      .eq("market_id", marketId)
+      .or("yes_shares.gt.0,no_shares.gt.0");
+
+    if(error){ console.error("[Holders]", error.message); return; }
+
+    const holders = (data||[]).map(row=>{
+      const user = STATE.users.find(u=>u.id===row.user_id);
+      return{
+        userId:   row.user_id,
+        username: user?.username || row.user_id.slice(0,8)+"…",
+        yes:      row.yes_shares||0,
+        no:       row.no_shares||0,
+      };
+    }).filter(h=>h.yes>0||h.no>0);
+
+    if(!STATE.marketHolders) STATE.marketHolders = {};
+    STATE.marketHolders[marketId] = holders;
+
+    // Re-render the tabs section
+    const el = document.getElementById("market-tabs-"+marketId);
+    if(el) el.outerHTML = renderMarketTabs(marketId);
+  }catch(e){
+    console.error("[Holders]", e);
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -4043,7 +4309,7 @@ function shareMarket(marketId, method){
   const m=getMarket(marketId);
   if(!m)return;
   const en = STATE.lang==="en";
-  const title=`⚡ ${m.title}`;
+  const title=`${m.title}`;
   const text= en
     ? `What do you think will happen? Invest on Futuros and win if you're right.`
     : `¿Qué crees que va a pasar? Invierte en Futuros y gana si aciertas.`;
