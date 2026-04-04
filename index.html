@@ -3713,78 +3713,83 @@ function renderMarket(){
   const chartId    = "chart_" + m.id.replace(/[^a-z0-9]/gi,"_");
   const chartRange = STATE.chartRange?.[m.id] || "all";
 
-  // ── Build filtered data based on range ──────────────────────
-  const fullData    = m.priceHistory;
-  const startMs     = m.createdAt ? new Date(m.createdAt).getTime() : Date.now() - fullData.length*3600000;
-  const endMs       = Date.now();
-  const totalMs     = Math.max(endMs - startMs, 1);
+  // ── Full data with timestamps ─────────────────────────────────
+  const fullData = (m.priceHistory||[0.5]);
+  // Guard: need at least 1 point
+  const startMs = m.createdAt ? new Date(m.createdAt).getTime() : Date.now() - fullData.length*3600000;
+  const endMs   = Date.now();
+  const totalMs = Math.max(endMs - startMs, 1);
   const pointIntervalMs = totalMs / Math.max(fullData.length - 1, 1);
 
-  function getFilteredData(range){
-    const now = Date.now();
-    const cutoffs = {"1h":3600000,"6h":6*3600000,"1d":86400000,"1w":7*86400000,"1m":30*86400000};
-    if(range==="all"||!cutoffs[range]) return fullData.map((v,i)=>({v,i,ms:startMs+i*pointIntervalMs}));
-    const cutMs = now - cutoffs[range];
-    return fullData.map((v,i)=>({v,i,ms:startMs+i*pointIntervalMs})).filter(p=>p.ms>=cutMs);
+  // ── Filter by range ───────────────────────────────────────────
+  const cutoffs = {"1h":3600000,"6h":21600000,"1d":86400000,"1w":604800000,"1m":2592000000};
+  let data;
+  if(chartRange==="all" || !cutoffs[chartRange]){
+    data = fullData.map((v,i)=>({v,i,ms:startMs+i*pointIntervalMs}));
+  } else {
+    const cutMs = Date.now() - cutoffs[chartRange];
+    const filtered = fullData.map((v,i)=>({v,i,ms:startMs+i*pointIntervalMs})).filter(p=>p.ms>=cutMs);
+    // Need at least 2 points to draw a line; fallback to all
+    data = filtered.length >= 2 ? filtered : fullData.map((v,i)=>({v,i,ms:startMs+i*pointIntervalMs}));
   }
 
-  const filtered = getFilteredData(chartRange);
-  const data     = filtered.length>1 ? filtered : fullData.map((v,i)=>({v,i,ms:startMs+i*pointIntervalMs}));
+  // ── Stats ─────────────────────────────────────────────────────
+  const curYes = data[data.length-1]?.v ?? 0.5;
+  const curNo  = 1 - curYes;
+  const vals   = data.map(p=>p.v);
+  const minYes = Math.min(...vals);
+  const maxYes = Math.max(...vals);
+  const avgYes = Math.round((vals.reduce((s,v)=>s+v,0)/vals.length)*1000)/1000;
+  const minNo  = 1-maxYes, maxNo = 1-minYes, avgNo = Math.round((1-avgYes)*1000)/1000;
 
-  const curYes = data[data.length-1].v;
-  const curNo  = 1-curYes;
-  const minYes = Math.min(...data.map(p=>p.v));
-  const maxYes = Math.max(...data.map(p=>p.v));
-  const minNo  = 1-maxYes, maxNo = 1-minYes;
-  const avgYes = Math.round((data.reduce((s,p)=>s+p.v,0)/data.length)*1000)/1000;
-  const avgNo  = Math.round((1-avgYes)*1000)/1000;
-
-  const lineColor = "#00e5a0";
-  const areaColor = "#00e5a0";
-
-  // ── Dimensiones SVG ───────────────────────────────────────────
-  const W=580, H=160, PL=8, PR=44, PT=16, PB=32;
+  // ── SVG dimensions ────────────────────────────────────────────
+  const W=580, H=165, PL=8, PR=46, PT=18, PB=34;
   const cW=W-PL-PR, cH=H-PT-PB;
 
-  const toY  = v  => PT + cH - (v * cH);
-  const toXd = (idx) => PL + (idx/(data.length-1||1)) * cW;
+  const toY  = v   => PT + cH - (Math.max(0,Math.min(1,v)) * cH);
+  const toXd = idx => PL + (data.length>1 ? (idx/(data.length-1))*cW : cW/2);
 
   const yMarks = [0,0.2,0.4,0.6,0.8,1.0];
 
-  // ── Date labels for X axis ────────────────────────────────────
+  // ── X axis date labels ────────────────────────────────────────
   const months=["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
-  function fmtDate(ms){const d=new Date(ms);return months[d.getMonth()]+" "+d.getDate();}
-  function fmtDateHour(ms){
-    const d=new Date(ms);
-    return months[d.getMonth()]+" "+d.getDate()+", "+d.getHours()+":"+String(d.getMinutes()).padStart(2,"0");
-  }
+  const fmtDate = ms => { const d=new Date(ms); return months[d.getMonth()]+" "+d.getDate(); };
 
-  const xDateLabels=[];
-  const numX=Math.min(5,data.length);
-  for(let k=0;k<numX;k++){
-    const frac=k/(numX-1||1);
-    const idx=Math.round(frac*(data.length-1));
-    const xi=PL+frac*cW;
-    xDateLabels.push({xi,label:fmtDate(data[idx].ms)});
-  }
+  const numX = Math.min(5, data.length);
+  const xDateLabels = numX <= 1 ? [] : Array.from({length:numX},(_,k)=>{
+    const frac = k/(numX-1);
+    const idx  = Math.round(frac*(data.length-1));
+    return { xi: PL+frac*cW, label: fmtDate(data[idx].ms) };
+  });
 
-  // ── SVG polyline points ───────────────────────────────────────
-  const ptsYes  = data.map((p,i)=>[toXd(i),toY(p.v)]);
+  // ── Polyline & area path ──────────────────────────────────────
+  const ptsYes  = data.map((p,i)=>[toXd(i), toY(p.v)]);
   const polyYes = ptsYes.map(p=>p.map(n=>n.toFixed(1)).join(",")).join(" ");
-  const areaYes = `M${ptsYes[0].map(n=>n.toFixed(1)).join(",")} ${ptsYes.slice(1).map(p=>"L"+p.map(n=>n.toFixed(1)).join(",")).join(" ")} L${(PL+cW).toFixed(1)},${(PT+cH).toFixed(1)} L${PL},${(PT+cH).toFixed(1)} Z`;
+  // Safe area path — only if 2+ points
+  const areaYes = ptsYes.length>=2
+    ? `M${ptsYes[0].map(n=>n.toFixed(1)).join(",")} ` +
+      ptsYes.slice(1).map(p=>"L"+p.map(n=>n.toFixed(1)).join(",")).join(" ") +
+      ` L${(PL+cW).toFixed(1)},${(PT+cH).toFixed(1)} L${PL.toFixed(1)},${(PT+cH).toFixed(1)} Z`
+    : "";
 
-  // ── Tooltip data embedded as JSON ────────────────────────────
+  // ── Tooltip JSON — escape single quotes for safety ────────────
   const tooltipData = JSON.stringify(data.map((p,i)=>({
     x: parseFloat(toXd(i).toFixed(1)),
     y: parseFloat(toY(p.v).toFixed(1)),
-    v: p.v,
+    v: Math.round(p.v*10000)/10000,
     ms: p.ms,
-  })));
+  }))).replace(/'/g,"&#39;");
+
+  // ── End point coords ──────────────────────────────────────────
+  const endX = toXd(data.length-1).toFixed(1);
+  const endY = toY(curYes).toFixed(1);
+  // Label anchor: flip left if near right edge
+  const labelAnchor = parseFloat(endX) > PL+cW-30 ? "end" : "middle";
 
   let chartHtml=`
   <div style="margin-top:4px">
 
-    <!-- Header: % actual + vol + fecha cierre -->
+    <!-- Header -->
     <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;flex-wrap:wrap;gap:6px">
       <div>
         <div style="font-size:28px;font-weight:900;color:var(--yes);line-height:1">${Math.round(curYes*100)}%</div>
@@ -3796,8 +3801,8 @@ function renderMarket(){
       </div>
     </div>
 
-    <!-- Filtros de rango -->
-    <div style="display:flex;gap:4px;margin-bottom:10px">
+    <!-- Range filters -->
+    <div style="display:flex;gap:4px;margin-bottom:10px;flex-wrap:wrap">
       ${["1h","6h","1d","1w","1m","all"].map(r=>{
         const active=chartRange===r;
         const labels={"1h":"1H","6h":"6H","1d":"1D","1w":"1W","1m":"1M","all":"ALL"};
@@ -3811,78 +3816,100 @@ function renderMarket(){
       }).join("")}
     </div>
 
-    <!-- SVG Chart con tooltip interactivo -->
-    <div style="position:relative" id="${chartId}_wrap">
-      <!-- Tooltip flotante -->
-      <div id="${chartId}_tip" style="display:none;position:absolute;background:var(--card);border:1px solid var(--border);
-        border-radius:8px;padding:6px 10px;font-size:11px;pointer-events:none;z-index:10;white-space:nowrap;
-        box-shadow:0 4px 12px rgba(0,0,0,.15)">
-        <div id="${chartId}_tip_date" style="color:var(--muted);margin-bottom:2px"></div>
-        <div id="${chartId}_tip_val" style="font-weight:800;color:var(--yes)"></div>
+    <!-- SVG Chart -->
+    <div style="position:relative;overflow:hidden" id="${chartId}_wrap">
+
+      <!-- Floating tooltip -->
+      <div id="${chartId}_tip" style="display:none;position:absolute;background:var(--card);
+        border:1px solid var(--border);border-radius:10px;padding:7px 12px;font-size:11px;
+        pointer-events:none;z-index:10;white-space:nowrap;box-shadow:0 4px 16px rgba(0,0,0,.12)">
+        <div id="${chartId}_tip_date" style="color:var(--muted);margin-bottom:3px;font-size:10px"></div>
+        <div id="${chartId}_tip_val" style="font-weight:800;color:var(--yes);font-size:13px"></div>
       </div>
 
-      <svg id="${chartId}_svg" width="100%" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet"
+      <svg id="${chartId}_svg"
+        width="100%" viewBox="0 0 ${W} ${H}"
+        preserveAspectRatio="xMidYMid meet"
         style="display:block;overflow:visible;cursor:crosshair"
-        data-pts='${tooltipData}'
+        data-pts="${tooltipData}"
         onmousemove="chartMouseMove(event,this,'${chartId}')"
         onmouseleave="chartMouseLeave('${chartId}')">
         <defs>
           <linearGradient id="gYes_${chartId}" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%"   stop-color="${areaColor}" stop-opacity=".15"/>
-            <stop offset="100%" stop-color="${areaColor}" stop-opacity="0"/>
+            <stop offset="0%"   stop-color="#00e5a0" stop-opacity=".18"/>
+            <stop offset="85%"  stop-color="#00e5a0" stop-opacity=".04"/>
+            <stop offset="100%" stop-color="#00e5a0" stop-opacity="0"/>
           </linearGradient>
           <clipPath id="clip_${chartId}">
-            <rect x="${PL}" y="${PT}" width="${cW}" height="${cH}"/>
+            <rect x="${PL}" y="${PT-2}" width="${cW+2}" height="${cH+4}"/>
           </clipPath>
         </defs>
 
-        <!-- Grid lines -->
-        ${yMarks.map(v=>`<line x1="${PL}" y1="${toY(v).toFixed(1)}" x2="${(PL+cW).toFixed(1)}" y2="${toY(v).toFixed(1)}"
-          stroke="var(--border)" stroke-width="0.8" stroke-dasharray="3,5" opacity="0.4"/>`).join("")}
+        <!-- Horizontal grid lines every 20% -->
+        ${yMarks.map(v=>`
+          <line x1="${PL}" y1="${toY(v).toFixed(1)}"
+                x2="${(PL+cW).toFixed(1)}" y2="${toY(v).toFixed(1)}"
+                stroke="var(--border)" stroke-width="0.8" stroke-dasharray="3,5" opacity="0.45"/>
+        `).join("")}
 
-        <!-- Y axis labels -->
-        ${yMarks.map(v=>`<text x="${(PL+cW+6).toFixed(0)}" y="${(toY(v)+3.5).toFixed(0)}"
-          text-anchor="start" font-size="9.5" fill="var(--muted)" font-family="inherit" opacity=".7">
-          ${Math.round(v*100)}%</text>`).join("")}
+        <!-- Y axis labels (right side) -->
+        ${yMarks.map(v=>`
+          <text x="${(PL+cW+7).toFixed(0)}" y="${(toY(v)+3.5).toFixed(0)}"
+            text-anchor="start" font-size="9.5" fill="var(--muted)"
+            font-family="inherit" opacity=".75">
+            ${Math.round(v*100)}%
+          </text>
+        `).join("")}
 
         <!-- Area fill -->
-        <path d="${areaYes}" fill="url(#gYes_${chartId})" clip-path="url(#clip_${chartId})"/>
+        ${areaYes ? `<path d="${areaYes}" fill="url(#gYes_${chartId})" clip-path="url(#clip_${chartId})"/>` : ""}
 
         <!-- Main line -->
-        <polyline points="${polyYes}" fill="none" stroke="${lineColor}"
-          stroke-width="2" stroke-linejoin="round" stroke-linecap="round"
+        ${ptsYes.length>=2 ? `
+        <polyline points="${polyYes}"
+          fill="none" stroke="#00e5a0" stroke-width="2.2"
+          stroke-linejoin="round" stroke-linecap="round"
           clip-path="url(#clip_${chartId})"/>
+        ` : ""}
 
-        <!-- End dot + label -->
-        <circle cx="${toXd(data.length-1).toFixed(1)}" cy="${toY(curYes).toFixed(1)}"
-          r="4" fill="${lineColor}" stroke="white" stroke-width="2"/>
-        <text x="${toXd(data.length-1).toFixed(1)}" y="${(toY(curYes)-9).toFixed(0)}"
-          text-anchor="middle" font-size="9.5" fill="${lineColor}" font-weight="700">
+        <!-- End dot -->
+        <circle cx="${endX}" cy="${endY}" r="4.5" fill="#00e5a0" stroke="white" stroke-width="2"/>
+
+        <!-- End label -->
+        <text x="${endX}" y="${(parseFloat(endY)-10).toFixed(0)}"
+          text-anchor="${labelAnchor}" font-size="10" fill="#00e5a0" font-weight="800">
           ${Math.round(curYes*100)}%
         </text>
 
-        <!-- Crosshair line (hidden by default) -->
-        <line id="${chartId}_cross" x1="-100" y1="${PT}" x2="-100" y2="${PT+cH}"
-          stroke="var(--muted)" stroke-width="1" stroke-dasharray="4,3" opacity="0.6" display="none"/>
-        <circle id="${chartId}_dot" cx="-100" cy="-100" r="5"
-          fill="${lineColor}" stroke="white" stroke-width="2" display="none"/>
+        <!-- Crosshair (starts hidden far off-screen) -->
+        <line id="${chartId}_cross"
+          x1="-999" y1="${PT}" x2="-999" y2="${(PT+cH).toFixed(1)}"
+          stroke="var(--muted)" stroke-width="1" stroke-dasharray="4,3"
+          opacity="0.5" display="none"/>
+        <circle id="${chartId}_dot"
+          cx="-999" cy="-999" r="5"
+          fill="#00e5a0" stroke="white" stroke-width="2" display="none"/>
 
-        <!-- X axis -->
-        <line x1="${PL}" y1="${(PT+cH).toFixed(1)}" x2="${(PL+cW).toFixed(1)}" y2="${(PT+cH).toFixed(1)}"
-          stroke="var(--border)" stroke-width="1"/>
+        <!-- X axis baseline -->
+        <line x1="${PL}" y1="${(PT+cH).toFixed(1)}"
+              x2="${(PL+cW).toFixed(1)}" y2="${(PT+cH).toFixed(1)}"
+              stroke="var(--border)" stroke-width="1"/>
 
-        <!-- X date labels -->
-        ${xDateLabels.map(({xi,label})=>`
-          <line x1="${xi.toFixed(1)}" y1="${(PT+cH).toFixed(1)}" x2="${xi.toFixed(1)}" y2="${(PT+cH+4).toFixed(0)}"
-            stroke="var(--border)" stroke-width="1"/>
-          <text x="${xi.toFixed(1)}" y="${(PT+cH+14).toFixed(0)}"
-            text-anchor="middle" font-size="9.5" fill="var(--muted)" font-family="inherit">
+        <!-- X axis date labels -->
+        ${xDateLabels.map(({xi,label},ki)=>`
+          <line x1="${xi.toFixed(1)}" y1="${(PT+cH).toFixed(1)}"
+                x2="${xi.toFixed(1)}" y2="${(PT+cH+4).toFixed(0)}"
+                stroke="var(--border)" stroke-width="1"/>
+          <text x="${xi.toFixed(1)}" y="${(PT+cH+15).toFixed(0)}"
+            text-anchor="${ki===0?"start":ki===xDateLabels.length-1?"end":"middle"}"
+            font-size="9.5" fill="var(--muted)" font-family="inherit">
             ${label}
-          </text>`).join("")}
+          </text>
+        `).join("")}
       </svg>
     </div>
 
-    <!-- Stats tabla -->
+    <!-- Stats table -->
     <div style="margin-top:14px;font-size:11px">
       <div style="display:grid;grid-template-columns:60px 1fr 1fr 1fr 1fr;gap:5px;align-items:center">
         <div></div>
@@ -3903,7 +3930,8 @@ function renderMarket(){
       </div>
     </div>
   </div>`;
-  const closed = isMarketClosed(m);
+
+    const closed = isMarketClosed(m);
   const bottomAction = m.resolved
     ?`<div class="resolved-banner">✅ ${t("detail_resolved")}: ${escHtml(m.resolution)}</div>`
     : closed
@@ -7415,22 +7443,26 @@ function setChartRange(marketId, range){
 }
 
 function chartMouseMove(e, svgEl, chartId){
-  const pts = JSON.parse(svgEl.dataset.pts||"[]");
+  // Safely parse tooltip data (may contain HTML entities)
+  let pts = [];
+  try{
+    pts = JSON.parse(svgEl.dataset.pts || "[]");
+  }catch(err){ return; }
   if(!pts.length) return;
 
-  const rect   = svgEl.getBoundingClientRect();
+  const rect = svgEl.getBoundingClientRect();
+  if(!rect.width) return;
   const scaleX = svgEl.viewBox.baseVal.width / rect.width;
-  const scaleY = svgEl.viewBox.baseVal.height / rect.height;
   const mx     = (e.clientX - rect.left) * scaleX;
 
-  // Find nearest point by X distance
+  // Find nearest data point
   let nearest = pts[0], minDist = Infinity;
   for(const p of pts){
     const d = Math.abs(p.x - mx);
     if(d < minDist){ minDist = d; nearest = p; }
   }
 
-  // Move crosshair vertical line
+  // Move crosshair
   const cross = document.getElementById(chartId+"_cross");
   if(cross){
     cross.setAttribute("x1", nearest.x);
@@ -7438,7 +7470,7 @@ function chartMouseMove(e, svgEl, chartId){
     cross.removeAttribute("display");
   }
 
-  // Move dot to exact point on line
+  // Move dot onto the line
   const dot = document.getElementById(chartId+"_dot");
   if(dot){
     dot.setAttribute("cx", nearest.x);
@@ -7446,7 +7478,7 @@ function chartMouseMove(e, svgEl, chartId){
     dot.removeAttribute("display");
   }
 
-  // Update tooltip content — IDs match the HTML: chartId_tip_date / chartId_tip_val
+  // Update tooltip
   const tip     = document.getElementById(chartId+"_tip");
   const tipDate = document.getElementById(chartId+"_tip_date");
   const tipVal  = document.getElementById(chartId+"_tip_val");
@@ -7460,16 +7492,16 @@ function chartMouseMove(e, svgEl, chartId){
   if(tipDate) tipDate.textContent = dateStr;
   if(tipVal)  tipVal.textContent  = "SÍ "+Math.round(nearest.v*100)+"% · NO "+Math.round((1-nearest.v)*100)+"%";
 
-  // Position tooltip — flip left if too close to right edge
+  // Position tooltip — flip if near right edge
   const wrap = document.getElementById(chartId+"_wrap");
   if(wrap){
     const wRect = wrap.getBoundingClientRect();
-    const tipW  = 170;
+    const tipW  = 175;
     let left    = e.clientX - wRect.left + 14;
     if(left + tipW > wRect.width) left = e.clientX - wRect.left - tipW - 14;
-    const top   = Math.max(4, e.clientY - wRect.top - 52);
-    tip.style.left    = left + "px";
-    tip.style.top     = top  + "px";
+    const top   = Math.max(2, e.clientY - wRect.top - 56);
+    tip.style.left    = Math.max(0, left) + "px";
+    tip.style.top     = top + "px";
     tip.style.display = "block";
   }
 }
