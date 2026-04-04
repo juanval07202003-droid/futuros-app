@@ -1346,6 +1346,9 @@ function dbRowToUser(row){
     createdAt: row.created_at,
     active: row.active!==false,
     avatarUrl: row.avatar_url||null,
+    referralCode: row.referral_code||null,
+    referredBy: row.referred_by||null,
+    referralEarnings: row.referral_earnings||0,
   };
 }
 
@@ -1363,6 +1366,9 @@ function userToDbRow(u){
     active: u.active!==false,
     created_at: u.createdAt||new Date().toISOString(),
     avatar_url: u.avatarUrl||null,
+    referral_code: u.referralCode||null,
+    referred_by: u.referredBy||null,
+    referral_earnings: u.referralEarnings||0,
   };
 }
 
@@ -1822,6 +1828,7 @@ const STATE={
   adminStats: null,
   adminStatsLoaded: false,
   adminMktData: null,
+  referralRate: 0.10,  // 10% del spread va al referidor
   statsFilter: "all",       // "7d" | "30d" | "90d" | "1y" | "all" | "custom"
   statsDateFrom: "",        // ISO date string para filtro custom
   statsDateTo: "",          // ISO date string para filtro custom
@@ -4500,6 +4507,7 @@ function renderPortfolio(){
     <button class="btn-green" style="padding:10px 20px" onclick="openDeposit()">💳 ${t("wallet_deposit")}</button>
     <button class="btn-ghost" style="padding:10px 20px" onclick="openWithdraw()">↑ ${t("wallet_withdraw")}</button>
   </div>
+  ${renderReferralSection(u)}
   ${active.length===0
     ?`<div class="portfolio-empty">${t("portfolio_empty")}<br><a onclick="navigate('home')">${t("portfolio_explore")} →</a></div>`
     :active.map(([mid,pos])=>{
@@ -5644,6 +5652,8 @@ async function executeTrade(){
       render();
       // Limpiar cache de holders para que se recargue con datos frescos
       if(STATE.marketHolders) delete STATE.marketHolders[marketId];
+      // Pagar comisión de referido si aplica
+      payReferralCommission(u.id, spreadEarned);
       notify(`Compraste ${netShares.toFixed(4)} shares ${side} por ${usd(dollars)} ✓`);
     }catch(e){
       console.error("[Trade] Error:", e);
@@ -5737,6 +5747,7 @@ function renderAdmin(){
     {k:"resolve",  l:`🏁 ${t("admin_resolve")}`,        count:STATE.markets.filter(m=>!m.resolved).length},
     {k:"withdrawals",l:`💸 Retiros`,                    count:pendingWd||null},
     {k:"deposits", l:`💰 Depósitos`,                    count:pendingDep||null},
+    {k:"referrals",l:`🔗 Referidos`,                   count:null},
   ];
   let content="";
   if(STATE.adminTab==="accounts")   content=renderAdminAccounts();
@@ -5746,6 +5757,7 @@ function renderAdmin(){
   if(STATE.adminTab==="resolve")    content=renderAdminResolve();
   if(STATE.adminTab==="withdrawals")content=renderAdminWithdrawals();
   if(STATE.adminTab==="deposits")   content=renderAdminDeposits();
+  if(STATE.adminTab==="referrals")  content=renderAdminReferrals();
   return`<div class="container">
   <div style="display:flex;align-items:center;gap:12px;margin-bottom:28px"><h2>${t("admin_title")}</h2>${mkTag("ADMIN","var(--gold)")}</div>
   <div class="admin-tabs">${tabs.map(tb=>`<button class="admin-tab${STATE.adminTab===tb.k?" active":""}" onclick="setAdminTab('${tb.k}')">${tb.l}${tb.count!=null?`<span class="tab-count">${tb.count}</span>`:""}</button>`).join("")}</div>
@@ -7596,6 +7608,262 @@ async function removeAvatar(){
   render();
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// REFERRAL SYSTEM
+// ═══════════════════════════════════════════════════════════════════
+function genReferralCode(username){
+  const base=(username||"user").replace(/[^a-z0-9]/gi,"").slice(0,8).toLowerCase();
+  const rand=Math.random().toString(36).slice(2,6);
+  return base+rand;
+}
+function getReferralLink(user){
+  return `https://futuros.bet?ref=${user.referralCode||""}`;
+}
+function checkReferralOnLoad(){
+  const params=new URLSearchParams(window.location.search);
+  const ref=params.get("ref");
+  if(ref&&ref.length>3) localStorage.setItem("futuros_ref",ref);
+}
+async function assignReferral(newUser){
+  const code=genReferralCode(newUser.username);
+  newUser.referralCode=code;
+  const refCode=localStorage.getItem("futuros_ref");
+  if(refCode&&refCode!==code){
+    const {data:referrer}=await db.from("users").select("id").eq("referral_code",refCode).maybeSingle();
+    if(referrer&&referrer.id!==newUser.id) newUser.referredBy=referrer.id;
+  }
+  localStorage.removeItem("futuros_ref");
+  return newUser;
+}
+async function payReferralCommission(userId,spreadAmount){
+  try{
+    if(!spreadAmount||spreadAmount<=0) return;
+    const rate=STATE.referralRate||0.10;
+    const commission=Math.round(spreadAmount*rate*100)/100;
+    if(commission<0.001) return;
+    const user=STATE.users.find(u=>u.id===userId);
+    if(!user?.referredBy) return;
+    await db.from("referral_commissions").insert({
+      referrer_id:user.referredBy, referee_id:userId,
+      amount:commission, spread_generated:spreadAmount,
+      status:"pending", created_at:new Date().toISOString(),
+    });
+    const {data:ref}=await db.from("users").select("referral_earnings").eq("id",user.referredBy).maybeSingle();
+    if(ref){
+      const ne=Math.round(((ref.referral_earnings||0)+commission)*100)/100;
+      await db.from("users").update({referral_earnings:ne}).eq("id",user.referredBy);
+      const ri=STATE.users.findIndex(u=>u.id===user.referredBy);
+      if(ri>=0) STATE.users[ri]={...STATE.users[ri],referralEarnings:ne};
+    }
+  }catch(e){ console.error("[Referral]",e); }
+}
+
+function renderAdminReferrals(){
+  if(!STATE.adminReferralsLoaded){
+    loadAdminReferrals();
+    return`<div class="slide-in" style="text-align:center;padding:60px 0;color:var(--muted)">
+      <div style="font-size:32px;margin-bottom:12px">⏳</div>
+      <div style="font-weight:600">Cargando referidos...</div>
+    </div>`;
+  }
+  const comms=(STATE.adminReferralsData?.commissions)||[];
+  const rate=Math.round((STATE.referralRate||0.10)*100);
+  const byReferrer={};
+  for(const c of comms){
+    if(!byReferrer[c.referrer_id]) byReferrer[c.referrer_id]={earned:0,pending:0,paid:0,count:0,referees:new Set()};
+    byReferrer[c.referrer_id].count++;
+    byReferrer[c.referrer_id].referees.add(c.referee_id);
+    if(c.status==="paid") byReferrer[c.referrer_id].paid+=Number(c.amount);
+    else                  byReferrer[c.referrer_id].pending+=Number(c.amount);
+    byReferrer[c.referrer_id].earned+=Number(c.amount);
+  }
+  const referrers=Object.entries(byReferrer).map(([id,d])=>{
+    const u=STATE.users.find(u=>u.id===id);
+    return{id,username:u?.username||id.slice(0,8)+"…",...d,referees:d.referees.size};
+  }).sort((a,b)=>b.earned-a.earned);
+  const totalPending=comms.filter(c=>c.status==="pending").reduce((s,c)=>s+Number(c.amount),0);
+  const totalPaid=comms.filter(c=>c.status==="paid").reduce((s,c)=>s+Number(c.amount),0);
+  const totalUsers=STATE.users.filter(u=>u.referredBy).length;
+
+  return`<div class="slide-in">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;flex-wrap:wrap;gap:12px">
+      <div>
+        <div style="font-size:18px;font-weight:900">🔗 Programa de Referidos</div>
+        <div style="font-size:12px;color:var(--muted);margin-top:2px">Comisión: <strong>${rate}% del spread</strong> por cada trade del referido</div>
+      </div>
+      <button class="btn-ghost" style="font-size:12px;padding:7px 14px"
+        onclick="STATE.adminReferralsLoaded=false;STATE.adminReferralsData=null;render()">🔄 Actualizar</button>
+    </div>
+
+    <!-- Tasa configurable -->
+    <div class="card" style="margin-bottom:20px;padding:16px;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+      <div style="flex:1;min-width:200px">
+        <div style="font-weight:700;margin-bottom:4px">Tasa de comisión</div>
+        <div style="font-size:12px;color:var(--muted)">% del spread que recibe el referidor</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px">
+        ${[5,10,15,20].map(r=>{
+          const active=Math.round((STATE.referralRate||0.10)*100)===r;
+          return`<button onclick="STATE.referralRate=${r/100};render()"
+            style="padding:6px 14px;border-radius:10px;font-size:13px;font-weight:700;cursor:pointer;
+              border:1.5px solid ${active?"var(--yes)":"var(--border)"};
+              background:${active?"rgba(0,229,160,.12)":"transparent"};
+              color:${active?"var(--yes)":"var(--muted)"}">${r}%</button>`;
+        }).join("")}
+      </div>
+    </div>
+
+    <!-- Stats -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:20px">
+      <div class="card" style="text-align:center;padding:16px">
+        <div style="font-size:10px;color:var(--muted);font-weight:700;text-transform:uppercase;margin-bottom:6px">Usuarios referidos</div>
+        <div style="font-size:24px;font-weight:900;color:var(--accent)">${totalUsers}</div>
+      </div>
+      <div class="card" style="text-align:center;padding:16px">
+        <div style="font-size:10px;color:var(--muted);font-weight:700;text-transform:uppercase;margin-bottom:6px">Referidores activos</div>
+        <div style="font-size:24px;font-weight:900">${referrers.length}</div>
+      </div>
+      <div class="card" style="text-align:center;padding:16px">
+        <div style="font-size:10px;color:var(--muted);font-weight:700;text-transform:uppercase;margin-bottom:6px">Comisiones pendientes</div>
+        <div style="font-size:24px;font-weight:900;color:var(--gold)">${usd(totalPending)}</div>
+      </div>
+      <div class="card" style="text-align:center;padding:16px">
+        <div style="font-size:10px;color:var(--muted);font-weight:700;text-transform:uppercase;margin-bottom:6px">Total pagado</div>
+        <div style="font-size:24px;font-weight:900;color:var(--yes)">${usd(totalPaid)}</div>
+      </div>
+    </div>
+
+    <!-- Ranking -->
+    <div style="font-size:12px;font-weight:800;color:var(--muted);letter-spacing:.6px;text-transform:uppercase;margin-bottom:12px">
+      Ranking de referidores
+    </div>
+    ${referrers.length===0
+      ?`<div style="text-align:center;padding:32px;color:var(--muted)">
+          <div style="font-size:32px;margin-bottom:8px">🔗</div>
+          <div>Aún no hay referidos activos.</div>
+        </div>`
+      :`<div style="display:grid;grid-template-columns:1fr 60px 60px 90px 90px 90px;gap:8px;
+            font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;
+            padding:6px 12px;border-bottom:1px solid var(--border);margin-bottom:4px">
+          <div>Usuario</div><div style="text-align:center">Referidos</div>
+          <div style="text-align:center">Trades</div>
+          <div style="text-align:right">Pendiente</div>
+          <div style="text-align:right">Pagado</div>
+          <div style="text-align:center">Acción</div>
+        </div>
+        ${referrers.map((r,i)=>`
+          <div style="display:grid;grid-template-columns:1fr 60px 60px 90px 90px 90px;gap:8px;
+              align-items:center;padding:10px 12px;border-radius:10px;margin-bottom:2px;transition:background .15s"
+              onmouseover="this.style.background='var(--card2)'" onmouseout="this.style.background='transparent'">
+            <div style="display:flex;align-items:center;gap:8px">
+              <div style="font-size:11px;font-weight:800;color:var(--muted);width:16px">${i+1}</div>
+              ${renderAvatar(r.username,STATE.users.find(u=>u.id===r.id)?.avatarUrl||null,30,12)}
+              <div>
+                <div style="font-weight:700;font-size:13px">@${escHtml(r.username)}</div>
+                <div style="font-size:10px;color:var(--muted)">Total: ${usd(r.earned)}</div>
+              </div>
+            </div>
+            <div style="text-align:center;font-weight:700;color:var(--accent)">${r.referees}</div>
+            <div style="text-align:center;color:var(--muted)">${r.count}</div>
+            <div style="text-align:right;font-weight:700;color:var(--gold)">${usd(r.pending)}</div>
+            <div style="text-align:right;font-weight:700;color:var(--yes)">${usd(r.paid)}</div>
+            <div style="text-align:center">
+              ${r.pending>0.001
+                ?`<button onclick="adminPayReferral('${r.id}')"
+                    style="padding:5px 10px;border-radius:8px;font-size:11px;font-weight:700;
+                      cursor:pointer;border:none;background:var(--yes-bg);color:var(--yes)">
+                    💸 Pagar
+                  </button>`
+                :`<span style="font-size:11px;color:var(--muted)">Al día</span>`}
+            </div>
+          </div>`).join("")}`}
+
+    <!-- Lista de referidos -->
+    ${totalUsers>0?`
+      <div style="font-size:12px;font-weight:800;color:var(--muted);letter-spacing:.6px;text-transform:uppercase;margin:20px 0 10px">
+        Usuarios referidos (${totalUsers})
+      </div>
+      ${STATE.users.filter(u=>u.referredBy).map(u=>{
+        const ref=STATE.users.find(r=>r.id===u.referredBy);
+        const gen=comms.filter(c=>c.referee_id===u.id).reduce((s,c)=>s+Number(c.amount),0);
+        return`<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:10px;
+            margin-bottom:3px;transition:background .15s"
+            onmouseover="this.style.background='var(--card2)'" onmouseout="this.style.background='transparent'">
+          ${renderAvatar(u.username,u.avatarUrl,28,11)}
+          <div style="flex:1">
+            <span style="font-weight:700;font-size:13px">@${escHtml(u.username)}</span>
+            <span style="font-size:11px;color:var(--muted);margin-left:8px">
+              via @${escHtml(ref?.username||"?")}
+            </span>
+          </div>
+          <div style="font-size:11px;color:var(--yes);font-weight:700">${usd(gen)} generado</div>
+        </div>`;
+      }).join("")}`:""}
+  </div>`;
+}
+
+async function loadAdminReferrals(){
+  try{
+    const {data:commissions}=await db.from("referral_commissions")
+      .select("*").order("created_at",{ascending:false});
+    STATE.adminReferralsData={commissions:commissions||[]};
+    STATE.adminReferralsLoaded=true;
+    render();
+  }catch(e){
+    console.error("[Referrals]",e);
+    STATE.adminReferralsLoaded=true;
+    STATE.adminReferralsData={commissions:[]};
+    render();
+  }
+}
+
+async function adminPayReferral(referrerId){
+  if(!isAdmin()) return;
+  const u=STATE.users.find(u=>u.id===referrerId);
+  if(!u) return;
+  const {data:pending}=await db.from("referral_commissions")
+    .select("id,amount").eq("referrer_id",referrerId).eq("status","pending");
+  if(!pending?.length){ notify("Sin comisiones pendientes","info"); return; }
+  const total=pending.reduce((s,c)=>s+Number(c.amount),0);
+  if(!confirm(`Pagar ${usd(total)} a @${u.username}?\nSe acreditará a su saldo.`)) return;
+  await db.from("referral_commissions").update({status:"paid"}).in("id",pending.map(c=>c.id));
+  await dbUpdateBalanceAtomic(referrerId,total);
+  notify(`✅ ${usd(total)} pagados a @${u.username}`,"success");
+  STATE.adminReferralsLoaded=false; STATE.adminReferralsData=null;
+  render();
+}
+
+function renderReferralSection(u){
+  if(!u?.referralCode) return "";
+  const link=`https://futuros.bet?ref=${u.referralCode}`;
+  const pending=u.referralEarnings||0;
+  const count=STATE.users.filter(x=>x.referredBy===u.id).length;
+  return`<div class="card" style="margin-bottom:20px;padding:18px">
+    <div style="font-weight:800;font-size:15px;margin-bottom:4px">🔗 Tu link de referidos</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px">
+      Gana <strong style="color:var(--yes)">${Math.round((STATE.referralRate||0.10)*100)}% del spread</strong> de cada trade de tus referidos
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:14px">
+      <div style="flex:1;background:var(--card2);border-radius:10px;padding:10px 14px;font-family:monospace;font-size:11px;word-break:break-all">
+        ${escHtml(link)}
+      </div>
+      <button onclick="copyText('${escHtml(link)}')" class="btn-green" style="padding:10px 16px;font-size:13px;flex-shrink:0">
+        📋 Copiar
+      </button>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div style="background:var(--card2);border-radius:10px;padding:12px;text-align:center">
+        <div style="font-size:10px;color:var(--muted);font-weight:700;text-transform:uppercase;margin-bottom:4px">Referidos</div>
+        <div style="font-size:22px;font-weight:900;color:var(--accent)">${count}</div>
+      </div>
+      <div style="background:var(--yes-bg);border-radius:10px;padding:12px;text-align:center">
+        <div style="font-size:10px;color:var(--yes);font-weight:700;text-transform:uppercase;margin-bottom:4px">Ganancias totales</div>
+        <div style="font-size:22px;font-weight:900;color:var(--yes)">${usd(pending)}</div>
+      </div>
+    </div>
+  </div>`;
+}
+
 if(window.ethereum){
   window.ethereum.on("accountsChanged",accs=>{if(!accs.length)disconnectWallet();});
   window.ethereum.on("chainChanged",()=>location.reload());
@@ -7609,7 +7877,7 @@ document.getElementById("app").innerHTML=`
     <div style="font-size:13px;font-weight:600">Conectando con la base de datos…</div>
   </div>`;
 // Cargar datos de Supabase, luego seed si está vacío, luego render
-dbInit().then(()=>dbSeedMarketsIfEmpty());
+dbInit().then(()=>{ dbSeedMarketsIfEmpty(); checkReferralOnLoad(); });
 </script>
 </body>
 </html>
