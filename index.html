@@ -2542,7 +2542,7 @@ function renderFooter(){
 
 function renderNav(){
   const u=getUser(),vw=STATE.view,admin=isAdmin();
-  const langFlag=STATE.lang==="es"?"🇺🇸 EN":"🇨🇴 ES";
+  const langFlag=STATE.lang==="es"?"EN":"ES";
 
   // Top nav (desktop)
   document.getElementById("nav-links").innerHTML=
@@ -4172,6 +4172,11 @@ function renderMarketPositions(marketId){
 }
 
 async function loadMarketHolders(marketId){
+  // Evitar llamadas concurrentes para el mismo mercado
+  if(!STATE.marketHoldersLoading) STATE.marketHoldersLoading = {};
+  if(STATE.marketHoldersLoading[marketId]) return;
+  STATE.marketHoldersLoading[marketId] = true;
+
   try{
     const {data, error} = await db.from("positions")
       .select("user_id, yes_shares, no_shares")
@@ -4180,15 +4185,26 @@ async function loadMarketHolders(marketId){
 
     if(error){ console.error("[Holders]", error.message); return; }
 
-    const holders = (data||[]).map(row=>{
-      const user = STATE.users.find(u=>u.id===row.user_id);
-      return{
-        userId:   row.user_id,
-        username: user?.username || row.user_id.slice(0,8)+"…",
-        yes:      row.yes_shares||0,
-        no:       row.no_shares||0,
-      };
-    }).filter(h=>h.yes>0||h.no>0);
+    // Deduplicar por user_id — sumar shares si hay múltiples filas del mismo usuario
+    const byUser = {};
+    for(const row of (data||[])){
+      const uid = row.user_id;
+      if(!byUser[uid]){
+        byUser[uid] = { userId: uid, yes: 0, no: 0 };
+      }
+      byUser[uid].yes += (row.yes_shares||0);
+      byUser[uid].no  += (row.no_shares||0);
+    }
+
+    const holders = Object.values(byUser)
+      .map(h => {
+        const user = STATE.users.find(u=>u.id===h.userId);
+        return {
+          ...h,
+          username: user?.username || h.userId.slice(0,8)+"…",
+        };
+      })
+      .filter(h=>h.yes>0||h.no>0);
 
     if(!STATE.marketHolders) STATE.marketHolders = {};
     STATE.marketHolders[marketId] = holders;
@@ -4198,6 +4214,8 @@ async function loadMarketHolders(marketId){
     if(el) el.outerHTML = renderMarketTabs(marketId);
   }catch(e){
     console.error("[Holders]", e);
+  } finally {
+    STATE.marketHoldersLoading[marketId] = false;
   }
 }
 
@@ -5596,6 +5614,8 @@ async function executeTrade(){
         };
       }
       render();
+      // Limpiar cache de holders para que se recargue con datos frescos
+      if(STATE.marketHolders) delete STATE.marketHolders[marketId];
       notify(`Compraste ${netShares.toFixed(4)} shares ${side} por ${usd(dollars)} ✓`);
     }catch(e){
       console.error("[Trade] Error:", e);
@@ -5663,6 +5683,8 @@ async function executeTrade(){
         };
       }
       render();
+      // Limpiar cache de holders para que se recargue con datos frescos
+      if(STATE.marketHolders) delete STATE.marketHolders[marketId];
       notify(`Vendiste ${shares.toFixed(4)} shares ${side} · +${usd(ret)}`);
     }catch(e){
       console.error("[Trade] Error:", e);
