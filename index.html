@@ -1318,6 +1318,8 @@ function dbRowToMarket(row){
     oracleType: row.oracle_type||"none",
     oracleConfig: row.oracle_config||"",
     oracleLocked: row.oracle_locked||false,
+    manualPaused: row.manual_paused||false,
+    pauseReason:  row.pause_reason||"",
   };
 }
 
@@ -1346,6 +1348,8 @@ function marketToDbRow(m){
     oracle_type: m.oracleType||"none",
     oracle_config: m.oracleConfig||"",
     oracle_locked: m.oracleLocked||false,
+    manual_paused: m.manualPaused||false,
+    pause_reason:  m.pauseReason||"",
   };
 }
 
@@ -1739,7 +1743,8 @@ const copyText= t=>{navigator.clipboard.writeText(t).then(()=>notify("Copiado �
 function isMarketClosed(m){
   if(!m) return true;
   if(m.resolved) return true;
-  if(m.oracleLocked) return true; // bloqueado por oracle
+  if(m.oracleLocked) return true;   // bloqueado por oracle
+  if(m.manualPaused) return true;   // pausado manualmente por admin
   if(m.closesAt && new Date(m.closesAt) <= new Date()) return true;
   return false;
 }
@@ -2863,7 +2868,9 @@ async function refreshMarketPrices(){
           qNo:         row.q_no         ?? m.qNo,
           totalVolume: row.total_volume  ?? m.totalVolume,
           priceHistory: Array.isArray(row.price_history) ? row.price_history : m.priceHistory,
-          oracleLocked: row.oracle_locked ?? m.oracleLocked,
+          oracleLocked:  row.oracle_locked  ?? m.oracleLocked,
+          manualPaused:  row.manual_paused  ?? m.manualPaused,
+          pauseReason:   row.pause_reason   ?? m.pauseReason,
         };
         changed = true;
       }
@@ -2872,7 +2879,6 @@ async function refreshMarketPrices(){
     if(_pricesStale){
       _pricesStale = false;
       // Precios actualizados después de estar vencidos — render obligatorio
-      notify("Precios actualizados ✓", "info");
       render();
     } else if(changed){
       // Solo re-renderizar si el usuario está en una vista de mercados
@@ -3119,12 +3125,10 @@ function showUsernameModal(userId){
   <div class="overlay" id="username-modal-overlay" style="z-index:9999">
     <div class="modal" onclick="event.stopPropagation()" style="max-width:380px;text-align:center">
       <div style="display:flex;justify-content:center;margin-bottom:12px">
-        <svg width="48" height="48" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <defs><linearGradient id="lg4" x1="0" y1="0" x2="28" y2="28" gradientUnits="userSpaceOnUse"><stop offset="0%" stop-color="#00e5a0"/><stop offset="100%" stop-color="#00b4d8"/></linearGradient></defs>
-          <rect width="28" height="28" rx="8" fill="url(#lg4)"/>
-          <path d="M9 7L15.5 14H11L15 21H9.5L13 14H9V7Z" fill="white" stroke="white" stroke-width="0.5" stroke-linejoin="round"/>
-          <path d="M17 10H20M17 14H19M17 18H20" stroke="white" stroke-width="1.8" stroke-linecap="round" opacity="0.7"/>
-        </svg>
+        <span style="display:inline-flex;align-items:center;gap:8px">
+          <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2300c896'/%3E%3Cpolygon points='19,3 9,18 15,18 13,29 23,14 17,14' fill='white'/%3E%3C/svg%3E" width="40" height="40" alt="logo"/>
+          <span class="logo" style="font-size:32px">Futuros</span>
+        </span>
       </div>
       <h3 style="margin-bottom:6px;font-size:18px">¡Bienvenido a Futuros!</h3>
       <p style="color:var(--muted);font-size:14px;margin-bottom:20px">
@@ -4005,6 +4009,12 @@ function renderMarket(){
     const closed = isMarketClosed(m);
   const bottomAction = m.resolved
     ?`<div class="resolved-banner">✅ ${t("detail_resolved")}: ${escHtml(m.resolution)}</div>`
+    : m.manualPaused
+    ?`<div style="text-align:center;padding:20px;background:rgba(245,158,11,.06);border:1.5px solid rgba(245,158,11,.3);border-radius:14px">
+        <div style="font-size:28px;margin-bottom:8px">⏸</div>
+        <div style="font-weight:800;font-size:16px;margin-bottom:4px;color:#f59e0b">Trading temporalmente pausado</div>
+        <div style="font-size:13px;color:var(--muted)">Este mercado está pausado temporalmente. El trading se reanudará pronto.</div>
+      </div>`
     : closed
     ?`<div style="text-align:center;padding:20px;background:rgba(136,136,160,.08);border:1.5px solid var(--border-strong);border-radius:14px">
         <div style="font-size:28px;margin-bottom:8px">🔒</div>
@@ -6250,8 +6260,8 @@ function renderOracleConfigHint(){
 function getMkPreview(){const f=STATE.mkForm;if(!f.title)return"";return`<div class="mkpreview"><strong>Preview:</strong> ${escHtml(f.emoji)} ${escHtml(f.title)} · α=${f.alpha} · ${t("admin_seed").replace(" ($)","=")}${((parseFloat(f.alpha)||0)*(parseFloat(f.seedLiquidity)||0)).toFixed(1)} · YES=${pct(parseFloat(f.yesWeight)||0.5)}</div>`;}
 
 function renderAdminResolve(){
-  const locked  = STATE.markets.filter(m => m.oracleLocked && !m.resolved);
-  const pending = STATE.markets.filter(m => !m.oracleLocked && !m.resolved);
+  const locked   = STATE.markets.filter(m => m.oracleLocked && !m.manualPaused && !m.resolved);
+  const pending  = STATE.markets.filter(m => !m.oracleLocked && !m.manualPaused && !m.resolved);
   const resolved = STATE.markets.filter(m => m.resolved);
 
   const renderRow = (m, showUnlock=false) => {
@@ -6261,10 +6271,12 @@ function renderAdminResolve(){
           🔮 ${m.oracleType==="sports"?"Deportes":m.oracleType==="crypto"?"Crypto":"Noticias"}
          </span>`
       : "";
-    return`<div class="card" style="margin-bottom:12px${m.oracleLocked?";border-color:#ef0027;border-width:2px":""}">
+    const borderStyle = m.manualPaused ? ";border-color:#f59e0b;border-width:2px" : m.oracleLocked ? ";border-color:#ef0027;border-width:2px" : "";
+    return`<div class="card" style="margin-bottom:12px${borderStyle}">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px">
         <div style="flex:1">
-          ${m.oracleLocked?`<div style="font-size:11px;font-weight:800;color:#ef0027;margin-bottom:6px">🔒 BLOQUEADO POR ORACLE — listo para resolver</div>`:""}
+          ${m.manualPaused?`<div style="font-size:11px;font-weight:800;color:#f59e0b;margin-bottom:6px">⏸ PAUSADO MANUALMENTE${m.pauseReason?" — "+escHtml(m.pauseReason):""}</div>`:""}
+          ${m.oracleLocked&&!m.manualPaused?`<div style="font-size:11px;font-weight:800;color:#ef0027;margin-bottom:6px">🔒 BLOQUEADO POR ORACLE — listo para resolver</div>`:""}
           <div style="font-weight:700;font-size:15px;margin-bottom:6px">${escHtml(m.emoji)} ${escHtml(m.title)}</div>
           <div class="market-meta">
             <span>YES: <strong style="color:var(--yes)">${pct(pYes)}</strong></span>
@@ -6282,7 +6294,13 @@ function renderAdminResolve(){
               <button class="btn-green" style="padding:8px 20px" onclick="adminResolve('${m.id}','YES')">✓ YES</button>
               <button class="btn-red-soft" style="padding:8px 20px;font-size:14px;font-weight:800" onclick="adminResolve('${m.id}','NO')">✓ NO</button>
             </div>
-            ${m.oracleLocked?`<button class="btn-ghost" style="font-size:11px;padding:4px 10px" onclick="adminUnlockMarket('${m.id}')">🔓 Desbloquear oracle</button>`:""}
+            <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">
+              ${m.manualPaused
+                ? `<button class="btn-ghost" style="font-size:11px;padding:4px 12px;color:var(--yes);border-color:var(--yes)" onclick="adminResumeMarket('${m.id}')">▶ Reanudar trading</button>`
+                : `<button class="btn-ghost" style="font-size:11px;padding:4px 12px;color:#f59e0b;border-color:#f59e0b" onclick="adminPauseMarket('${m.id}')">⏸ Pausar</button>`
+              }
+              ${m.oracleLocked?`<button class="btn-ghost" style="font-size:11px;padding:4px 10px" onclick="adminUnlockMarket('${m.id}')">🔓 Desbloquear oracle</button>`:""}
+            </div>
           `:`<div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px">
             ${mkTag("✓ "+t("detail_resolved")+": "+m.resolution,"var(--yes)")}
             <button onclick="adminDeleteMarket('${m.id}')"
@@ -6298,6 +6316,13 @@ function renderAdminResolve(){
   };
 
   return`<div class="slide-in">
+    ${STATE.markets.filter(m=>m.manualPaused&&!m.resolved).length>0?`
+      <div style="font-size:12px;font-weight:800;color:#f59e0b;letter-spacing:.6px;text-transform:uppercase;margin-bottom:10px">
+        ⏸ Pausados manualmente (${STATE.markets.filter(m=>m.manualPaused&&!m.resolved).length})
+      </div>
+      ${STATE.markets.filter(m=>m.manualPaused&&!m.resolved).map(m=>renderRow(m)).join("")}
+      <div style="height:20px"></div>
+    `:""}
     ${locked.length>0?`
       <div style="font-size:12px;font-weight:800;color:#ef0027;letter-spacing:.6px;text-transform:uppercase;margin-bottom:10px">
         🔒 Bloqueados por oracle (${locked.length}) — pendientes de resolución
@@ -6376,6 +6401,49 @@ async function adminDeleteAllResolved(){
   }catch(e){
     notify("Error: "+(e?.message||e),"error");
   }
+}
+
+async function adminPauseMarket(id){
+  if(!isAdmin()) return;
+  const m = STATE.markets.find(mk=>mk.id===id);
+  if(!m || m.resolved) return;
+
+  // Pedir razón de la pausa
+  const reason = window.prompt(
+    `Pausar "${m.title.slice(0,50)}"...\n\n¿Motivo de la pausa? (opcional, visible solo para admin)`,
+    ""
+  );
+  if(reason === null) return; // cancelado
+
+  const {error} = await db.from("markets")
+    .update({manual_paused: true, pause_reason: reason||""})
+    .eq("id", id);
+
+  if(error){ notify("Error al pausar: "+error.message,"error"); return; }
+
+  const mi = STATE.markets.findIndex(mk=>mk.id===id);
+  if(mi>=0) STATE.markets[mi] = {...STATE.markets[mi], manualPaused:true, pauseReason:reason||""};
+
+  notify(`⏸ Mercado pausado — trading bloqueado${reason?" ("+reason+")":""}`, "info");
+  render();
+}
+
+async function adminResumeMarket(id){
+  if(!isAdmin()) return;
+  const m = STATE.markets.find(mk=>mk.id===id);
+  if(!m) return;
+
+  const {error} = await db.from("markets")
+    .update({manual_paused: false, pause_reason: ""})
+    .eq("id", id);
+
+  if(error){ notify("Error al reanudar: "+error.message,"error"); return; }
+
+  const mi = STATE.markets.findIndex(mk=>mk.id===id);
+  if(mi>=0) STATE.markets[mi] = {...STATE.markets[mi], manualPaused:false, pauseReason:""};
+
+  notify(`▶ Mercado reanudado — trading activo`, "success");
+  render();
 }
 
 async function adminUnlockMarket(id){
