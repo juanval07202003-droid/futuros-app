@@ -1087,6 +1087,25 @@ async function dbSaveMarket(market){
 // Actualización atómica del mercado — SQL directo sin read-then-write
 async function dbUpdateMarketAtomic(marketId, deltaQYes, deltaQNo, deltaVolume, deltaSpread, deltaPaid, newPriceHistory){
   try{
+    // Primero leer el estado actual para calcular priceHistory atómicamente
+    const {data:cur2} = await db.from("markets")
+      .select("q_yes,q_no,total_volume,seed_liquidity,alpha,price_history")
+      .eq("id", marketId).maybeSingle();
+
+    let atomicHistory = newPriceHistory;
+    if(cur2){
+      // Calcular precio real post-trade con q_yes/q_no actuales de DB
+      const newQY = Math.max(0, (cur2.q_yes||0) + deltaQYes);
+      const newQN = Math.max(0, (cur2.q_no||0)  + deltaQNo);
+      const b2 = (cur2.alpha||0.1) * Math.max(
+        (cur2.total_volume||0) + deltaVolume + (cur2.seed_liquidity||1000),
+        cur2.seed_liquidity||1000
+      );
+      const freshPrice = b2 > 0 ? 1/(1+Math.exp(-(newQY-newQN)/b2)) : 0.5;
+      const freshHist  = Array.isArray(cur2.price_history) ? cur2.price_history : [];
+      atomicHistory    = [...freshHist, freshPrice].slice(-200);
+    }
+
     const {error} = await db.rpc("update_market_atomic", {
       p_market_id:   marketId,
       p_delta_q_yes: deltaQYes,
@@ -1094,7 +1113,7 @@ async function dbUpdateMarketAtomic(marketId, deltaQYes, deltaQNo, deltaVolume, 
       p_delta_volume: deltaVolume,
       p_delta_spread: deltaSpread,
       p_delta_paid:   deltaPaid,
-      p_price_history: JSON.stringify(newPriceHistory),
+      p_price_history: JSON.stringify(atomicHistory),
     });
     if(error){
       // Fallback: UPDATE directo con incremento SQL (también atómico)
@@ -1536,10 +1555,20 @@ const SPREAD_MAX  = 0.02;    // 2.00% — máximo al acercarse a 0 o 1
 //   comprar NO  → spread 0.50%  (incentiva volver al centro)
 function dynamicSpread(p_yes, side){
   const p_side = side === "YES" ? p_yes : (1 - p_yes);
-  // Si el lado comprado cuesta ≤50%, es el contrarian → spread mínimo
+  // Contrarian (apostar al lado menos probable) → spread SIEMPRE mínimo
+  // para incentivar apuestas que equilibren el mercado
   if(p_side <= 0.5) return SPREAD_BASE;
+  // Popular (apostar al lado probable) → spread crece con la probabilidad
   const deviation = 2 * (p_side - 0.5);   // 0 en p=0.5, 1 en p=1.0
   return SPREAD_BASE + (SPREAD_MAX - SPREAD_BASE) * Math.pow(deviation, 3);
+}
+// Verificar ROI mínimo para contrarian — garantizar que vale la pena apostar al lado improbable
+function validateContraryROI(mkt, side, dollars){
+  const pSide = getPrice(mkt, side);
+  // ROI teórico = (1/p) - 1. Si es muy bajo, el mercado no es interesante
+  if(pSide <= 0) return false;
+  const theoreticalROI = (1/pSide) - 1;
+  return theoreticalROI >= 0.10; // mínimo 10% ROI teórico
 }
 
 // ── Núcleo LS-LMSR ────────────────────────────────────────────────
@@ -2447,10 +2476,43 @@ function navigate(view,opts={}){
   render();
   if(view==="market" && STATE.selectedMarket){
     dbLoadComments(STATE.selectedMarket);
-    // Precargar holders para que estén listos cuando el usuario cambie de tab
     if(!STATE.marketHolders?.[STATE.selectedMarket]){
       loadMarketHolders(STATE.selectedMarket);
     }
+  }
+  // Cargar transacciones desde DB cuando se navega a billetera
+  if(view==="wallet" || view==="portfolio"){
+    const u = getUser();
+    if(u) loadUserTransactions(u.id);
+  }
+}
+
+// Carga transacciones frescas desde DB para cualquier usuario
+async function loadUserTransactions(userId){
+  try{
+    const {data, error} = await db.from("transactions")
+      .select("*")
+      .eq("user_id", userId)
+      .order("created_at", {ascending: false})
+      .limit(100);
+    if(error || !data) return;
+    const txs = data.map(row=>({
+      id:          row.id,
+      type:        row.type,
+      amount:      row.amount,
+      network:     row.network || "internal",
+      description: row.description || "",
+      date:        row.created_at,
+      status:      row.status,
+    }));
+    const ui = STATE.users.findIndex(u=>u.id===userId);
+    if(ui>=0){
+      STATE.users[ui] = {...STATE.users[ui], transactions: txs};
+      // Solo re-render si está en la vista de billetera
+      if(STATE.view==="wallet"||STATE.view==="portfolio") render();
+    }
+  }catch(e){
+    console.error("[Tx] Error cargando transacciones:", e);
   }
 }
 
@@ -2775,8 +2837,10 @@ function scheduleMarketCloseRefresh(){
 
 // ── Sistema de refresco activo de precios ─────────────────────────
 // Evita que usuarios dejen una pestaña abierta con precio viejo
-const PRICE_REFRESH_INTERVAL = 30000; // 30 segundos
-const STALE_PRICE_THRESHOLD  = 60000; // 60 segundos sin actividad = precio vencido
+const PRICE_REFRESH_INTERVAL      = 30000; // 30 segundos (general)
+const PRICE_REFRESH_TRADE_INTERVAL = 5000;  // 5 segundos (modal trade abierto)
+const STALE_PRICE_THRESHOLD        = 60000; // 60 segundos sin actividad = precio vencido
+let _tradeRefreshTimer = null;
 let _priceRefreshTimer  = null;
 let _lastPriceRefresh   = Date.now();
 let _pricesStale        = false;
@@ -4564,18 +4628,24 @@ function renderWallet(){
     <div class="admin-section-title" style="margin-bottom:14px">📋 ${t("wallet_tx_history")}</div>
     ${txs.length===0
       ?`<div style="text-align:center;padding:32px 0;color:#333">${t("wallet_tx_empty")}</div>`
-      :txs.slice().reverse().map(tx=>`
-      <div class="tx-row">
-        <div>
-          <div style="font-weight:600;font-size:13px">${escHtml(tx.description)}</div>
-          <div style="display:flex;gap:6px;margin-top:3px;align-items:center">
-            <span class="tx-type-badge tx-${tx.type}">${tx.type==="deposit"?t("wallet_deposit_label"):tx.type==="withdraw"?t("wallet_withdraw_label"):t("wallet_trade_label")}</span>
-            <span class="net-badge net-${tx.network||"internal"}">${netLabel[tx.network||"internal"]||tx.network}</span>
-            <span class="tx-date">${formatDate(tx.date)}</span>
+      :txs.slice().reverse().map(tx=>{
+        const isBuy  = tx.description?.includes("Compra");
+        const isSell = tx.description?.includes("Venta");
+        const typeColor = tx.type==="deposit"?"var(--yes)":tx.type==="withdraw"?"var(--no)":isSell?"var(--yes)":"var(--text)";
+        const typePrefix= tx.type==="deposit"?"+":tx.type==="withdraw"?"-":isSell?"+":"-";
+        const typeLabel = tx.type==="deposit"?t("wallet_deposit_label"):tx.type==="withdraw"?t("wallet_withdraw_label"):isSell?"Venta":"Compra";
+        return`<div class="tx-row">
+          <div>
+            <div style="font-weight:600;font-size:13px">${escHtml(tx.description||"")}</div>
+            <div style="display:flex;gap:6px;margin-top:3px;align-items:center">
+              <span class="tx-type-badge tx-${tx.type}" style="background:${isSell?"rgba(0,168,112,.12)":""};color:${isSell?"var(--yes)":""}">${typeLabel}</span>
+              <span class="net-badge net-${tx.network||"internal"}">${netLabel[tx.network||"internal"]||tx.network}</span>
+              <span class="tx-date">${formatDate(tx.date)}</span>
+            </div>
           </div>
-        </div>
-        <div style="font-weight:800;font-size:14px;color:${tx.type==="deposit"?"var(--yes)":tx.type==="withdraw"?"var(--no)":"var(--text)"}">${tx.type==="deposit"?"+":tx.type==="withdraw"?"-":""}${usd(tx.amount)}</div>
-      </div>`).join("")}
+          <div style="font-weight:800;font-size:14px;color:${typeColor}">${typePrefix}${usd(tx.amount)}</div>
+        </div>`;
+      }).join("")}
   </div>
 </div>`;
 }
@@ -5284,6 +5354,13 @@ function openTrade(marketId,side,mode){
   STATE.tradeOpen=true;
   // Refrescar precio antes de mostrar el modal
   refreshPriceBeforeTrade().then(()=>renderTradeModal());
+  // Refresco continuo cada 5s mientras el modal está abierto
+  if(_tradeRefreshTimer) clearInterval(_tradeRefreshTimer);
+  _tradeRefreshTimer = setInterval(async ()=>{
+    if(!STATE.tradeOpen){ clearInterval(_tradeRefreshTimer); _tradeRefreshTimer=null; return; }
+    await refreshMarketPrices();
+    if(STATE.tradeOpen) updateTradePreview();
+  }, PRICE_REFRESH_TRADE_INTERVAL);
 }
 
 function renderTradeModal(){
@@ -5378,8 +5455,14 @@ function renderTradeModal(){
   const html=`<div class="overlay" id="trade-overlay" onclick="closeTradeIfBg(event)">
   <div class="modal" onclick="event.stopPropagation()">
 
-    <!-- Notificación de precio actualizado por otro usuario -->
-    <div id="trade-price-update" style="min-height:18px;margin-bottom:4px;text-align:center;transition:all .3s"></div>
+    <!-- Indicador de actualización de precios en tiempo real -->
+    <div style="display:flex;align-items:center;justify-content:space-between;min-height:20px;margin-bottom:6px">
+      <div id="trade-price-update" style="font-size:11px;transition:all .3s"></div>
+      <div style="font-size:10px;color:var(--muted);display:flex;align-items:center;gap:4px">
+        <span style="width:6px;height:6px;border-radius:50%;background:var(--yes);display:inline-block;animation:pulse 2s infinite"></span>
+        Precio en tiempo real
+      </div>
+    </div>
 
     <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px">
       <div>
@@ -5437,7 +5520,7 @@ function buildPreviewHtml(preview,isBuy){
           padding-bottom:12px;margin-bottom:12px;border-bottom:1px solid rgba(0,168,112,.15)">
         <span style="color:var(--muted);font-size:13px">${t("preview_shares_receive")}</span>
         <div style="text-align:right">
-          <div style="font-size:24px;font-weight:900;color:var(--text);letter-spacing:-.5px">${preview.shares.toFixed(4)}</div>
+          <div style="font-size:24px;font-weight:900;color:var(--text);letter-spacing:-.5px">${preview.shares.toFixed(2)}</div>
           <div style="font-size:11px;color:var(--muted)">${side} ${t("shares_label")}</div>
         </div>
       </div>
@@ -5480,7 +5563,11 @@ function buildPreviewHtml(preview,isBuy){
 }
 
 function closeTradeIfBg(e){if(e.target.id==="trade-overlay")closeTradeModal();}
-function closeTradeModal(){STATE.tradeOpen=false;const el=document.getElementById("trade-overlay");if(el)el.remove();}
+function closeTradeModal(){
+  STATE.tradeOpen=false;
+  if(_tradeRefreshTimer){ clearInterval(_tradeRefreshTimer); _tradeRefreshTimer=null; }
+  const el=document.getElementById("trade-overlay");if(el)el.remove();
+}
 function setTradeSide(side){STATE.tradeSide=side;STATE.tradeDollars="";STATE.tradeShares="";renderTradeModal();}
 function setTradeDollars(amt){
   STATE.tradeDollars=String(amt);
@@ -5592,7 +5679,16 @@ async function executeTrade(){
     STATE.users[ui]={...STATE.users[ui], balance:freshBalance};
 
     // ── PASO 3: Calcular con el mercado FRESCO de DB ─────────────
-    // Sin límite de apuesta — el LMSR penaliza automáticamente las apuestas grandes
+    // Anti-arbitraje: limitar posición máxima al 30% de la liquidez
+    const mktLiquidity = computeB(freshM.alpha, freshM.totalVolume, freshM.seedLiquidity) * Math.log(2);
+    const maxPosition  = Math.max(50, mktLiquidity * 0.30);
+    // Obtener posición actual del usuario en este mercado desde DB
+    const {data:curPos} = await db.from("positions")
+      .select("yes_shares,no_shares").eq("user_id",u.id).eq("market_id",marketId).maybeSingle();
+    const currentExposure = curPos ? (side==="YES"?(curPos.yes_shares||0):(curPos.no_shares||0)) * getPrice(freshM,side) : 0;
+    if(currentExposure >= maxPosition){
+      return notify(`Posición máxima alcanzada en este mercado (${usd(maxPosition)}). Esto protege la integridad del mercado.`,"error");
+    }
     const rawShares    = rawSharesFromCost(freshM, side, dollars);
     const p_yes        = getPrice(freshM, "YES");
     const sRate        = dynamicSpread(p_yes, side);
@@ -5608,7 +5704,7 @@ async function executeTrade(){
       totalPaid:   (freshM.totalPaid||0)+dollars,
       spreadPool:  (freshM.spreadPool||0)+spreadEarned,
     };
-    nm.priceHistory=[...freshM.priceHistory,getPrice(nm,"YES")].slice(-60);
+    nm.priceHistory=[...freshM.priceHistory,getPrice(nm,"YES")].slice(-200);
     if(idx>=0) STATE.markets[idx]=nm;
 
     const pos={...(u.positions[marketId]||{YES:0,NO:0})};
@@ -5654,7 +5750,7 @@ async function executeTrade(){
       if(STATE.marketHolders) delete STATE.marketHolders[marketId];
       // Pagar comisión de referido si aplica
       payReferralCommission(u.id, spreadEarned);
-      notify(`Compraste ${netShares.toFixed(4)} shares ${side} por ${usd(dollars)} ✓`);
+      notify(`Compraste ${netShares.toFixed(2)} shares ${side} por ${usd(dollars)} ✓`);
     }catch(e){
       console.error("[Trade] Error:", e);
       notify("Error al guardar — recarga la página","error");
@@ -5680,7 +5776,7 @@ async function executeTrade(){
       qNo: side==="NO" ?Math.max(0,freshM.qNo -shares):freshM.qNo,
       totalVolume:Math.max(0,freshM.totalVolume-shares),
     };
-    nm2.priceHistory=[...freshM.priceHistory,getPrice(nm2,"YES")].slice(-60);
+    nm2.priceHistory=[...freshM.priceHistory,getPrice(nm2,"YES")].slice(-200);
     if(idx>=0) STATE.markets[idx]=nm2;
 
     const np={...(u.positions[marketId]||{YES:0,NO:0})};
@@ -5723,7 +5819,7 @@ async function executeTrade(){
       render();
       // Limpiar cache de holders para que se recargue con datos frescos
       if(STATE.marketHolders) delete STATE.marketHolders[marketId];
-      notify(`Vendiste ${shares.toFixed(4)} shares ${side} · +${usd(ret)}`);
+      notify(`Vendiste ${shares.toFixed(2)} shares ${side} · +${usd(ret)}`);
     }catch(e){
       console.error("[Trade] Error:", e);
       notify("Error al guardar — recarga la página","error");
@@ -7005,6 +7101,16 @@ terms:`
   <h2>8. Limitación de responsabilidad</h2>
   <p>Futuros no garantiza la disponibilidad ininterrumpida del servicio. En ningún caso Futuros será responsable por pérdidas indirectas, incidentales o consecuentes derivadas del uso de la plataforma. La responsabilidad máxima de Futuros frente a cualquier usuario no excederá el monto depositado por dicho usuario en los últimos 30 días.</p>
 
+  <h2>8.1. Retrasos en la ejecución y variaciones de precio</h2>
+  <p>Los precios de los mercados de predicción se actualizan en tiempo real y pueden cambiar entre el momento en que el usuario visualiza un precio y el momento en que su operación es ejecutada. Futuros no garantiza que el precio visible en pantalla sea idéntico al precio de ejecución final de la operación. Estos retrasos (<em>lag</em>) pueden ocurrir debido a la latencia de red, congestión del servidor, operaciones simultáneas de otros usuarios, o actualizaciones del sistema. El usuario acepta que:</p>
+  <ul>
+    <li>El precio final de ejecución puede diferir del precio mostrado al inicio de la operación.</li>
+    <li>En mercados de alta actividad, el precio puede moverse significativamente durante el tiempo de confirmación.</li>
+    <li>Futuros no es responsable de diferencias de precio ocasionadas por retrasos técnicos inherentes a la tecnología de redes distribuidas.</li>
+    <li>El sistema intentará ejecutar siempre al precio más reciente disponible en la base de datos en el momento de confirmación.</li>
+  </ul>
+  <p>Se recomienda al usuario verificar el precio actualizado antes de confirmar cualquier operación usando el botón de actualización disponible en el modal de compra.</p>
+
   <h2>9. Modificaciones</h2>
   <p>Futuros se reserva el derecho de modificar estos términos en cualquier momento. Los cambios entrarán en vigor 7 días después de su publicación en la plataforma. El uso continuado del servicio implica la aceptación de los nuevos términos.</p>
 
@@ -7245,6 +7351,16 @@ terms_en:`
 
   <h2>8. Limitation of Liability</h2>
   <p>Futuros does not guarantee uninterrupted service availability. In no event shall Futuros be liable for indirect, incidental, or consequential losses arising from the use of the platform. Futuros's maximum liability to any user shall not exceed the amount deposited by that user in the last 30 days.</p>
+
+  <h2>8.1. Execution Delays and Price Variations</h2>
+  <p>Prediction market prices update in real time and may change between when a user views a price and when their order is executed. Futuros does not guarantee that the price shown on screen will be identical to the final execution price. These delays (<em>lag</em>) may occur due to network latency, server congestion, simultaneous orders from other users, or system updates. By using the platform, you agree that:</p>
+  <ul>
+    <li>The final execution price may differ from the price shown at the start of the transaction.</li>
+    <li>In high-activity markets, the price may move significantly during confirmation time.</li>
+    <li>Futuros is not responsible for price differences caused by technical delays inherent to distributed network technology.</li>
+    <li>The system will always attempt to execute at the most recent price available in the database at time of confirmation.</li>
+  </ul>
+  <p>Users are encouraged to verify the updated price before confirming any transaction using the refresh button available in the trade modal.</p>
 
   <h2>9. Modifications</h2>
   <p>Futuros reserves the right to modify these terms at any time. Changes will take effect 7 days after publication on the platform. Continued use of the service implies acceptance of the new terms.</p>
