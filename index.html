@@ -1559,20 +1559,10 @@ const SPREAD_MAX  = 0.02;    // 2.00% — máximo al acercarse a 0 o 1
 //   comprar NO  → spread 0.50%  (incentiva volver al centro)
 function dynamicSpread(p_yes, side){
   const p_side = side === "YES" ? p_yes : (1 - p_yes);
-  // Contrarian (apostar al lado menos probable) → spread SIEMPRE mínimo
-  // para incentivar apuestas que equilibren el mercado
+  // Si el lado comprado cuesta ≤50%, es el contrarian → spread mínimo
   if(p_side <= 0.5) return SPREAD_BASE;
-  // Popular (apostar al lado probable) → spread crece con la probabilidad
   const deviation = 2 * (p_side - 0.5);   // 0 en p=0.5, 1 en p=1.0
   return SPREAD_BASE + (SPREAD_MAX - SPREAD_BASE) * Math.pow(deviation, 3);
-}
-// Verificar ROI mínimo para contrarian — garantizar que vale la pena apostar al lado improbable
-function validateContraryROI(mkt, side, dollars){
-  const pSide = getPrice(mkt, side);
-  // ROI teórico = (1/p) - 1. Si es muy bajo, el mercado no es interesante
-  if(pSide <= 0) return false;
-  const theoreticalROI = (1/pSide) - 1;
-  return theoreticalROI >= 0.10; // mínimo 10% ROI teórico
 }
 
 // ── Núcleo LS-LMSR ────────────────────────────────────────────────
@@ -1891,6 +1881,7 @@ const STATE={
   walletAddress:null,
   walletType:null,
   walletChainId:null,
+  walletViewUserId:null, // admin: ver historial de otro usuario
   // withdraw modal
   withdrawOpen:false,
   withdrawAmount:"",
@@ -2521,7 +2512,13 @@ async function loadUserTransactions(userId){
   }
 }
 
-// Leer URL al cargar y navegar al mercado correcto
+// Admin: cargar y mostrar historial de cualquier usuario
+async function loadWalletForUser(userId){
+  if(!isAdmin()) return;
+  STATE.walletViewUserId = userId;
+  render();
+  await loadUserTransactions(userId);
+}
 function checkUrlOnLoad(){
   const path = window.location.pathname;
   const params = new URLSearchParams(window.location.search);
@@ -2689,7 +2686,7 @@ function renderHome(){
       id="market-search-input"
       class="market-search-input"
       type="text"
-      placeholder="Buscar mercados…"
+      placeholder="${t('markets_search')}"
       value="${escHtml(STATE.marketSearch)}"
       oninput="updateMarketSearch(this.value)"
       onkeydown="if(event.key==='Escape'){updateMarketSearch('');}"
@@ -4601,8 +4598,45 @@ function renderPortfolio(){
 // ─── WALLET PAGE ────────────────────────────────────────────────────
 function renderWallet(){
   const u=getUser();if(!u)return"";
-  const txs=u.transactions||[];
+  const isAdm = isAdmin();
   const netLabel={polygon:"Polygon (MATIC)",usdc:"Polygon (USDC)",internal:t("wallet_internal")};
+
+  // Admin: selector de usuario para ver cualquier historial
+  const adminUserSelector = isAdm ? `
+  <div class="card" style="margin-bottom:16px">
+    <div class="admin-section-title" style="margin-bottom:10px">👁 Ver transacciones de usuario</div>
+    <select class="inp" onchange="loadWalletForUser(this.value)" style="width:100%">
+      <option value="${u.id}">@${u.username} (mi cuenta)</option>
+      ${STATE.users.filter(x=>x.id!==u.id).map(x=>`
+        <option value="${x.id}" ${STATE.walletViewUserId===x.id?"selected":""}>@${escHtml(x.username)} · ${usd(x.balance)}</option>
+      `).join("")}
+    </select>
+  </div>` : "";
+
+  // Determinar qué usuario mostrar
+  const viewUserId = isAdm && STATE.walletViewUserId ? STATE.walletViewUserId : u.id;
+  const viewUser   = STATE.users.find(x=>x.id===viewUserId) || u;
+  const txs = (viewUser.transactions||[]).slice().sort((a,b)=>new Date(b.date)-new Date(a.date));
+
+  const renderTxRow = tx => {
+    const isBuy  = tx.description?.includes("Compra");
+    const isSell = tx.description?.includes("Venta");
+    const typeColor  = tx.type==="deposit"?"var(--yes)":tx.type==="withdraw"?"var(--no)":isSell?"var(--yes)":"var(--text)";
+    const typePrefix = tx.type==="deposit"?"+":tx.type==="withdraw"?"-":isSell?"+":"-";
+    const typeLabel  = tx.type==="deposit"?t("wallet_deposit_label"):tx.type==="withdraw"?t("wallet_withdraw_label"):isSell?"Venta":"Compra";
+    return`<div class="tx-row">
+      <div>
+        <div style="font-weight:600;font-size:13px">${escHtml(tx.description||"")}</div>
+        <div style="display:flex;gap:6px;margin-top:3px;align-items:center">
+          <span class="tx-type-badge tx-${tx.type}" style="background:${isSell?"rgba(0,168,112,.12)":""};color:${isSell?"var(--yes)":""}">${typeLabel}</span>
+          <span class="net-badge net-${tx.network||"internal"}">${netLabel[tx.network||"internal"]||tx.network}</span>
+          <span class="tx-date">${formatDate(tx.date)}</span>
+        </div>
+      </div>
+      <div style="font-weight:800;font-size:14px;color:${typeColor}">${typePrefix}${usd(tx.amount)}</div>
+    </div>`;
+  };
+
   return`<div class="container-xs fade-up">
   <h2 style="margin-bottom:6px">💳 ${t("wallet_title")}</h2>
   <p style="color:var(--muted);margin-bottom:28px">${t("wallet_manage")}</p>
@@ -4634,28 +4668,16 @@ function renderWallet(){
         </button>`}
   </div>
 
+  ${adminUserSelector}
+
   <div class="card">
-    <div class="admin-section-title" style="margin-bottom:14px">📋 ${t("wallet_tx_history")}</div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+      <div class="admin-section-title" style="margin:0">📋 ${t("wallet_tx_history")}${isAdm&&STATE.walletViewUserId&&STATE.walletViewUserId!==u.id?` — @${escHtml(viewUser.username)}`:""}</div>
+      ${txs.length>0?`<span style="font-size:11px;color:var(--muted)">${txs.length} transacciones</span>`:""}
+    </div>
     ${txs.length===0
       ?`<div style="text-align:center;padding:32px 0;color:#333">${t("wallet_tx_empty")}</div>`
-      :txs.slice().reverse().map(tx=>{
-        const isBuy  = tx.description?.includes("Compra");
-        const isSell = tx.description?.includes("Venta");
-        const typeColor = tx.type==="deposit"?"var(--yes)":tx.type==="withdraw"?"var(--no)":isSell?"var(--yes)":"var(--text)";
-        const typePrefix= tx.type==="deposit"?"+":tx.type==="withdraw"?"-":isSell?"+":"-";
-        const typeLabel = tx.type==="deposit"?t("wallet_deposit_label"):tx.type==="withdraw"?t("wallet_withdraw_label"):isSell?"Venta":"Compra";
-        return`<div class="tx-row">
-          <div>
-            <div style="font-weight:600;font-size:13px">${escHtml(tx.description||"")}</div>
-            <div style="display:flex;gap:6px;margin-top:3px;align-items:center">
-              <span class="tx-type-badge tx-${tx.type}" style="background:${isSell?"rgba(0,168,112,.12)":""};color:${isSell?"var(--yes)":""}">${typeLabel}</span>
-              <span class="net-badge net-${tx.network||"internal"}">${netLabel[tx.network||"internal"]||tx.network}</span>
-              <span class="tx-date">${formatDate(tx.date)}</span>
-            </div>
-          </div>
-          <div style="font-weight:800;font-size:14px;color:${typeColor}">${typePrefix}${usd(tx.amount)}</div>
-        </div>`;
-      }).join("")}
+      :txs.map(renderTxRow).join("")}
   </div>
 </div>`;
 }
@@ -5438,7 +5460,7 @@ function renderTradeModal(){
           value="${STATE.tradeShares}" placeholder="0.00"
           oninput="STATE.tradeShares=this.value;updateTradePreview()"/>
         <div style="font-size:11px;color:var(--muted);margin-top:5px">
-          ${t("trade_you_have")}: <strong style="color:${sideColor}">${((u&&u.positions[m.id]||{})[side]||0).toFixed(4)} ${t("shares_label")} ${side}</strong>
+          ${t("trade_you_have")}: <strong style="color:${sideColor}">${((u&&u.positions[m.id]||{})[side]||0).toFixed(2)} ${t("shares_label")} ${side}</strong>
         </div>
       </div>`;
 
@@ -5459,7 +5481,12 @@ function renderTradeModal(){
     </div>`;
   } else {
     actionButtons=`<button class="btn-green" style="width:100%;padding:14px;font-size:15px;margin-top:4px"
-      onclick="executeTrade()">${t("trade_buy")} ${side}</button>`;
+      onclick="executeTrade()">${t("trade_buy")} ${side}</button>
+    <div style="text-align:center;margin-top:6px;font-size:10px;color:var(--muted);line-height:1.4">
+      ⏱ ${STATE.lang==="en"
+        ? "Execution may take 1–2 seconds depending on transaction volume. Final price reflects the real market state at the moment of execution."
+        : "La ejecución puede tardar 1–2 segundos según el volumen de transacciones. El precio final refleja el estado real del mercado en el momento de la ejecución."}
+    </div>`;
   }
 
   const html=`<div class="overlay" id="trade-overlay" onclick="closeTradeIfBg(event)">
@@ -5662,85 +5689,89 @@ async function executeTrade(){
   const{tradeSide:side,tradeMode:mode,tradeMarketId:marketId}=STATE;
   const ui=STATE.users.findIndex(x=>x.id===u.id);
 
-  // ── PASO 1: Leer mercado FRESCO desde DB antes de calcular ────────
-  // Esto garantiza que usamos el precio real actual, no el que tenía
-  // el usuario cuando abrió el modal (puede estar desactualizado)
-  const {data:freshMarketRow} = await db.from("markets").select("*").eq("id",marketId).maybeSingle();
-  if(!freshMarketRow){ notify("Mercado no encontrado","error"); return; }
-  const freshM = dbRowToMarket(freshMarketRow);
-
-  // Sincronizar STATE con el mercado fresco
+  // Verificar mercado localmente primero
   const idx = STATE.markets.findIndex(mk=>mk.id===marketId);
-  if(idx>=0) STATE.markets[idx] = {...STATE.markets[idx], ...freshM};
-
-  if(isMarketClosed(freshM)){
-    notify(freshM.resolved ? "Mercado ya resuelto" : "Este mercado está cerrado","error");
-    render(); return;
-  }
+  const localM = idx>=0 ? STATE.markets[idx] : null;
+  if(!localM){ notify("Mercado no encontrado","error"); return; }
+  if(isMarketClosed(localM)){ notify(localM.resolved?"Mercado ya resuelto":"Este mercado está cerrado","error"); return; }
 
   if(mode==="buy"){
     const dollars=parseFloat(STATE.tradeDollars);
-    if(!dollars||dollars<=0)return notify("Ingresa un monto válido","error");
+    if(!dollars||dollars<=0) return notify("Ingresa un monto válido","error");
 
-    // ── PASO 2: Verificar saldo fresco de DB ─────────────────────
-    const {data:freshUser} = await db.from("users").select("balance").eq("id",u.id).maybeSingle();
-    const freshBalance = freshUser?.balance ?? u.balance;
-    if(dollars>freshBalance)return notify("Saldo insuficiente — deposita más fondos","error");
-    STATE.users[ui]={...STATE.users[ui], balance:freshBalance};
+    // Verificar balance local rápido
+    if(dollars > (u.balance||0)) return notify("Saldo insuficiente — deposita más fondos","error");
 
-    // ── PASO 3: Calcular con el mercado FRESCO de DB ─────────────
-    // Anti-arbitraje: limitar posición máxima al 30% de la liquidez
-    const mktLiquidity = computeB(freshM.alpha, freshM.totalVolume, freshM.seedLiquidity) * Math.log(2);
-    const maxPosition  = Math.max(50, mktLiquidity * 0.30);
-    // Obtener posición actual del usuario en este mercado desde DB
-    const {data:curPos} = await db.from("positions")
-      .select("yes_shares,no_shares").eq("user_id",u.id).eq("market_id",marketId).maybeSingle();
-    const currentExposure = curPos ? (side==="YES"?(curPos.yes_shares||0):(curPos.no_shares||0)) * getPrice(freshM,side) : 0;
-    if(currentExposure >= maxPosition){
-      return notify(`Posición máxima alcanzada en este mercado (${usd(maxPosition)}). Esto protege la integridad del mercado.`,"error");
-    }
-    const rawShares    = rawSharesFromCost(freshM, side, dollars);
-    const p_yes        = getPrice(freshM, "YES");
-    const sRate        = dynamicSpread(p_yes, side);
-    const netShares    = rawShares * (1 - sRate);
-    const spreadEarned = spreadOnBuy(freshM, side, dollars);
+    // UI optimista inmediata — muestra loading en botón
+    const btnEl = document.querySelector(".btn-green[onclick='executeTrade()']");
+    if(btnEl){ btnEl.disabled=true; btnEl.textContent="⏳ Procesando…"; }
 
-    // Estado local optimista para UI inmediata
-    const nm={
-      ...freshM,
-      qYes:        side==="YES"?freshM.qYes+rawShares:freshM.qYes,
-      qNo:         side==="NO" ?freshM.qNo +rawShares:freshM.qNo,
-      totalVolume: freshM.totalVolume+rawShares,
-      totalPaid:   (freshM.totalPaid||0)+dollars,
-      spreadPool:  (freshM.spreadPool||0)+spreadEarned,
-    };
-    nm.priceHistory=[...freshM.priceHistory,getPrice(nm,"YES")].slice(-200);
-    if(idx>=0) STATE.markets[idx]=nm;
-
-    const pos={...(u.positions[marketId]||{YES:0,NO:0})};
-    pos[side]=(pos[side]||0)+netShares;
-    const tx={id:"tx_"+genId(),type:"trade",amount:dollars,network:"internal",
-      description:`Compra ${side} ${usd(dollars)} → ${netShares.toFixed(4)} shares · ${freshM.title.slice(0,28)}…`,
-      date:new Date().toISOString(),status:"confirmed"};
-    STATE.users[ui]={...STATE.users[ui],balance:freshBalance-dollars,
-      positions:{...u.positions,[marketId]:pos},
-      transactions:[...(u.transactions||[]),tx]};
-    closeTradeModal();render();
-
-    // ── PASO 4: Persistir en DB atómicamente ─────────────────────
     try{
-      const newBalance = await dbUpdateBalanceAtomic(u.id, -dollars);
-      if(newBalance!==null){
-        const uiNow=STATE.users.findIndex(x=>x.id===u.id);
-        if(uiNow>=0) STATE.users[uiNow]={...STATE.users[uiNow],balance:newBalance};
+      // ── LLAMADA ATÓMICA: todo el cálculo + escritura ocurre en Supabase ──
+      // El FOR UPDATE en PostgreSQL serializa trades simultáneos automáticamente
+      const {data:rpcData, error:rpcErr} = await db.rpc("execute_trade_atomic",{
+        p_market_id: marketId,
+        p_user_id:   u.id,
+        p_side:      side,
+        p_dollars:   dollars,
+      });
+
+      if(rpcErr || !rpcData){
+        notify("Error al ejecutar: "+(rpcErr?.message||"intenta de nuevo"),"error");
+        if(btnEl){ btnEl.disabled=false; btnEl.textContent=`${t("trade_confirm_buy")}`; }
+        return;
       }
-      await dbUpdateMarketAtomic(marketId,
-        side==="YES"?rawShares:0, side==="NO"?rawShares:0,
-        rawShares, spreadEarned, dollars, nm.priceHistory);
-      await dbSavePositions(u.id, STATE.users[ui]?.positions||pos);
+
+      // Verificar si la función retornó un error de negocio
+      if(rpcData.error){
+        notify(rpcData.error,"error");
+        if(btnEl){ btnEl.disabled=false; btnEl.textContent=`${t("trade_confirm_buy")}`; }
+        return;
+      }
+
+      // ── Datos reales calculados en PostgreSQL con precio correcto ──
+      const netShares   = rpcData.net_shares;
+      const newQYes     = rpcData.new_q_yes;
+      const newQNo      = rpcData.new_q_no;
+      const newVolume   = rpcData.new_volume;
+      const newHistory  = Array.isArray(rpcData.new_history) ? rpcData.new_history : [];
+      const spreadEarned= rpcData.spread_earn;
+
+      // Actualizar STATE con valores reales de DB
+      const nm={
+        ...localM,
+        qYes:        newQYes,
+        qNo:         newQNo,
+        totalVolume: newVolume,
+        totalPaid:   (localM.totalPaid||0)+dollars,
+        spreadPool:  (localM.spreadPool||0)+spreadEarned,
+        priceHistory: newHistory,
+      };
+      if(idx>=0) STATE.markets[idx]=nm;
+
+      // Actualizar posiciones y balance del usuario
+      const pos={...(u.positions[marketId]||{YES:0,NO:0})};
+      pos[side]=(pos[side]||0)+netShares;
+      const tx={id:"tx_"+genId(),type:"trade",amount:dollars,network:"internal",
+        description:`Compra ${side} ${usd(dollars)} → ${netShares.toFixed(2)} shares · ${localM.title.slice(0,28)}…`,
+        date:new Date().toISOString(),status:"confirmed"};
+
+      const uiNow=STATE.users.findIndex(x=>x.id===u.id);
+      if(uiNow>=0){
+        STATE.users[uiNow]={...STATE.users[uiNow],
+          balance:   (STATE.users[uiNow].balance||0)-dollars,
+          positions: {...(STATE.users[uiNow].positions||{}),[marketId]:pos},
+          transactions:[tx,...(STATE.users[uiNow].transactions||[])],
+        };
+      }
+
+      closeTradeModal(); render();
+
+      // Persistir posiciones y transacción (balance ya fue actualizado por RPC)
+      await dbSavePositions(u.id, STATE.users[uiNow]?.positions||{});
       await dbSaveTransaction(u.id, tx);
 
-      // ── PASO 5: Recargar TODO desde DB para mostrar estado real ──
+      // Recargar estado real de DB para confirmar
       const {data:confirmedMarket} = await db.from("markets").select("*").eq("id",marketId).maybeSingle();
       if(confirmedMarket){
         const mi=STATE.markets.findIndex(mk=>mk.id===marketId);
@@ -5755,29 +5786,32 @@ async function executeTrade(){
           balance:   confirmedUser?.balance??STATE.users[uiF].balance,
         };
       }
-      render();
-      // Limpiar cache de holders para que se recargue con datos frescos
       if(STATE.marketHolders) delete STATE.marketHolders[marketId];
-      // Pagar comisión de referido si aplica
       payReferralCommission(u.id, spreadEarned);
+      render();
       notify(`Compraste ${netShares.toFixed(2)} shares ${side} por ${usd(dollars)} ✓`);
+
     }catch(e){
       console.error("[Trade] Error:", e);
-      notify("Error al guardar — recarga la página","error");
+      notify("Error al ejecutar el trade — recarga la página","error");
     }
 
   } else {
     // ── VENTA ──────────────────────────────────────────────────────
     const shares=parseFloat(STATE.tradeShares);
-    if(!shares||shares<=0)return notify("Ingresa cantidad válida","error");
+    if(!shares||shares<=0) return notify("Ingresa cantidad válida","error");
 
     // Verificar shares frescos desde DB
+    const {data:freshMarketRow} = await db.from("markets").select("*").eq("id",marketId).maybeSingle();
+    if(!freshMarketRow){ notify("Mercado no encontrado","error"); return; }
+    const freshM = dbRowToMarket(freshMarketRow);
+    if(idx>=0) STATE.markets[idx]={...STATE.markets[idx],...freshM};
+
     const {data:freshPos}=await db.from("positions").select("yes_shares,no_shares")
       .eq("user_id",u.id).eq("market_id",marketId).maybeSingle();
     const freshHeld=freshPos?(side==="YES"?(freshPos.yes_shares||0):(freshPos.no_shares||0)):0;
-    if(shares>freshHeld+0.0001)return notify("No tienes suficientes shares","error");
+    if(shares>freshHeld+0.0001) return notify("No tienes suficientes shares","error");
 
-    // ── Calcular retorno con mercado FRESCO ───────────────────────
     const ret=calcSellReturn(freshM,side,shares);
 
     const nm2={
@@ -5792,11 +5826,12 @@ async function executeTrade(){
     const np={...(u.positions[marketId]||{YES:0,NO:0})};
     np[side]=Math.max(0,(np[side]||0)-shares);
     const tx2={id:"tx_"+genId(),type:"trade",amount:ret,network:"internal",
-      description:`Venta ${shares.toFixed(4)} ${side} +${usd(ret)} · ${freshM.title.slice(0,28)}…`,
+      description:`Venta ${shares.toFixed(2)} ${side} +${usd(ret)} · ${freshM.title.slice(0,28)}…`,
       date:new Date().toISOString(),status:"confirmed"};
-    STATE.users[ui]={...STATE.users[ui],balance:(STATE.users[ui].balance||0)+ret,
+    const uiS=STATE.users.findIndex(x=>x.id===u.id);
+    STATE.users[uiS]={...STATE.users[uiS],balance:(STATE.users[uiS].balance||0)+ret,
       positions:{...u.positions,[marketId]:np},
-      transactions:[...(u.transactions||[]),tx2]};
+      transactions:[tx2,...(STATE.users[uiS].transactions||[])]};
     closeTradeModal();render();
 
     try{
@@ -5808,10 +5843,9 @@ async function executeTrade(){
       await dbUpdateMarketAtomic(marketId,
         side==="YES"?-shares:0, side==="NO"?-shares:0,
         -shares,0,0,nm2.priceHistory);
-      await dbSavePositions(u.id, STATE.users[ui]?.positions||np);
+      await dbSavePositions(u.id, STATE.users[uiS]?.positions||np);
       await dbSaveTransaction(u.id, tx2);
 
-      // Recargar estado real desde DB
       const {data:cm2}=await db.from("markets").select("*").eq("id",marketId).maybeSingle();
       if(cm2){
         const mi2=STATE.markets.findIndex(mk=>mk.id===marketId);
@@ -5827,7 +5861,6 @@ async function executeTrade(){
         };
       }
       render();
-      // Limpiar cache de holders para que se recargue con datos frescos
       if(STATE.marketHolders) delete STATE.marketHolders[marketId];
       notify(`Vendiste ${shares.toFixed(2)} shares ${side} · +${usd(ret)}`);
     }catch(e){
@@ -5836,6 +5869,7 @@ async function executeTrade(){
     }
   }
 }
+
 
 // ═══════════════════════════════════════════════════════════════════
 // ADMIN
