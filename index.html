@@ -1610,7 +1610,20 @@ function rawSharesFromCost(mkt, side, dollars, iters=52){
   let lo = 0, hi = dollars / 0.0001;
   for(let i = 0; i < iters; i++){
     const mid = (lo + hi) / 2;
-    // Costo con b_antes fijo: precio justo al momento de la operación
+    const cost = lslmsr_cost(side==="YES"?qY+mid:qY, side==="NO"?qN+mid:qN, b)
+               - lslmsr_cost(qY, qN, b);
+    cost < dollars ? lo = mid : hi = mid;
+  }
+  return (lo + hi) / 2;
+}
+
+// Variante que acepta b ya calculado — usada por el preview para igualar al RPC
+function rawSharesFromCostWithB(mkt, side, dollars, b, iters=52){
+  if(dollars <= 0) return 0;
+  const { qYes:qY, qNo:qN } = mkt;
+  let lo = 0, hi = dollars / 0.0001;
+  for(let i = 0; i < iters; i++){
+    const mid = (lo + hi) / 2;
     const cost = lslmsr_cost(side==="YES"?qY+mid:qY, side==="NO"?qN+mid:qN, b)
                - lslmsr_cost(qY, qN, b);
     cost < dollars ? lo = mid : hi = mid;
@@ -5456,12 +5469,20 @@ function renderTradeModal(){
       </div>`
     :`<div style="margin-bottom:16px">
         <label class="lbl">${t("trade_shares_to_sell")}</label>
-        <input class="inp" id="trade-shares-input" type="number" min="0.01" step="0.01"
-          value="${STATE.tradeShares}" placeholder="0.00"
-          oninput="STATE.tradeShares=this.value;updateTradePreview()"/>
-        <div style="font-size:11px;color:var(--muted);margin-top:5px">
-          ${t("trade_you_have")}: <strong style="color:${sideColor}">${((u&&u.positions[m.id]||{})[side]||0).toFixed(2)} ${t("shares_label")} ${side}</strong>
-        </div>
+        ${(()=>{
+          const heldRaw = (u&&u.positions[m.id]||{})[side]||0;
+          const heldFloor = Math.floor(heldRaw*100)/100;
+          return`<input class="inp" id="trade-shares-input" type="number" min="0.01" step="0.01"
+            max="${heldFloor}"
+            value="${STATE.tradeShares}" placeholder="0.00"
+            oninput="STATE.tradeShares=Math.min(this.value,${heldFloor});this.value=STATE.tradeShares;updateTradePreview()"/>
+          <div style="font-size:11px;color:var(--muted);margin-top:5px">
+            ${t("trade_you_have")}: <strong style="color:${sideColor};cursor:pointer"
+              onclick="STATE.tradeShares=${heldFloor};document.getElementById('trade-shares-input').value=${heldFloor};updateTradePreview()">
+              ${heldFloor.toFixed(2)} ${t("shares_label")} ${side}
+            </strong> <span style="color:var(--muted);font-size:10px">(toca para vender todo)</span>
+          </div>`;
+        })()}
       </div>`;
 
   // ── 4. Preview de resultados ──────────────────────────────────────
@@ -5629,20 +5650,22 @@ function calcTradePreview(){
   if(STATE.tradeMode==="buy"){
     const dollars=parseFloat(STATE.tradeDollars);
     if(!dollars||dollars<=0)return null;
-    const rawShares=rawSharesFromCost(m,side,dollars);
+    // Usar mismo b que el RPC: incluye p_dollars en el volumen
+    const b_preview = computeB(m.alpha, m.totalVolume + dollars, m.seedLiquidity);
+    // Recalcular rawShares con b_preview para que coincida con el RPC
+    const rawShares = rawSharesFromCostWithB(m, side, dollars, b_preview);
     if(rawShares<=0)return null;
-    const p_yes=getPrice(m,"YES");
+    const p_yes=lslmsr_price(m.qYes, m.qNo, b_preview);
+    const p_side_preview = side==="YES" ? p_yes : 1-p_yes;
     const sRate=dynamicSpread(p_yes,side);
-    const entryPrice=side==="YES"?p_yes:1-p_yes;
+    const entryPrice=p_side_preview;
     const netShares=rawShares*(1-sRate);
-    const spreadAmt=spreadOnBuy(m,side,dollars);
+    const spreadAmt=rawShares*sRate*p_side_preview;
     const spreadPct=sRate*100;
-    // Precio promedio de entrada (como Polymarket "Avg. Price")
     const avgPrice = dollars / rawShares;
-    // Precio después de la compra (mueve el mercado)
     const newQY=side==="YES"?m.qYes+rawShares:m.qYes;
     const newQN=side==="NO" ?m.qNo +rawShares:m.qNo;
-    const newP=lslmsr_price(newQY,newQN,computeB(m.alpha,m.totalVolume+rawShares,m.seedLiquidity));
+    const newP=lslmsr_price(newQY,newQN,b_preview);
     const newPrice=side==="YES"?newP:1-newP;
     const potentialProfit=netShares-dollars;
     return{dollars,shares:netShares,rawShares,entryPrice,avgPrice,newPrice,
@@ -5797,55 +5820,69 @@ async function executeTrade(){
     }
 
   } else {
-    // ── VENTA ──────────────────────────────────────────────────────
-    const shares=parseFloat(STATE.tradeShares);
-    if(!shares||shares<=0) return notify("Ingresa cantidad válida","error");
+    // ── VENTA ATÓMICA ──────────────────────────────────────────────
+    const sharesRaw = parseFloat(STATE.tradeShares);
+    if(!sharesRaw||sharesRaw<=0) return notify("Ingresa cantidad válida","error");
 
-    // Verificar shares frescos desde DB
-    const {data:freshMarketRow} = await db.from("markets").select("*").eq("id",marketId).maybeSingle();
-    if(!freshMarketRow){ notify("Mercado no encontrado","error"); return; }
-    const freshM = dbRowToMarket(freshMarketRow);
-    if(idx>=0) STATE.markets[idx]={...STATE.markets[idx],...freshM};
+    // Truncar a 2 decimales hacia abajo para garantizar que siempre tiene suficientes
+    const shares = Math.floor(sharesRaw * 100) / 100;
+    if(shares <= 0) return notify("Cantidad mínima: 0.01 shares","error");
 
-    const {data:freshPos}=await db.from("positions").select("yes_shares,no_shares")
-      .eq("user_id",u.id).eq("market_id",marketId).maybeSingle();
-    const freshHeld=freshPos?(side==="YES"?(freshPos.yes_shares||0):(freshPos.no_shares||0)):0;
-    if(shares>freshHeld+0.0001) return notify("No tienes suficientes shares","error");
-
-    const ret=calcSellReturn(freshM,side,shares);
-
-    const nm2={
-      ...freshM,
-      qYes:side==="YES"?Math.max(0,freshM.qYes-shares):freshM.qYes,
-      qNo: side==="NO" ?Math.max(0,freshM.qNo -shares):freshM.qNo,
-      totalVolume:Math.max(0,freshM.totalVolume-shares),
-    };
-    nm2.priceHistory=[...freshM.priceHistory,getPrice(nm2,"YES")].slice(-200);
-    if(idx>=0) STATE.markets[idx]=nm2;
-
-    const np={...(u.positions[marketId]||{YES:0,NO:0})};
-    np[side]=Math.max(0,(np[side]||0)-shares);
-    const tx2={id:"tx_"+genId(),type:"trade",amount:ret,network:"internal",
-      description:`Venta ${shares.toFixed(2)} ${side} +${usd(ret)} · ${freshM.title.slice(0,28)}…`,
-      date:new Date().toISOString(),status:"confirmed"};
-    const uiS=STATE.users.findIndex(x=>x.id===u.id);
-    STATE.users[uiS]={...STATE.users[uiS],balance:(STATE.users[uiS].balance||0)+ret,
-      positions:{...u.positions,[marketId]:np},
-      transactions:[tx2,...(STATE.users[uiS].transactions||[])]};
-    closeTradeModal();render();
+    // Botón loading
+    const btnSell = document.querySelector(".btn-green[onclick='executeTrade()']");
+    if(btnSell){ btnSell.disabled=true; btnSell.textContent="⏳ Procesando…"; }
 
     try{
-      const newBal2=await dbUpdateBalanceAtomic(u.id, ret);
-      if(newBal2!==null){
-        const uiNow=STATE.users.findIndex(x=>x.id===u.id);
-        if(uiNow>=0) STATE.users[uiNow]={...STATE.users[uiNow],balance:newBal2};
+      const {data:sellData, error:sellErr} = await db.rpc("execute_sell_atomic",{
+        p_market_id: marketId,
+        p_user_id:   u.id,
+        p_side:      side,
+        p_shares:    shares,
+      });
+
+      if(sellErr || !sellData){
+        notify("Error al vender: "+(sellErr?.message||"intenta de nuevo"),"error");
+        if(btnSell){ btnSell.disabled=false; btnSell.textContent=t("trade_confirm_sell")||"Confirmar venta"; }
+        return;
       }
-      await dbUpdateMarketAtomic(marketId,
-        side==="YES"?-shares:0, side==="NO"?-shares:0,
-        -shares,0,0,nm2.priceHistory);
+      if(sellData.error){
+        notify(sellData.error,"error");
+        if(btnSell){ btnSell.disabled=false; btnSell.textContent=t("trade_confirm_sell")||"Confirmar venta"; }
+        return;
+      }
+
+      const ret       = sellData.return_amount;
+      const newQYes   = sellData.new_q_yes;
+      const newQNo    = sellData.new_q_no;
+      const newHistory= Array.isArray(sellData.new_history) ? sellData.new_history : [];
+
+      // Actualizar STATE con valores reales de DB
+      const nm2={
+        ...localM,
+        qYes:        newQYes,
+        qNo:         newQNo,
+        totalVolume: Math.max(0, localM.totalVolume - shares),
+        priceHistory: newHistory,
+      };
+      if(idx>=0) STATE.markets[idx]=nm2;
+
+      const np={...(u.positions[marketId]||{YES:0,NO:0})};
+      np[side]=Math.max(0,(np[side]||0)-shares);
+      const tx2={id:"tx_"+genId(),type:"trade",amount:ret,network:"internal",
+        description:`Venta ${shares.toFixed(2)} ${side} +${usd(ret)} · ${localM.title.slice(0,28)}…`,
+        date:new Date().toISOString(),status:"confirmed"};
+      const uiS=STATE.users.findIndex(x=>x.id===u.id);
+      STATE.users[uiS]={...STATE.users[uiS],
+        balance:(STATE.users[uiS].balance||0)+ret,
+        positions:{...u.positions,[marketId]:np},
+        transactions:[tx2,...(STATE.users[uiS].transactions||[])]};
+      closeTradeModal(); render();
+
+      // Persistir posición y transacción (balance ya actualizado por RPC)
       await dbSavePositions(u.id, STATE.users[uiS]?.positions||np);
       await dbSaveTransaction(u.id, tx2);
 
+      // Recargar estado real
       const {data:cm2}=await db.from("markets").select("*").eq("id",marketId).maybeSingle();
       if(cm2){
         const mi2=STATE.markets.findIndex(mk=>mk.id===marketId);
@@ -5860,12 +5897,13 @@ async function executeTrade(){
           balance:cu2?.balance??STATE.users[uiF2].balance,
         };
       }
-      render();
       if(STATE.marketHolders) delete STATE.marketHolders[marketId];
+      render();
       notify(`Vendiste ${shares.toFixed(2)} shares ${side} · +${usd(ret)}`);
+
     }catch(e){
-      console.error("[Trade] Error:", e);
-      notify("Error al guardar — recarga la página","error");
+      console.error("[Sell] Error:", e);
+      notify("Error al vender — recarga la página","error");
     }
   }
 }
