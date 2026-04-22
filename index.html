@@ -4634,19 +4634,26 @@ function renderWallet(){
   const renderTxRow = tx => {
     const isBuy  = tx.description?.includes("Compra");
     const isSell = tx.description?.includes("Venta");
-    const typeColor  = tx.type==="deposit"?"var(--yes)":tx.type==="withdraw"?"var(--no)":isSell?"var(--yes)":"var(--text)";
-    const typePrefix = tx.type==="deposit"?"+":tx.type==="withdraw"?"-":isSell?"+":"-";
-    const typeLabel  = tx.type==="deposit"?t("wallet_deposit_label"):tx.type==="withdraw"?t("wallet_withdraw_label"):isSell?"Venta":"Compra";
+    const isLoss = tx.type==="loss";
+    const typeColor  = tx.type==="deposit"?"var(--yes)":tx.type==="withdraw"||isLoss?"var(--no)":isSell?"var(--yes)":"var(--text)";
+    const typePrefix = tx.type==="deposit"?"+":tx.type==="withdraw"||isLoss?"-":isSell?"+":"-";
+    const typeLabel  = tx.type==="deposit"?t("wallet_deposit_label")
+                      :tx.type==="withdraw"?t("wallet_withdraw_label")
+                      :isLoss?(STATE.lang==="en"?"Loss":"Pérdida")
+                      :isSell?"Venta":"Compra";
+    const badgeBg    = isLoss?"rgba(224,40,74,.10)":isSell?"rgba(0,168,112,.12)":"";
+    const badgeColor = isLoss?"var(--no)":isSell?"var(--yes)":"";
+    const amountStr  = isLoss && tx.amount===0 ? "—" : typePrefix+usd(tx.amount);
     return`<div class="tx-row">
       <div>
         <div style="font-weight:600;font-size:13px">${escHtml(tx.description||"")}</div>
         <div style="display:flex;gap:6px;margin-top:3px;align-items:center">
-          <span class="tx-type-badge tx-${tx.type}" style="background:${isSell?"rgba(0,168,112,.12)":""};color:${isSell?"var(--yes)":""}">${typeLabel}</span>
+          <span class="tx-type-badge tx-${tx.type}" style="background:${badgeBg};color:${badgeColor}">${typeLabel}</span>
           <span class="net-badge net-${tx.network||"internal"}">${netLabel[tx.network||"internal"]||tx.network}</span>
           <span class="tx-date">${formatDate(tx.date)}</span>
         </div>
       </div>
-      <div style="font-weight:800;font-size:14px;color:${typeColor}">${typePrefix}${usd(tx.amount)}</div>
+      <div style="font-weight:800;font-size:14px;color:${typeColor}">${amountStr}</div>
     </div>`;
   };
 
@@ -7156,28 +7163,46 @@ async function adminResolve(id,result){
   STATE.markets[i]={...m,resolved:true,resolution:result,payoutPerShare};
   await dbSaveMarket(STATE.markets[i]);
 
-  // Pay winners — load fresh positions from DB
+  // Pay winners & record resolution tx for all participants
   const {data:positions} = await db.from("positions").select("*").eq("market_id",id);
   // Normalize user_id to string to avoid UUID vs string type mismatch
   const userIds = [...new Set((positions||[]).map(p=>String(p.user_id)))];
+  const loseSide = result==="YES" ? "NO" : "YES";
+  const titleShort = m.title.slice(0,25)+(m.title.length>25?"…":"");
+  const resolvedAt = new Date().toISOString();
+
   for(const uid of userIds){
     const pos = positions.find(p=>String(p.user_id)===uid);
     if(!pos) continue;
-    const winShares = result==="YES"?(pos.yes_shares||0):(pos.no_shares||0);
-    if(winShares<=0) continue;
-    const payout = Math.round(winShares*payoutPerShare*100)/100;
+    const winShares  = result==="YES" ? (pos.yes_shares||0) : (pos.no_shares||0);
+    const loseShares = result==="YES" ? (pos.no_shares||0)  : (pos.yes_shares||0);
+
     // Fetch fresh balance from DB
     const {data:uw} = await db.from("users").select("balance,username").eq("id",uid).maybeSingle();
     if(!uw) continue;
-    const newBal = Math.round(((uw.balance||0)+payout)*100)/100;
-    await db.from("users").update({balance:newBal}).eq("id",uid);
-    const tx={id:"tx_"+genId(),type:"deposit",amount:payout,network:"internal",
-      description:`Pago mercado "${m.title.slice(0,25)}…" · ${winShares.toFixed(4)} shares ${result} × ${usd(payoutPerShare)}`,
-      date:new Date().toISOString(),status:"confirmed"};
-    await db.from("transactions").insert({user_id:uid,...tx,created_at:tx.date});
-    // Update STATE — normalize both sides for comparison
-    const ui=STATE.users.findIndex(u=>String(u.id)===uid);
-    if(ui>=0) STATE.users[ui]={...STATE.users[ui],balance:newBal};
+
+    if(winShares > 0){
+      // ── GANADOR: acreditar payout ──────────────────────────────
+      const payout = Math.round(winShares*payoutPerShare*100)/100;
+      const newBal = Math.round(((uw.balance||0)+payout)*100)/100;
+      await db.from("users").update({balance:newBal}).eq("id",uid);
+      const tx={id:"tx_"+genId(),type:"deposit",amount:payout,network:"internal",
+        description:`✅ Ganaste · "${titleShort}" · ${winShares.toFixed(4)} shares ${result} × ${usd(payoutPerShare)}`,
+        date:resolvedAt,status:"confirmed"};
+      await db.from("transactions").insert({user_id:uid,...tx,created_at:tx.date});
+      // Update STATE
+      const ui=STATE.users.findIndex(u=>String(u.id)===uid);
+      if(ui>=0) STATE.users[ui]={...STATE.users[ui],balance:newBal};
+    }
+
+    if(loseShares > 0){
+      // ── PERDEDOR: registrar pérdida (sin cambio de balance, ya descontado en la compra) ──
+      const lostAmount = Math.round(loseShares*(result==="YES"?(1-payoutPerShare):payoutPerShare)*100)/100;
+      const txLoss={id:"tx_"+genId(),type:"loss",amount:lostAmount,network:"internal",
+        description:`❌ Perdiste · "${titleShort}" · ${loseShares.toFixed(4)} shares ${loseSide} · Resultado: ${result}`,
+        date:resolvedAt,status:"confirmed"};
+      await db.from("transactions").insert({user_id:uid,...txLoss,created_at:txLoss.date});
+    }
   }
   const payStr=payoutPerShare>=0.999?"$1.00/share":`${usd(payoutPerShare)}/share`;
   notify(`✓ Resuelto ${result} · Pagando ${payStr} a ganadores`);render();
