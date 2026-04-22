@@ -6661,8 +6661,14 @@ async function adminProcessWithdrawal(id, action){
   if(wi<0) return;
   const wd = STATE.withdrawals[wi];
 
-  // Verificar que no esté ya procesado
-  if(wd.status !== "pending"){
+  // Estados válidos según la acción:
+  // - "completed" puede venir desde "pending" (MetaMask lo envió) o "approved" (marcar manual)
+  // - "rejected" solo desde "pending" o "approved" (antes de haber enviado)
+  const validPrevStates = {
+    completed: ["pending", "approved"],
+    rejected:  ["pending", "approved"],
+  };
+  if(!validPrevStates[action].includes(wd.status)){
     notify("Este retiro ya fue procesado","error");
     return;
   }
@@ -6671,12 +6677,12 @@ async function adminProcessWithdrawal(id, action){
     const {error} = await db.from("withdrawals")
       .update({status:action, processed_at:new Date().toISOString()})
       .eq("id",id)
-      .eq("status","pending"); // solo actualizar si sigue pending — previene doble proceso
+      .in("status", validPrevStates[action]); // previene doble proceso en DB
     if(error){ notify("Error: "+error.message,"error"); return; }
 
     STATE.withdrawals[wi] = {...wd, status:action};
 
-    // Si se rechaza → devolver el balance desde DB (no desde STATE)
+    // Si se rechaza → devolver el balance al usuario
     if(action==="rejected"){
       const {data:freshUser} = await db.from("users")
         .select("balance")
@@ -6684,9 +6690,6 @@ async function adminProcessWithdrawal(id, action){
         .maybeSingle();
 
       if(freshUser){
-        // El balance ya fue descontado cuando se creó la solicitud
-        // Solo devolvemos si el balance actual es MENOR al que debería tener
-        // Usamos el balance actual de DB + el monto del retiro
         const newBalance = Math.round(((freshUser.balance||0) + wd.amount)*100)/100;
         await db.from("users").update({balance:newBalance}).eq("id",wd.user_id);
 
