@@ -6186,7 +6186,7 @@ async function loadAdminStats(){
 
     const stats = [];
     for(const user of STATE.users.filter(u=>u.role!=="admin")){
-      const userTxs   = (txs||[]).filter(t=>t.user_id===user.id);
+      const userTxs   = (txs||[]).filter(t=>String(t.user_id)===String(user.id));
       const deposited = userTxs.filter(t=>t.type==="deposit") .reduce((s,t)=>s+Number(t.amount),0);
       const withdrawn = userTxs.filter(t=>t.type==="withdraw").reduce((s,t)=>s+Number(t.amount),0);
       const balance   = user.balance||0;
@@ -6672,7 +6672,7 @@ async function adminProcessWithdrawal(id, action){
         await db.from("users").update({balance:newBalance}).eq("id",wd.user_id);
 
         // Actualizar STATE
-        const ui = STATE.users.findIndex(u=>u.id===wd.user_id);
+        const ui = STATE.users.findIndex(u=>String(u.id)===String(wd.user_id));
         if(ui>=0) STATE.users[ui] = {...STATE.users[ui], balance:newBalance};
 
         // Agregar tx de devolución al historial
@@ -7139,15 +7139,29 @@ async function adminResolve(id,result){
   const m=STATE.markets[i];
   if(m.resolved) return notify("Mercado ya resuelto","error");
 
-  const payoutPerShare=calcPayoutPerShare(m,result);
+  // Reload fresh market data from DB to get accurate totalPaid/spreadPool
+  const {data:mFresh} = await db.from("markets")
+    .select("q_yes,q_no,total_paid,spread_pool,seed_liquidity,total_volume")
+    .eq("id",id).maybeSingle();
+  const mForPayout = mFresh ? {
+    ...m,
+    qYes:         mFresh.q_yes         ?? m.qYes,
+    qNo:          mFresh.q_no          ?? m.qNo,
+    totalPaid:    mFresh.total_paid     ?? m.totalPaid,
+    spreadPool:   mFresh.spread_pool    ?? m.spreadPool,
+    seedLiquidity:mFresh.seed_liquidity ?? m.seedLiquidity,
+  } : m;
+
+  const payoutPerShare=calcPayoutPerShare(mForPayout,result);
   STATE.markets[i]={...m,resolved:true,resolution:result,payoutPerShare};
   await dbSaveMarket(STATE.markets[i]);
 
   // Pay winners — load fresh positions from DB
   const {data:positions} = await db.from("positions").select("*").eq("market_id",id);
-  const userIds = [...new Set((positions||[]).map(p=>p.user_id))];
+  // Normalize user_id to string to avoid UUID vs string type mismatch
+  const userIds = [...new Set((positions||[]).map(p=>String(p.user_id)))];
   for(const uid of userIds){
-    const pos = positions.find(p=>p.user_id===uid);
+    const pos = positions.find(p=>String(p.user_id)===uid);
     if(!pos) continue;
     const winShares = result==="YES"?(pos.yes_shares||0):(pos.no_shares||0);
     if(winShares<=0) continue;
@@ -7161,8 +7175,8 @@ async function adminResolve(id,result){
       description:`Pago mercado "${m.title.slice(0,25)}…" · ${winShares.toFixed(4)} shares ${result} × ${usd(payoutPerShare)}`,
       date:new Date().toISOString(),status:"confirmed"};
     await db.from("transactions").insert({user_id:uid,...tx,created_at:tx.date});
-    // Update STATE
-    const ui=STATE.users.findIndex(u=>u.id===uid);
+    // Update STATE — normalize both sides for comparison
+    const ui=STATE.users.findIndex(u=>String(u.id)===uid);
     if(ui>=0) STATE.users[ui]={...STATE.users[ui],balance:newBal};
   }
   const payStr=payoutPerShare>=0.999?"$1.00/share":`${usd(payoutPerShare)}/share`;
