@@ -5601,10 +5601,12 @@ function buildPreviewHtml(preview,isBuy){
             background:rgba(0,229,160,.06);border-radius:10px;padding:12px 14px;border:1.5px solid rgba(0,229,160,.2)">
           <div>
             <div style="font-weight:700;color:var(--text);font-size:13px">Para ganar 💰 si ${side} gana</div>
-            <div style="font-size:11px;color:var(--muted);margin-top:2px">${preview.shares.toFixed(2)} ${t("shares_label")} × $1 · ROI <strong style="color:var(--yes)">+${roi}%</strong></div>
+            <div style="font-size:11px;color:var(--muted);margin-top:2px">
+              ${preview.shares.toFixed(2)} ${t("shares_label")} × ${preview.estPayout>=0.999?"$1.00":usd(preview.estPayout)} · ROI <strong style="color:var(--yes)">+${roi}%</strong>
+            </div>
           </div>
           <div style="text-align:right">
-            <div style="font-size:22px;font-weight:900;color:var(--yes);letter-spacing:-.5px">${usd(preview.shares)}</div>
+            <div style="font-size:22px;font-weight:900;color:var(--yes);letter-spacing:-.5px">${usd(preview.potentialWin??preview.shares)}</div>
             <div style="font-size:11px;color:var(--yes);font-weight:700">${t("preview_in_total")}</div>
           </div>
         </div>
@@ -5674,9 +5676,19 @@ function calcTradePreview(){
     const newQN=side==="NO" ?m.qNo +rawShares:m.qNo;
     const newP=lslmsr_price(newQY,newQN,b_preview);
     const newPrice=side==="YES"?newP:1-newP;
-    const potentialProfit=netShares-dollars;
+    // Estimar payoutPerShare real usando datos actuales del mercado
+    // Simula cómo quedaría el mercado DESPUÉS de esta compra
+    const simM = {...m,
+      qYes: side==="YES" ? m.qYes+rawShares : m.qYes,
+      qNo:  side==="NO"  ? m.qNo+rawShares  : m.qNo,
+      totalPaid:  (m.totalPaid||0)+dollars,
+      spreadPool: (m.spreadPool||0)+spreadAmt,
+    };
+    const estPayout = calcPayoutPerShare(simM, side);
+    const potentialWin    = Math.round(netShares * estPayout * 100) / 100;
+    const potentialProfit = potentialWin - dollars;
     return{dollars,shares:netShares,rawShares,entryPrice,avgPrice,newPrice,
-      potentialProfit,spreadAmt,spreadPct,maxBet,overMax:false};
+      potentialProfit,potentialWin,estPayout,spreadAmt,spreadPct,maxBet,overMax:false};
   } else {
     const shares=parseFloat(STATE.tradeShares);if(!shares||shares<=0)return null;
     const ret=calcSellReturn(m,side,shares);
