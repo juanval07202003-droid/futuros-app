@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
 <meta http-equiv="X-Content-Type-Options" content="nosniff"/>
 <link rel="canonical" href="https://statwaves.com"/>
 <meta property="og:url" content="https://statwaves.com"/>
@@ -771,16 +771,17 @@ td{padding:12px;vertical-align:middle;color:var(--text-2);}
     box-shadow:0 -4px 20px rgba(0,0,0,.07);
     backdrop-filter:blur(24px);
     -webkit-backdrop-filter:blur(24px);
-    height:var(--bottom-h);
-    padding-bottom:env(safe-area-inset-bottom,0px);
+    /* Altura base + safe area de iOS (home indicator) */
+    padding-bottom:max(env(safe-area-inset-bottom, 0px), 8px);
+    padding-top:4px;
   }
   .bnav-btn{
     flex:1;display:flex;flex-direction:column;align-items:center;
-    justify-content:center;gap:2px;border:none;background:transparent;
+    justify-content:flex-start;gap:2px;border:none;background:transparent;
     color:var(--muted);font-size:9.5px;font-weight:600;cursor:pointer;
-    font-family:inherit;padding:4px 2px;transition:color .15s;
+    font-family:inherit;padding:6px 2px 0;transition:color .15s;
     -webkit-tap-highlight-color:transparent;
-    min-width:0; /* evita que el texto desborde */
+    min-width:0;
   }
   .bnav-btn .bnav-label{
     overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
@@ -791,7 +792,7 @@ td{padding:12px;vertical-align:middle;color:var(--text-2);}
   .bnav-icon{display:flex;align-items:center;justify-content:center;width:24px;height:24px;}
 
   /* ── Espacio para el bottom nav ── */
-  #app{padding-bottom:calc(var(--bottom-h) + env(safe-area-inset-bottom,0px) + 4px);}
+  #app{padding-bottom:calc(72px + max(env(safe-area-inset-bottom,0px), 8px));}
 
   /* ── Layout general ── */
   .container,.container-sm,.container-xs{padding:14px 12px;}
@@ -959,6 +960,11 @@ td{padding:12px;vertical-align:middle;color:var(--text-2);}
   }
 }
 
+/* Top Holders — apilado vertical en mobile */
+@media(max-width:640px){
+  .holders-grid{grid-template-columns:1fr!important;}
+}
+
 /* ════════════════════════════════════════════════
    RESPONSIVE — MÓVIL MUY PEQUEÑO  (≤ 320px)
 ════════════════════════════════════════════════ */
@@ -1022,7 +1028,7 @@ input, select, textarea{
     </div>
   </div>
   <div class="footer-bottom">
-    <p id="footer-copy">© 2025 Futuros. Todos los derechos reservados. Plataforma operada con fines de entretenimiento.</p>
+    <p id="footer-copy">© 2026 Statwaves. Todos los derechos reservados. Plataforma operada con fines de entretenimiento.</p>
     <div class="footer-badges">
       <span class="footer-badge">+18</span>
       <span class="footer-badge" id="footer-badge-resp">Juego responsable</span>
@@ -1066,8 +1072,8 @@ async function dbInit(){
   }, 8000);
 
   try{
-    const savedSession = localStorage.getItem("futuros_session");
-    const savedWallet  = localStorage.getItem("futuros_wallet");
+    const savedSession = localStorage.getItem("sw_session");
+    const savedWallet  = localStorage.getItem("sw_wallet");
     await dbLoadMarkets();
     await dbLoadUsers();
     if(savedSession){
@@ -1079,8 +1085,8 @@ async function dbInit(){
         const positions = await dbLoadPositions(savedSession);
         STATE.users[ui] = {...STATE.users[ui], positions};
       } else {
-        localStorage.removeItem("futuros_session");
-        localStorage.removeItem("futuros_wallet");
+        localStorage.removeItem("sw_session");
+        localStorage.removeItem("sw_wallet");
       }
     }
     clearTimeout(timeout);
@@ -1435,7 +1441,7 @@ let realtimeChannel = null;
 function dbStartRealtime(){
   if(realtimeChannel) return;
 
-  realtimeChannel = db.channel("realtime-futuros")
+  realtimeChannel = db.channel("realtime-statwaves")
 
     // ── Balance de usuario actualizado por webhook ──────────────
     .on("postgres_changes", {
@@ -1862,39 +1868,6 @@ const CAT_SVG={
   </svg>`,
 };
 
-// Detectar idioma por IP — solo si el usuario no ha cambiado el idioma manualmente
-async function detectLangByIP(){
-  // Si ya hay preferencia guardada en localStorage, respetarla
-  const saved = localStorage.getItem("sw_lang");
-  if(saved === "en" || saved === "es"){
-    STATE.lang = saved;
-    document.documentElement.lang = saved;
-    return;
-  }
-  // Primero intentar con el idioma del navegador (más rápido, sin red)
-  const browserLang = navigator.language || navigator.userLanguage || "";
-  const browserIsSpanish = /^es/i.test(browserLang);
-  // Países hispanohablantes
-  const spanishCountries = new Set([
-    "AR","BO","CL","CO","CR","CU","DO","EC","SV","GQ","GT","HN",
-    "MX","NI","PA","PY","PE","PR","ES","UY","VE","US" // US incluido por comunidad hispana grande
-  ]);
-  try{
-    // Usar ipapi.co — gratuito, sin API key, responde rápido
-    const res = await fetch("https://ipapi.co/json/", {signal:AbortSignal.timeout(3000)});
-    const data = await res.json();
-    const country = (data.country_code||"").toUpperCase();
-    const lang = spanishCountries.has(country) ? "es" : "en";
-    STATE.lang = lang;
-    document.documentElement.lang = lang;
-  }catch(e){
-    // Fallback al idioma del navegador
-    STATE.lang = browserIsSpanish ? "es" : "en";
-    document.documentElement.lang = STATE.lang;
-  }
-}
-
-// Guardar preferencia cuando el usuario cambia idioma manualmente
 
 function mkCatTag(category, color){
   const icon = CAT_SVG[category] ? CAT_SVG[category](color, 13) : "";
@@ -2110,7 +2083,7 @@ const LANG={
     deposit_credits:"en créditos",
     deposit_connect_mm:"Conectar MetaMask",
     deposit_address:"Dirección de depósito (Polygon Mainnet)",
-    deposit_copy:"📋 Copiar dirección",
+    deposit_copy:"Copiar dirección",
     deposit_warning:"⚠️ Importante",
     deposit_network:"Red: <strong>Polygon (MATIC)</strong> — no envíes en Ethereum mainnet",
     deposit_confs:"Confirmaciones necesarias",
@@ -2523,6 +2496,32 @@ function toggleLang(){
   render();renderFooter();
 }
 
+// Detectar idioma por IP — solo si el usuario no ha cambiado el idioma manualmente
+async function detectLangByIP(){
+  const saved = localStorage.getItem("sw_lang");
+  if(saved === "en" || saved === "es"){
+    STATE.lang = saved;
+    document.documentElement.lang = saved;
+    return;
+  }
+  const browserLang = navigator.language || navigator.userLanguage || "";
+  const browserIsSpanish = /^es/i.test(browserLang);
+  const spanishCountries = new Set([
+    "AR","BO","CL","CO","CR","CU","DO","EC","SV","GQ","GT","HN",
+    "MX","NI","PA","PY","PE","PR","ES","UY","VE","US"
+  ]);
+  try{
+    const res = await fetch("https://ipapi.co/json/", {signal:AbortSignal.timeout(3000)});
+    const data = await res.json();
+    const country = (data.country_code||"").toUpperCase();
+    STATE.lang = spanishCountries.has(country) ? "es" : "en";
+    document.documentElement.lang = STATE.lang;
+  }catch(e){
+    STATE.lang = browserIsSpanish ? "es" : "en";
+    document.documentElement.lang = STATE.lang;
+  }
+}
+
 
 // ═══════════════════════════════════════════════════════════════════
 // NOTIFICATIONS
@@ -2712,7 +2711,7 @@ function renderFooter(){
   set("footer-resp",en?"Responsibility":"Responsabilidad");
   set("footer-risks",en?"Risks":"Riesgos");
   set("footer-responsible",en?"Responsible gambling":"Juego responsable");
-  set("footer-copy",en?"© 2025 Futuros. All rights reserved. Platform operated for entertainment purposes.":"© 2025 Futuros. Todos los derechos reservados. Plataforma operada con fines de entretenimiento.");
+  set("footer-copy",en?"© 2026 Statwaves. All rights reserved. Platform operated for entertainment purposes.":"© 2026 Statwaves. Todos los derechos reservados. Plataforma operada con fines de entretenimiento.");
   set("footer-badge-resp",en?"Responsible gambling":"Juego responsable");
   set("footer-badge-ssl",en?"SSL secure":"SSL seguro");
 }
@@ -2725,7 +2724,7 @@ function renderNav(){
   document.getElementById("nav-links").innerHTML=
     '<button class="nav-btn'+(vw==="home"?' active':'')+'" onclick="navigate(\'home\')">'+t("nav_home")+'</button>'+
     '<button class="nav-btn'+(vw==="portfolio"?' active':'')+'" onclick="navigate(\'portfolio\')">'+t("nav_portfolio")+'</button>'+
-    (u?'<button class="nav-btn'+(vw==="wallet"?' active':'')+'" onclick="navigate(\'wallet\')">💳 '+t("nav_wallet")+'</button>':'')+
+    (u?'<button class="nav-btn'+(vw==="wallet"?' active':'')+'" onclick="navigate(\'wallet\')">'+t("nav_wallet")+'</button>':'')+
     (admin?'<button class="nav-btn admin-btn'+(vw==="admin"?' active':'')+'" onclick="navigate(\'admin\')">⚙️ '+t("nav_admin")+'</button>':'');
 
   const searchBtn='<button onclick="openSearchPanel()" style="padding:6px 8px;border-radius:10px;border:none;background:transparent;cursor:pointer;color:var(--muted);display:flex;align-items:center;justify-content:center;transition:color .15s" onmouseover="this.style.color=\'var(--yes)\'" onmouseout="this.style.color=\'var(--muted)\'" title="Buscar mercados"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg></button>';
@@ -2768,106 +2767,92 @@ function renderNav(){
 
 // ─── SEARCH PANEL (mobile) ─────────────────────────────────────────
 function openSearchPanel(){ STATE.searchPanelOpen=true; render(); setTimeout(()=>document.getElementById("sp-input")?.focus(),80); }
-function closeSearchPanel(){ STATE.searchPanelOpen=false; render(); }
-function renderSearchPanel(){
-  if(!STATE.searchPanelOpen) return "";
-  const q = STATE.marketSearch.trim().toLowerCase();
-  const cats = ["Todos","Deportes","Economía","Cultura","Tecnología","Breaking","Trending"];
-  const browseFilters = [
-    {id:"Todos",     label:STATE.lang==="en"?"New":"Nuevo",      icon:`<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>`},
-    {id:"Trending",  label:STATE.lang==="en"?"Trending":"Tendencias", icon:`<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17L8 11L12 14L17 8L21 10"/><path d="M17 8H21V12"/></svg>`},
-    {id:"Breaking",  label:STATE.lang==="en"?"Breaking":"Última hora", icon:`<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 4H20V6H4z"/><path d="M4 8H14M4 11H11"/><circle cx="18" cy="17" r="4"/><path d="M18 15V17L19.5 18.5"/></svg>`},
-  ];
-  const topicCats = [
-    {id:"Deportes",   label:STATE.lang==="en"?"Sports":"Deportes",   color:"#00b4d8"},
-    {id:"Economía",   label:STATE.lang==="en"?"Economy":"Economía",  color:"#ffc800"},
-    {id:"Cultura",    label:STATE.lang==="en"?"Culture":"Cultura",   color:"#c864ff"},
-    {id:"Tecnología", label:STATE.lang==="en"?"Tech":"Tecnología",   color:"#00e5a0"},
-  ];
+function closeSearchPanel(){ STATE.searchPanelOpen=false; STATE.marketSearch=""; render(); }
 
-  // Resultados de búsqueda en tiempo real
-  const results = q ? STATE.markets.filter(m=>{
+// Actualiza solo los resultados del panel sin destruir el input ni cerrar el teclado
+function updateSearchPanelResults(q){
+  STATE.marketSearch = q;
+  const container = document.getElementById("sp-results");
+  if(!container) return;
+
+  const results = q.trim() ? STATE.markets.filter(m=>{
     return !m.resolved && (
-      m.title.toLowerCase().includes(q) ||
-      (m.title_en||"").toLowerCase().includes(q) ||
-      m.category.toLowerCase().includes(q)
+      m.title.toLowerCase().includes(q.toLowerCase()) ||
+      (m.title_en||"").toLowerCase().includes(q.toLowerCase()) ||
+      m.category.toLowerCase().includes(q.toLowerCase())
     );
   }).slice(0,8) : [];
 
-  return`<div class="search-panel-overlay" onclick="if(event.target===this)closeSearchPanel()">
-    <div class="search-panel-sheet">
+  const clearBtn = document.getElementById("sp-clear");
+  if(clearBtn) clearBtn.style.display = q ? "block" : "none";
 
-      <!-- Buscador -->
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px">
-        <div style="flex:1;display:flex;align-items:center;background:var(--card2);border-radius:12px;padding:10px 14px;gap:8px;border:1.5px solid var(--yes)">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--muted)" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
-          <input id="sp-input" type="text" placeholder="${STATE.lang==="en"?"Search markets…":"Buscar mercados…"}"
-            value="${escHtml(STATE.marketSearch)}"
-            oninput="STATE.marketSearch=this.value;render()"
-            style="border:none;background:transparent;font-size:14px;color:var(--text);font-family:inherit;width:100%;outline:none"/>
-          ${STATE.marketSearch?`<button onclick="STATE.marketSearch='';render()" style="border:none;background:none;color:var(--muted);cursor:pointer;font-size:16px;padding:0;line-height:1">✕</button>`:""}
-        </div>
-        <button onclick="closeSearchPanel()" style="border:none;background:none;color:var(--yes);font-size:14px;font-weight:600;cursor:pointer;padding:4px;white-space:nowrap">
-          ${STATE.lang==="en"?"Cancel":"Cancelar"}
-        </button>
-      </div>
-
-      ${results.length ? `
-        <!-- Resultados en tiempo real -->
-        <div style="margin-bottom:20px">
-          <div style="font-size:10px;font-weight:700;color:var(--muted);letter-spacing:.8px;text-transform:uppercase;margin-bottom:10px">${STATE.lang==="en"?"Results":"Resultados"}</div>
-          ${results.map(m=>{
-            const p=getPrice(m,"YES");
-            return`<div onclick="closeSearchPanel();navigate('market',{marketId:'${m.id}'})"
-              style="display:flex;align-items:center;gap:12px;padding:12px;background:var(--card);border-radius:12px;margin-bottom:8px;cursor:pointer;border:1px solid var(--border)">
-              <div style="width:36px;height:36px;border-radius:10px;background:${CAT_COLOR[m.category]||"#888"}22;display:flex;align-items:center;justify-content:center;flex-shrink:0">
-                ${CAT_SVG[m.category]?CAT_SVG[m.category](CAT_COLOR[m.category]||"#888",18):""}
-              </div>
-              <div style="flex:1;min-width:0">
-                <div style="font-size:13px;font-weight:600;color:var(--text);line-height:1.3">${escHtml(mTitle(m).slice(0,50))}${mTitle(m).length>50?"…":""}</div>
-                <div style="font-size:11px;color:var(--muted);margin-top:2px">${escHtml(m.category)}</div>
-              </div>
-              <div style="text-align:right;flex-shrink:0">
-                <div style="font-size:14px;font-weight:800;color:var(--yes)">${pct(p)}</div>
-                <div style="font-size:10px;color:var(--muted)">YES</div>
-              </div>
-            </div>`;
-          }).join("")}
-        </div>` : `
-
-        <!-- Browse filters -->
-        <div style="margin-bottom:20px">
-          <div style="font-size:10px;font-weight:700;color:var(--muted);letter-spacing:.8px;text-transform:uppercase;margin-bottom:10px">BROWSE</div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap">
-            ${browseFilters.map(f=>`
-              <button onclick="closeSearchPanel();setFilter('${f.id}')"
-                style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:20px;
-                border:1.5px solid var(--border);background:var(--card);font-size:13px;font-weight:600;
-                color:var(--text-2);cursor:pointer;font-family:inherit">
-                ${f.icon} ${f.label}
-              </button>`).join("")}
+  if(results.length){
+    container.innerHTML = `
+      <div style="font-size:10px;font-weight:700;color:var(--muted);letter-spacing:.8px;text-transform:uppercase;margin-bottom:10px">${STATE.lang==="en"?"Results":"Resultados"}</div>
+      ${results.map(m=>{
+        const p=getPrice(m,"YES");
+        return`<div onclick="closeSearchPanel();navigate('market',{marketId:'${m.id}'})"
+          style="display:flex;align-items:center;gap:12px;padding:12px;background:var(--card);border-radius:12px;margin-bottom:8px;cursor:pointer;border:1px solid var(--border)">
+          <div style="width:36px;height:36px;border-radius:10px;background:${CAT_COLOR[m.category]||"#888"}22;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+            ${CAT_SVG[m.category]?CAT_SVG[m.category](CAT_COLOR[m.category]||"#888",18):""}
           </div>
-        </div>
-
-        <!-- Topics -->
-        <div>
-          <div style="font-size:10px;font-weight:700;color:var(--muted);letter-spacing:.8px;text-transform:uppercase;margin-bottom:10px">TOPICS</div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-            ${topicCats.map(tc=>`
-              <button onclick="closeSearchPanel();setFilter('${tc.id}')"
-                style="display:flex;align-items:center;gap:10px;padding:12px 14px;border-radius:14px;
-                border:1.5px solid var(--border);background:var(--card);cursor:pointer;text-align:left;font-family:inherit">
-                <div style="width:36px;height:36px;border-radius:10px;background:${tc.color}22;
-                  display:flex;align-items:center;justify-content:center;flex-shrink:0">
-                  ${CAT_SVG[tc.id]?CAT_SVG[tc.id](tc.color,18):""}
-                </div>
-                <span style="font-size:13px;font-weight:600;color:var(--text)">${tc.label}</span>
-              </button>`).join("")}
+          <div style="flex:1;min-width:0">
+            <div style="font-size:13px;font-weight:600;color:var(--text);line-height:1.3">${escHtml(mTitle(m).slice(0,50))}${mTitle(m).length>50?"…":""}</div>
+            <div style="font-size:11px;color:var(--muted);margin-top:2px">${escHtml(m.category)}</div>
           </div>
-        </div>`}
+          <div style="text-align:right;flex-shrink:0">
+            <div style="font-size:14px;font-weight:800;color:var(--yes)">${pct(p)}</div>
+            <div style="font-size:10px;color:var(--muted)">YES</div>
+          </div>
+        </div>`;
+      }).join("")}`;
+  } else if(q.trim()){
+    container.innerHTML = `<div style="text-align:center;padding:32px;color:var(--muted);font-size:13px">Sin resultados para "<strong>${escHtml(q)}</strong>"</div>`;
+  } else {
+    // Restaurar browse/topics
+    container.innerHTML = document.getElementById("sp-browse-topics")?.innerHTML || "";
+  }
+}
+function renderSearchPanel(){
+  if(!STATE.searchPanelOpen) return "";
+  const en = STATE.lang==="en";
+  const browseFilters = [
+    {id:"Todos",    label:en?"New":"Nuevo",         icon:`<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>`},
+    {id:"Trending", label:en?"Trending":"Tendencias",icon:`<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17L8 11L12 14L17 8L21 10"/><path d="M17 8H21V12"/></svg>`},
+    {id:"Breaking", label:en?"Breaking":"Última hora",icon:`<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 4H20V6H4z"/><path d="M4 8H14M4 11H11"/><circle cx="18" cy="17" r="4"/><path d="M18 15V17L19.5 18.5"/></svg>`},
+  ];
+  const topicCats = [
+    {id:"Deportes",   label:en?"Sports":"Deportes",   color:"#00b4d8"},
+    {id:"Economía",   label:en?"Economy":"Economía",  color:"#ffc800"},
+    {id:"Cultura",    label:en?"Culture":"Cultura",   color:"#c864ff"},
+    {id:"Tecnología", label:en?"Tech":"Tecnología",   color:"#00e5a0"},
+  ];
+  const browseTopicsHtml =
+    '<div style="margin-bottom:20px">'
+    +'<div style="font-size:10px;font-weight:700;color:var(--muted);letter-spacing:.8px;text-transform:uppercase;margin-bottom:10px">BROWSE</div>'
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap">'
+    +browseFilters.map(f=>'<button onclick="closeSearchPanel();setFilter(&quot;'+f.id+'&quot;)" style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:20px;border:1.5px solid var(--border);background:var(--card);font-size:13px;font-weight:600;color:var(--text-2);cursor:pointer;font-family:inherit">'+f.icon+' '+f.label+'</button>').join("")
+    +'</div></div>'
+    +'<div>'
+    +'<div style="font-size:10px;font-weight:700;color:var(--muted);letter-spacing:.8px;text-transform:uppercase;margin-bottom:10px">TOPICS</div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">'
+    +topicCats.map(tc=>'<button onclick="closeSearchPanel();setFilter(&quot;'+tc.id+'&quot;)" style="display:flex;align-items:center;gap:10px;padding:12px 14px;border-radius:14px;border:1.5px solid var(--border);background:var(--card);cursor:pointer;text-align:left;font-family:inherit"><div style="width:36px;height:36px;border-radius:10px;background:'+tc.color+'22;display:flex;align-items:center;justify-content:center;flex-shrink:0">'+(CAT_SVG[tc.id]?CAT_SVG[tc.id](tc.color,18):"")+'</div><span style="font-size:13px;font-weight:600;color:var(--text)">'+tc.label+'</span></button>').join("")
+    +'</div></div>';
 
-    </div>
-  </div>`;
+  return '<div class="search-panel-overlay" onclick="if(event.target===this)closeSearchPanel()">'
+    +'<div class="search-panel-sheet">'
+    +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:20px">'
+    +'<div style="flex:1;display:flex;align-items:center;background:var(--card2);border-radius:12px;padding:10px 14px;gap:8px;border:1.5px solid var(--yes)">'
+    +'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--muted)" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>'
+    +'<input id="sp-input" type="text" autocomplete="off" placeholder="'+(en?"Search markets…":"Buscar mercados…")+'" value="'+escHtml(STATE.marketSearch)+'"'
+    +' oninput="updateSearchPanelResults(this.value)"'
+    +' style="border:none;background:transparent;font-size:14px;color:var(--text);font-family:inherit;width:100%;outline:none"/>'
+    +'<button id="sp-clear" onclick="STATE.marketSearch=\'\';document.getElementById(\'sp-input\').value=\'\';updateSearchPanelResults(\'\')" style="display:'+(STATE.marketSearch?"block":"none")+';border:none;background:none;color:var(--muted);cursor:pointer;font-size:16px;padding:0;line-height:1">✕</button>'
+    +'</div>'
+    +'<button onclick="closeSearchPanel()" style="border:none;background:none;color:var(--yes);font-size:14px;font-weight:600;cursor:pointer;padding:4px;white-space:nowrap">'+(en?"Cancel":"Cancelar")+'</button>'
+    +'</div>'
+    +'<div id="sp-results">'+browseTopicsHtml+'</div>'
+    +'</div></div>';
 }
 
 // ─── HOME ──────────────────────────────────────────────────────────
@@ -3581,7 +3566,7 @@ function showUsernameModal(userId){
           <img src="data:image/png;base64,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" height="40" style="display:inline-block;flex-shrink:0;image-rendering:auto" alt="Statwaves"/>
         </span>
       </div>
-      <h3 style="margin-bottom:6px;font-size:18px">¡Bienvenido a Futuros!</h3>
+      <h3 style="margin-bottom:6px;font-size:18px">¡Bienvenido a Statwaves!</h3>
       <p style="color:var(--muted);font-size:14px;margin-bottom:20px">
         Elige un nombre de usuario único. Aparecerá en comentarios y el ranking, y te identificará para acreditar depósitos.
       </p>
@@ -3612,7 +3597,7 @@ function showUsernameModal(userId){
           <span onclick="event.preventDefault();event.stopPropagation();navigate('terms')" style="color:var(--yes);font-weight:700;text-decoration:underline;cursor:pointer">términos y condiciones</span>
           y la
           <span onclick="event.preventDefault();event.stopPropagation();navigate('privacy')" style="color:var(--yes);font-weight:700;text-decoration:underline;cursor:pointer">política de privacidad</span>
-          de Futuros. Confirmo que tengo al menos 18 años.
+          de Statwaves. Confirmo que tengo al menos 18 años.
         </span>
       </label>
 
@@ -3958,7 +3943,7 @@ async function sendSolanaDeposit(token, amountUSD){
       const memoIx = {
         keys: [],
         programId: new PublicKey("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"),
-        data: Buffer.from(`futuros:${userId}`, "utf8"),
+        data: Buffer.from(`statwaves:${userId}`, "utf8"),
       };
 
       const tx = new Transaction().add(
@@ -3995,7 +3980,7 @@ async function sendSolanaDeposit(token, amountUSD){
 function showSolanaPaymentInstructions(tokenName, amount, address, userId, username){
   const existing = document.getElementById("sol-pay-modal");
   if(existing) existing.remove();
-  const memo = `futuros:${userId}`;
+  const memo = `statwaves:${userId}`;
   const html = `
   <div class="overlay" id="sol-pay-modal" onclick="event.target===this&&this.remove()">
     <div class="modal" onclick="event.stopPropagation()" style="max-width:420px;text-align:center">
@@ -4011,14 +3996,14 @@ function showSolanaPaymentInstructions(tokenName, amount, address, userId, usern
       <div style="font-size:12px;color:var(--muted);margin-bottom:6px;font-weight:600;letter-spacing:.5px">DIRECCIÓN DESTINO</div>
       <div style="background:#f5f6fa;border-radius:10px;padding:12px;font-family:monospace;font-size:11px;word-break:break-all;cursor:pointer;margin-bottom:12px" onclick="copyText('${address}');this.style.background='#e8f8f2'">
         ${address}
-        <div style="color:var(--accent);font-size:11px;margin-top:6px">📋 Toca para copiar</div>
+        <div style="color:var(--accent);font-size:11px;margin-top:6px">Toca para copiar</div>
       </div>
 
       <div style="background:#f0eafa;border:2px solid #9945ff44;border-radius:14px;padding:14px;margin-bottom:14px;text-align:left">
         <div style="font-size:12px;font-weight:800;color:#9945ff;margin-bottom:8px">🔑 MEMO OBLIGATORIO — para acreditar automáticamente</div>
         <div style="background:white;border-radius:8px;padding:10px;font-family:monospace;font-size:13px;font-weight:700;color:#1a1a2e;word-break:break-all;cursor:pointer;margin-bottom:6px" onclick="copyText('${memo}');this.style.background='#e8f8f2'">
           ${memo}
-          <div style="color:var(--accent);font-size:11px;margin-top:4px;font-weight:400">📋 Toca para copiar</div>
+          <div style="color:var(--accent);font-size:11px;margin-top:4px;font-weight:400">Toca para copiar</div>
         </div>
         <div style="font-size:11px;color:#6b21a8">
           En Phantom: <strong>Send → campo "Memo/Reference"</strong> → pega este texto exacto
@@ -4098,10 +4083,10 @@ async function _authConnectFinish(walletType, address, evmAddress=null){
   STATE.walletType = walletType;
   // Guardar EVM secundaria para depósitos Polygon
   if(evmAddress) STATE.evmAddress = evmAddress;
-  localStorage.setItem("futuros_session", user.id);
-  localStorage.setItem("futuros_wallet", address);
-  localStorage.setItem("futuros_wallet_type", walletType);
-  if(evmAddress) localStorage.setItem("futuros_evm_address", evmAddress);
+  localStorage.setItem("sw_session", user.id);
+  localStorage.setItem("sw_wallet", address);
+  localStorage.setItem("sw_wallet_type", walletType);
+  if(evmAddress) localStorage.setItem("sw_evm_address", evmAddress);
   dbStartRealtime();
   navigate("home");
   notify(`Conectado: ${address.slice(0,6)}…${address.slice(-4)}`,"success");
@@ -4213,8 +4198,8 @@ async function _authConnectEVM(walletType,provider=window.ethereum){
     STATE.session = user.id;
     STATE.walletConnected = true;
     STATE.walletAddress = address;
-    localStorage.setItem("futuros_session", user.id);
-    localStorage.setItem("futuros_wallet", address);
+    localStorage.setItem("sw_session", user.id);
+    localStorage.setItem("sw_wallet", address);
     
     dbStartRealtime();
     const needsUsername = !user.username || user.username.includes("…") || user.username.length < 2;
@@ -4507,9 +4492,9 @@ function renderMarket(){
 function renderMarketTabs(marketId){
   const tab = STATE.marketTab?.[marketId] || "comments";
   const tabs = [
-    {k:"comments",   label:"💬 Comentarios"},
-    {k:"holders",    label:"🏆 Top Holders"},
-    {k:"positions",  label:"📊 Posiciones"},
+    {k:"comments",   label:`<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block;vertical-align:middle;margin-right:4px"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>Comentarios`},
+    {k:"holders",    label:`<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block;vertical-align:middle;margin-right:4px"><path d="M6 9H4a2 2 0 0 1-2-2V5h4"/><path d="M18 9h2a2 2 0 0 0 2-2V5h-4"/><path d="M12 17v4"/><path d="M8 21h8"/><path d="M6 9a6 6 0 0 0 12 0V3H6v6z"/></svg>Top Holders`},
+    {k:"positions",  label:`<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block;vertical-align:middle;margin-right:4px"><rect x="18" y="3" width="4" height="18"/><rect x="10" y="8" width="4" height="13"/><rect x="2" y="13" width="4" height="8"/></svg>Posiciones`},
   ];
 
   const tabBar = `<div style="display:flex;gap:0;border-bottom:2px solid var(--border);margin-bottom:20px">
@@ -4570,14 +4555,18 @@ function renderTopHolders(marketId){
     const color  = side==="YES" ? "var(--yes)" : "var(--no)";
     const bgColor= side==="YES" ? "rgba(0,168,112,.08)" : "rgba(224,40,74,.06)";
     const user   = STATE.users.find(u=>u.id===h.userId);
-    const badge  = ["🥇","🥈","🥉","4","5"][rank-1] || rank;
+    // SVG icons instead of emojis for rank medals
+    const medals = [
+      `<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" fill="#FFD700"/><text x="12" y="16" text-anchor="middle" font-size="10" font-weight="900" fill="white">1</text></svg>`,
+      `<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" fill="#C0C0C0"/><text x="12" y="16" text-anchor="middle" font-size="10" font-weight="900" fill="white">2</text></svg>`,
+      `<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" fill="#CD7F32"/><text x="12" y="16" text-anchor="middle" font-size="10" font-weight="900" fill="white">3</text></svg>`,
+    ];
+    const badge = rank<=3 ? medals[rank-1] : `<span style="font-size:11px;font-weight:700;color:var(--muted)">${rank}</span>`;
     return`<div style="display:flex;align-items:center;gap:10px;padding:10px 12px;
         border-radius:12px;margin-bottom:4px;background:${bgColor};transition:background .15s"
         onmouseover="this.style.background='${side==="YES"?"rgba(0,168,112,.13)":"rgba(224,40,74,.1)"}'"
         onmouseout="this.style.background='${bgColor}'">
-      <!-- Rank -->
-      <div style="width:20px;text-align:center;font-size:13px;flex-shrink:0">${badge}</div>
-      <!-- Avatar -->
+      <div style="width:20px;text-align:center;flex-shrink:0;display:flex;align-items:center;justify-content:center">${badge}</div>
       <div style="flex-shrink:0;position:relative">
         ${renderAvatar(h.username, user?.avatarUrl||null, 38, 15)}
         <div style="position:absolute;bottom:-2px;right:-2px;width:16px;height:16px;border-radius:50%;
@@ -4586,17 +4575,14 @@ function renderTopHolders(marketId){
           ${side==="YES"?"S":"N"}
         </div>
       </div>
-      <!-- Info -->
       <div style="flex:1;min-width:0">
         <div style="font-weight:700;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
           @${escHtml(h.username)}
         </div>
-        <!-- Barra de progreso -->
         <div style="margin-top:4px;height:3px;background:var(--border);border-radius:3px;overflow:hidden">
           <div style="height:100%;width:${pct}%;background:${color};border-radius:3px;transition:width .5s"></div>
         </div>
       </div>
-      <!-- Shares -->
       <div style="text-align:right;flex-shrink:0">
         <div style="font-weight:800;font-size:13px;color:${color}">${shares.toFixed(1)}</div>
         <div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.3px">shares</div>
@@ -4604,12 +4590,17 @@ function renderTopHolders(marketId){
     </div>`;
   };
 
+  // SVG icons para los títulos de sección
+  const yesIcon = `<svg width="10" height="10" viewBox="0 0 10 10"><circle cx="5" cy="5" r="5" fill="var(--yes)"/></svg>`;
+  const noIcon  = `<svg width="10" height="10" viewBox="0 0 10 10"><circle cx="5" cy="5" r="5" fill="var(--no)"/></svg>`;
+
   return`<div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
-      <!-- YES holders -->
+    <!-- Grid: 2 col en desktop, 1 col apilado en mobile -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px" class="holders-grid">
+      <!-- SÍ holders -->
       <div>
         <div style="display:flex;align-items:center;gap:6px;margin-bottom:12px">
-          <div style="width:8px;height:8px;border-radius:50%;background:var(--yes)"></div>
+          ${yesIcon}
           <span style="font-size:12px;font-weight:800;color:var(--yes);text-transform:uppercase;letter-spacing:.5px">SÍ holders</span>
           <span style="font-size:11px;color:var(--muted)">(${yesHolders.length})</span>
         </div>
@@ -4620,7 +4611,7 @@ function renderTopHolders(marketId){
       <!-- NO holders -->
       <div>
         <div style="display:flex;align-items:center;gap:6px;margin-bottom:12px">
-          <div style="width:8px;height:8px;border-radius:50%;background:var(--no)"></div>
+          ${noIcon}
           <span style="font-size:12px;font-weight:800;color:var(--no);text-transform:uppercase;letter-spacing:.5px">NO holders</span>
           <span style="font-size:11px;color:var(--muted)">(${noHolders.length})</span>
         </div>
@@ -4842,7 +4833,7 @@ function renderComments(marketId){
   </div>`;
 
   const listHtml=count===0
-    ?`<div class="comment-empty"><span>💬</span>${t("comment_empty")}</div>`
+    ?`<div class="comment-empty"><span style="display:flex;justify-content:center"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block;vertical-align:middle;"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span>${t("comment_empty")}</div>`
     :comments.slice().reverse().map(c=>{
       const color=avatarColor(c.author);
       return`<div class="comment-card">
@@ -4862,7 +4853,7 @@ function renderComments(marketId){
 
   return`<div class="comments-section">
     <div class="comments-title">
-      💬 ${t("detail_comments")} <span>${count}</span>
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block;vertical-align:middle;margin-right:4px"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg> ${t("detail_comments")} <span>${count}</span>
     </div>
     ${formHtml}
     <div class="comment-list" id="comment-list-${marketId}">${listHtml}</div>
@@ -4889,8 +4880,8 @@ function shareMarket(marketId, method){
   const en = STATE.lang==="en";
   const title=`${m.title}`;
   const text= en
-    ? `What do you think will happen? Invest on Futuros and win if you're right.`
-    : `¿Qué crees que va a pasar? Invierte en Futuros y gana si aciertas.`;
+    ? `What do you think will happen? Invest on Statwaves and win if you're right.`
+    : `¿Qué crees que va a pasar? Invierte en Statwaves y gana si aciertas.`;
   const slug = slugify(m.title);
   const base = `${window.location.origin}/market/${marketId}/${slug}`;
   const url  = base;
@@ -5133,7 +5124,8 @@ function renderWallet(){
 
   <div class="card">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-      <div class="admin-section-title" style="margin:0">📋 ${t("wallet_tx_history")}${isAdm&&STATE.walletViewUserId&&STATE.walletViewUserId!==u.id?` — @${escHtml(viewUser.username)}`:""}</div>
+      <div class="admin-section-title" style="margin:0">${t("wallet_tx_history")}${isAdm&&STATE.walletViewUserId&&STATE.walletViewUserId!==u.id?` — @${escHtml(viewUser.username)}`:""}</div>
+      <div class="admin-section-title" style="margin:0;display:none"}${isAdm&&STATE.walletViewUserId&&STATE.walletViewUserId!==u.id?` — @${escHtml(viewUser.username)}`:""}</div>
       ${txs.length>0?`<span style="font-size:11px;color:var(--muted)">${txs.length} transacciones</span>`:""}
     </div>
     ${txs.length===0
@@ -5410,7 +5402,7 @@ function renderSolanaStep(amt, token){
 
     <div class="lbl">Dirección Solana de la plataforma</div>
     <div class="crypto-addr-box" style="font-size:11px">${addr}</div>
-    <button class="copy-btn" onclick="copyText('${addr}')">📋 Copiar dirección</button>
+    <button class="copy-btn" onclick="copyText('${addr}')">Copiar dirección</button>
 
     <div class="info-box" style="margin-top:14px;margin-bottom:14px">
       <strong>⚠️ Importante:</strong><br>
@@ -6151,8 +6143,8 @@ function updateTradePreview(){
 // ═══════════════════════════════════════════════════════════════════
 function handleLogout(){
   STATE.session=null;STATE.walletConnected=false;STATE.walletAddress=null;
-  localStorage.removeItem("futuros_session");
-  localStorage.removeItem("futuros_wallet");
+  localStorage.removeItem("sw_session");
+  localStorage.removeItem("sw_wallet");
   dbStopRealtime();
   navigate("home");
   notify(STATE.lang==="en"?"Logged out":"Sesión cerrada");
@@ -6379,13 +6371,13 @@ function renderAdmin(){
   const pendingDep=(STATE.pendingDeposits||[]).length;
   const tabs=[
     {k:"accounts", l:`👤 ${t("admin_accounts")}`,       count:STATE.users.length},
-    {k:"stats",    l:`📈 Estadísticas`,                  count:null},
-    {k:"markets",  l:`📊 ${t("admin_create_market")}`},
+    {k:"stats",    l:`<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block;vertical-align:middle;margin-right:4px"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>Estadísticas`,count:null},
+    {k:"markets",  l:`<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block;vertical-align:middle;margin-right:4px"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>${t("admin_create_market")}`},
     {k:"featured", l:`⚡ ${t("admin_featured_tab")}`,   count:featuredCount},
     {k:"resolve",  l:`🏁 ${t("admin_resolve")}`,        count:STATE.markets.filter(m=>!m.resolved).length},
     {k:"withdrawals",l:`💸 Retiros`,                    count:pendingWd||null},
-    {k:"deposits", l:`💰 Depósitos`,                    count:pendingDep||null},
-    {k:"referrals",l:`🔗 Referidos`,                   count:null},
+    {k:"deposits", l:`<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block;vertical-align:middle;margin-right:4px"><path d="M12 2v10m0 0l-3-3m3 3l3-3"/><rect x="2" y="14" width="20" height="8" rx="2"/></svg>Depósitos`,count:pendingDep||null},
+    {k:"referrals",l:`<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block;vertical-align:middle;margin-right:4px"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>Referidos`,count:null},
     {k:"news",      l:`Última hora`,                    count:STATE.breakingIds.length||null},
     {k:"trending",  l:`Tendencias`,                     count:STATE.trendingIds.length||null},
   ];
@@ -6522,7 +6514,7 @@ function renderAdminStats(){
         </div>
         <button class="btn-ghost" style="font-size:12px;padding:7px 14px;flex-shrink:0"
           onclick="STATE.adminStatsLoaded=false;STATE.adminStats=null;STATE.adminMktData=null;render()">
-          🔄 Actualizar
+          Actualizar
         </button>
       </div>
 
@@ -6568,18 +6560,18 @@ function renderAdminStats(){
       </div>
     </div>
 
-    ${section("💰 Finanzas de la plataforma","var(--yes)")}
+    ${section("Finanzas de la plataforma","var(--yes)")}
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:8px">
       ${statCard("Utilidad (spread)", usd(spreadRevenue), "Spread cobrado en trades", "var(--yes)", "💵")}
-      ${statCard("Market Cap", usd(marketCap), "Valor total en posiciones", "var(--accent)", "📈")}
+      ${statCard("Market Cap", usd(marketCap), "Valor total en posiciones", "var(--accent)", "↑")}
       ${statCard("Exposición máx.", usd(maxExposure), "Máximo a pagar si ganan todos", "var(--no)", "⚠️")}
       ${statCard("Liquidez total", usd(totalLiquidity), "b acumulado en mercados activos", "var(--gold)", "🏦")}
     </div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px">
-      ${statCard("Volumen total", usd(totalVolume), "Shares comprados/vendidos", "var(--text)", "📊")}
+      ${statCard("Volumen total", usd(totalVolume), "Shares comprados/vendidos", "var(--text)", "≡")}
       ${statCard("Total recibido", usd(totalPaid), "Dinero real invertido", "var(--accent)", "💳")}
       ${statCard("Salud financiera", healthRatio+"%", "Saldo usuarios / Total depositado", Number(healthRatio)>=90?"var(--yes)":"var(--gold)", "❤️")}
-      ${statCard("Mercados activos", activeMarkets.length+"", resolvedMarkets.length+" resueltos", "var(--text)", "🎯")}
+      ${statCard("Mercados activos", activeMarkets.length+"", resolvedMarkets.length+" resueltos", "var(--text)", "◎")}
     </div>
 
     ${section("👥 Usuarios","var(--accent)")}
@@ -6587,7 +6579,7 @@ function renderAdminStats(){
       ${statCard("Total usuarios", nonAdmin.length+"", gainers.length+" ganando · "+losers.length+" perdiendo", "var(--text)", "👤")}
       ${statCard("Total depositado", usd(totalDep), "Suma de todos los depósitos", "var(--accent)", "⬇️")}
       ${statCard("Total retirado", usd(totalWd), "Suma de todos los retiros", "var(--text)", "⬆️")}
-      ${statCard("Saldo en cuentas", usd(totalBal), "Dinero disponible usuarios", "var(--yes)", "💰")}
+      ${statCard("Saldo en cuentas", usd(totalBal), "Dinero disponible usuarios", "var(--yes)", "$")}
     </div>
 
     ${section("🏆 Mercados por volumen","var(--gold)")}
@@ -7248,7 +7240,7 @@ function renderAdminWithdrawals(){
         <div style="font-weight:800;font-size:16px;margin-bottom:4px">💸 Solicitudes de Retiro</div>
         <div style="font-size:12px;color:var(--muted)">${pending.length} pendientes · ${approved.length} aprobados · ${processed.length} procesados</div>
       </div>
-      <button class="btn-ghost" style="font-size:13px;padding:8px 16px" onclick="dbLoadWithdrawals()">🔄 Actualizar</button>
+      <button class="btn-ghost" style="font-size:13px;padding:8px 16px" onclick="dbLoadWithdrawals()">Actualizar</button>
     </div>
 
     ${approved.length>0?`
@@ -7339,7 +7331,7 @@ function renderAdminDeposits(){
         <div style="font-size:12px;color:var(--muted)">${deps.length} sin asignar a usuario</div>
       </div>
       <button class="btn-ghost" style="font-size:13px;padding:8px 16px" onclick="adminReloadDeposits()">
-        🔄 Actualizar
+        Actualizar
       </button>
     </div>
 
@@ -7702,10 +7694,10 @@ function renderPolicy(key){
 const POLICY_CONTENT={
 
 terms:`
-  <div class="policy-highlight">Al usar Futuros aceptas estos términos en su totalidad. Si no estás de acuerdo, no debes usar la plataforma.</div>
+  <div class="policy-highlight">Al usar Statwaves aceptas estos términos en su totalidad. Si no estás de acuerdo, no debes usar la plataforma.</div>
 
   <h2>1. Naturaleza del servicio</h2>
-  <p>Futuros es una plataforma global de mercados de predicción que permite a los usuarios invertir en el resultado de eventos futuros utilizando un modelo de creación de mercado automatizado (LS-LMSR). La plataforma opera con fines de entretenimiento y no constituye asesoramiento financiero, de inversión ni de ningún otro tipo.</p>
+  <p>Statwaves es una plataforma global de mercados de predicción que permite a los usuarios invertir en el resultado de eventos futuros utilizando un modelo de creación de mercado automatizado (LS-LMSR). La plataforma opera con fines de entretenimiento y no constituye asesoramiento financiero, de inversión ni de ningún otro tipo.</p>
 
   <h2>2. Elegibilidad</h2>
   <ul>
@@ -7717,51 +7709,51 @@ terms:`
   </ul>
 
   <h2>3. Registro y cuenta</h2>
-  <p>Al registrarte, aceptas proporcionar información veraz, completa y actualizada. Eres responsable de mantener la confidencialidad de tus credenciales de acceso. Futuros no será responsable de pérdidas derivadas del acceso no autorizado a tu cuenta por negligencia tuya.</p>
+  <p>Al registrarte, aceptas proporcionar información veraz, completa y actualizada. Eres responsable de mantener la confidencialidad de tus credenciales de acceso. Statwaves no será responsable de pérdidas derivadas del acceso no autorizado a tu cuenta por negligencia tuya.</p>
 
   <h2>4. Depósitos y retiros</h2>
-  <p>Los depósitos se realizan mediante criptomonedas en la red Polygon (MATIC/USDC/USDT) o Solana (SOL). Los retiros están sujetos a una comisión de plataforma del 1% sobre el monto solicitado y se procesan una vez al día. Futuros se reserva el derecho de solicitar verificación de identidad antes de procesar retiros, conforme a nuestra política AML/KYC.</p>
+  <p>Los depósitos se realizan mediante criptomonedas en la red Polygon (MATIC/USDC/USDT) o Solana (SOL). Los retiros están sujetos a una comisión de plataforma del 1% sobre el monto solicitado y se procesan una vez al día. Statwaves se reserva el derecho de solicitar verificación de identidad antes de procesar retiros, conforme a nuestra política AML/KYC.</p>
 
   <h2>5. Mecánica de mercados</h2>
-  <p>Los mercados se cierran en la fecha indicada y son resueltos por el equipo de administración de Futuros con base en fuentes públicas y verificables. La decisión de resolución es definitiva. En caso de que un evento no pueda determinarse con certeza, Futuros podrá cancelar el mercado y devolver los fondos invertidos.</p>
+  <p>Los mercados se cierran en la fecha indicada y son resueltos por el equipo de administración de Statwaves con base en fuentes públicas y verificables. La decisión de resolución es definitiva. En caso de que un evento no pueda determinarse con certeza, Statwaves podrá cancelar el mercado y devolver los fondos invertidos.</p>
 
   <h2>6. Comisiones</h2>
-  <p>Futuros aplica un spread del 0.25% sobre cada operación de compra y venta de shares. Este spread está incluido en el precio visible en pantalla. Adicionalmente, se aplica una comisión del 1% sobre todos los retiros de fondos.</p>
+  <p>Statwaves aplica un spread del 0.25% sobre cada operación de compra y venta de shares. Este spread está incluido en el precio visible en pantalla. Adicionalmente, se aplica una comisión del 1% sobre todos los retiros de fondos.</p>
 
   <h2>7. Conducta prohibida</h2>
   <ul>
     <li>Manipulación de mercados o coordinación con otros usuarios para alterar precios artificialmente.</li>
-    <li>Uso de bots, scripts o herramientas automatizadas sin autorización escrita de Futuros.</li>
+    <li>Uso de bots, scripts o herramientas automatizadas sin autorización escrita de Statwaves.</li>
     <li>Lavado de dinero, financiación del terrorismo o cualquier actividad financiera ilícita.</li>
     <li>Creación de cuentas falsas, suplantación de identidad o evasión de restricciones geográficas mediante VPN.</li>
     <li>Explotación de bugs o vulnerabilidades del sistema. Cualquier vulnerabilidad debe reportarse a soporte.</li>
   </ul>
 
   <h2>8. Limitación de responsabilidad</h2>
-  <p>Futuros no garantiza la disponibilidad ininterrumpida del servicio. En ningún caso Futuros será responsable por pérdidas indirectas, incidentales o consecuentes derivadas del uso de la plataforma. La responsabilidad máxima de Futuros frente a cualquier usuario no excederá el monto depositado por dicho usuario en los últimos 30 días.</p>
+  <p>Statwaves no garantiza la disponibilidad ininterrumpida del servicio. En ningún caso Statwaves será responsable por pérdidas indirectas, incidentales o consecuentes derivadas del uso de la plataforma. La responsabilidad máxima de Statwaves frente a cualquier usuario no excederá el monto depositado por dicho usuario en los últimos 30 días.</p>
 
   <h2>8.1. Retrasos en la ejecución y variaciones de precio</h2>
-  <p>Los precios de los mercados de predicción se actualizan en tiempo real y pueden cambiar entre el momento en que el usuario visualiza un precio y el momento en que su operación es ejecutada. Futuros no garantiza que el precio visible en pantalla sea idéntico al precio de ejecución final de la operación. Estos retrasos (<em>lag</em>) pueden ocurrir debido a la latencia de red, congestión del servidor, operaciones simultáneas de otros usuarios, o actualizaciones del sistema. El usuario acepta que:</p>
+  <p>Los precios de los mercados de predicción se actualizan en tiempo real y pueden cambiar entre el momento en que el usuario visualiza un precio y el momento en que su operación es ejecutada. Statwaves no garantiza que el precio visible en pantalla sea idéntico al precio de ejecución final de la operación. Estos retrasos (<em>lag</em>) pueden ocurrir debido a la latencia de red, congestión del servidor, operaciones simultáneas de otros usuarios, o actualizaciones del sistema. El usuario acepta que:</p>
   <ul>
     <li>El precio final de ejecución puede diferir del precio mostrado al inicio de la operación.</li>
     <li>En mercados de alta actividad, el precio puede moverse significativamente durante el tiempo de confirmación.</li>
-    <li>Futuros no es responsable de diferencias de precio ocasionadas por retrasos técnicos inherentes a la tecnología de redes distribuidas.</li>
+    <li>Statwaves no es responsable de diferencias de precio ocasionadas por retrasos técnicos inherentes a la tecnología de redes distribuidas.</li>
     <li>El sistema intentará ejecutar siempre al precio más reciente disponible en la base de datos en el momento de confirmación.</li>
   </ul>
   <p>Se recomienda al usuario verificar el precio actualizado antes de confirmar cualquier operación usando el botón de actualización disponible en el modal de compra.</p>
 
   <h2>9. Modificaciones</h2>
-  <p>Futuros se reserva el derecho de modificar estos términos en cualquier momento. Los cambios entrarán en vigor 7 días después de su publicación en la plataforma. El uso continuado del servicio implica la aceptación de los nuevos términos.</p>
+  <p>Statwaves se reserva el derecho de modificar estos términos en cualquier momento. Los cambios entrarán en vigor 7 días después de su publicación en la plataforma. El uso continuado del servicio implica la aceptación de los nuevos términos.</p>
 
   <h2>10. Legislación aplicable y resolución de disputas</h2>
-  <p>Estos términos se rigen por principios de derecho internacional aplicables a plataformas digitales globales. Futuros opera como entidad internacional y no está sujeto a ninguna jurisdicción nacional específica. Cualquier disputa será resuelta mediante arbitraje internacional vinculante conforme a las reglas de la Cámara de Comercio Internacional (CCI). El idioma del arbitraje será el español o inglés según acuerdo de las partes.</p>
+  <p>Estos términos se rigen por principios de derecho internacional aplicables a plataformas digitales globales. Statwaves opera como entidad internacional y no está sujeto a ninguna jurisdicción nacional específica. Cualquier disputa será resuelta mediante arbitraje internacional vinculante conforme a las reglas de la Cámara de Comercio Internacional (CCI). El idioma del arbitraje será el español o inglés según acuerdo de las partes.</p>
 
 `,
 privacy:`
   <div class="policy-highlight">Tu privacidad es importante para nosotros. Esta política explica qué datos recopilamos, cómo los usamos y cómo los protegemos.</div>
 
   <h2>1. Responsable del tratamiento</h2>
-  <p>Futuros es responsable del tratamiento de los datos personales recopilados a través de la plataforma. Esta política cumple con los estándares internacionales de protección de datos, incluyendo el Reglamento General de Protección de Datos de la Unión Europea (RGPD/GDPR), la Ley de Privacidad del Consumidor de California (CCPA), y otras normativas de privacidad aplicables globalmente.</p>
+  <p>Statwaves es responsable del tratamiento de los datos personales recopilados a través de la plataforma. Esta política cumple con los estándares internacionales de protección de datos, incluyendo el Reglamento General de Protección de Datos de la Unión Europea (RGPD/GDPR), la Ley de Privacidad del Consumidor de California (CCPA), y otras normativas de privacidad aplicables globalmente.</p>
 
   <h2>2. Datos que recopilamos</h2>
   <ul>
@@ -7783,7 +7775,7 @@ privacy:`
   </ul>
 
   <h2>4. Base legal</h2>
-  <p>El tratamiento de tus datos se basa en: (a) la ejecución del contrato de servicio aceptado al registrarte; (b) el cumplimiento de obligaciones legales internacionales; y (c) el interés legítimo de Futuros en operar la plataforma de forma segura.</p>
+  <p>El tratamiento de tus datos se basa en: (a) la ejecución del contrato de servicio aceptado al registrarte; (b) el cumplimiento de obligaciones legales internacionales; y (c) el interés legítimo de Statwaves en operar la plataforma de forma segura.</p>
 
   <h2>5. Transferencias internacionales de datos</h2>
   <p>Como plataforma global, tus datos pueden ser procesados en servidores ubicados en distintos países. Garantizamos que dichas transferencias cumplen con los estándares internacionales de protección de datos, incluyendo cláusulas contractuales estándar donde aplique.</p>
@@ -7853,16 +7845,16 @@ risks:`
   <p>En mercados con bajo volumen, puede ser difícil vender tus posiciones a un precio favorable. El modelo LS-LMSR garantiza que siempre puedas comprar y vender, pero el precio puede ser desfavorable en mercados poco activos.</p>
 
   <h2>4. Riesgo de resolución</h2>
-  <p>La resolución depende de la interpretación de eventos del mundo real por parte del equipo de Futuros. En casos ambiguos o disputados, la decisión puede no coincidir con tu interpretación. La decisión de Futuros es definitiva e inapelable.</p>
+  <p>La resolución depende de la interpretación de eventos del mundo real por parte del equipo de Statwaves. En casos ambiguos o disputados, la decisión puede no coincidir con tu interpretación. La decisión de Statwaves es definitiva e inapelable.</p>
 
   <h2>5. Riesgo tecnológico</h2>
-  <p>La plataforma puede experimentar interrupciones técnicas, ciberataques o fallos de infraestructura que afecten temporalmente el acceso a fondos o la capacidad de operar. Futuros trabaja para minimizar estos riesgos pero no puede garantizar disponibilidad 24/7.</p>
+  <p>La plataforma puede experimentar interrupciones técnicas, ciberataques o fallos de infraestructura que afecten temporalmente el acceso a fondos o la capacidad de operar. Statwaves trabaja para minimizar estos riesgos pero no puede garantizar disponibilidad 24/7.</p>
 
   <h2>6. Riesgo regulatorio</h2>
-  <p>El marco regulatorio de las plataformas de predicción varía por país y puede cambiar en tu jurisdicción sin previo aviso. Es tu responsabilidad verificar la legalidad del servicio en tu país. Futuros no es responsable de las consecuencias legales derivadas del uso de la plataforma en jurisdicciones donde esté restringida.</p>
+  <p>El marco regulatorio de las plataformas de predicción varía por país y puede cambiar en tu jurisdicción sin previo aviso. Es tu responsabilidad verificar la legalidad del servicio en tu país. Statwaves no es responsable de las consecuencias legales derivadas del uso de la plataforma en jurisdicciones donde esté restringida.</p>
 
   <h2>7. Riesgo crypto y blockchain</h2>
-  <p>Los activos en MATIC, USDC, USDT y SOL están sujetos a la volatilidad del mercado de criptomonedas. Las transacciones blockchain son irreversibles — las direcciones de billetera incorrectas resultan en pérdida permanente de fondos. Futuros no puede revertir transacciones ya confirmadas en la blockchain.</p>
+  <p>Los activos en MATIC, USDC, USDT y SOL están sujetos a la volatilidad del mercado de criptomonedas. Las transacciones blockchain son irreversibles — las direcciones de billetera incorrectas resultan en pérdida permanente de fondos. Statwaves no puede revertir transacciones ya confirmadas en la blockchain.</p>
 
   <h2>8. Riesgo de tipo de cambio</h2>
   <p>El valor de tus activos en criptomonedas puede variar significativamente con respecto a tu moneda local debido a la volatilidad de los mercados de criptomonedas.</p>
@@ -7872,13 +7864,13 @@ risks:`
 
 `,
 aml:`
-  <div class="policy-highlight">Futuros está comprometido con la prevención del lavado de activos y la financiación del terrorismo, siguiendo los más altos estándares internacionales.</div>
+  <div class="policy-highlight">Statwaves está comprometido con la prevención del lavado de activos y la financiación del terrorismo, siguiendo los más altos estándares internacionales.</div>
 
   <h2>1. Marco normativo internacional</h2>
-  <p>Esta política sigue las recomendaciones del Grupo de Acción Financiera Internacional (GAFI/FATF), los estándares del Grupo Egmont, y las mejores prácticas internacionales de cumplimiento AML/CFT aplicables a plataformas de activos virtuales (VASPs). Futuros aplica estos estándares globalmente, independientemente del país de residencia del usuario.</p>
+  <p>Esta política sigue las recomendaciones del Grupo de Acción Financiera Internacional (GAFI/FATF), los estándares del Grupo Egmont, y las mejores prácticas internacionales de cumplimiento AML/CFT aplicables a plataformas de activos virtuales (VASPs). Statwaves aplica estos estándares globalmente, independientemente del país de residencia del usuario.</p>
 
   <h2>2. Política KYC (Conoce a tu cliente)</h2>
-  <p>Futuros puede solicitar verificación de identidad en las siguientes situaciones:</p>
+  <p>Statwaves puede solicitar verificación de identidad en las siguientes situaciones:</p>
   <ul>
     <li>Retiros acumulados superiores a $500 USD en un período de 30 días.</li>
     <li>Depósitos o patrones de actividad inusuales o inconsistentes con el perfil del usuario.</li>
@@ -7888,10 +7880,10 @@ aml:`
   <p>La documentación que podemos solicitar incluye: documento de identidad oficial vigente (pasaporte, documento nacional de identidad), prueba de domicilio (documento oficial no mayor a 3 meses) y, en casos justificados, declaración de origen de fondos.</p>
 
   <h2>3. Jurisdicciones restringidas</h2>
-  <p>Futuros no presta servicios a usuarios residentes en países bajo sanciones internacionales de la OFAC (EE.UU.), la UE, la ONU u otros organismos internacionales, incluyendo pero sin limitarse a: Corea del Norte, Irán, Siria, Cuba y Rusia (sanciones vigentes). El acceso desde estas jurisdicciones está técnicamente bloqueado.</p>
+  <p>Statwaves no presta servicios a usuarios residentes en países bajo sanciones internacionales de la OFAC (EE.UU.), la UE, la ONU u otros organismos internacionales, incluyendo pero sin limitarse a: Corea del Norte, Irán, Siria, Cuba y Rusia (sanciones vigentes). El acceso desde estas jurisdicciones está técnicamente bloqueado.</p>
 
   <h2>4. Señales de alerta</h2>
-  <p>Futuros monitorea continuamente las transacciones para detectar señales de alerta como:</p>
+  <p>Statwaves monitorea continuamente las transacciones para detectar señales de alerta como:</p>
   <ul>
     <li>Depósitos y retiros inmediatos sin actividad de inversión (estructuración).</li>
     <li>Múltiples cuentas asociadas a la misma persona, dispositivo o dirección IP.</li>
@@ -7901,17 +7893,17 @@ aml:`
   </ul>
 
   <h2>5. Reporte de operaciones sospechosas</h2>
-  <p>Futuros coopera plenamente con autoridades competentes de cualquier jurisdicción conforme a los tratados internacionales aplicables. Podemos reportar operaciones sospechosas a las autoridades pertinentes sin estar obligados a notificar al usuario afectado.</p>
+  <p>Statwaves coopera plenamente con autoridades competentes de cualquier jurisdicción conforme a los tratados internacionales aplicables. Podemos reportar operaciones sospechosas a las autoridades pertinentes sin estar obligados a notificar al usuario afectado.</p>
 
   <h2>6. Congelamiento de cuentas</h2>
-  <p>Futuros se reserva el derecho de suspender o congelar cuentas y fondos de forma inmediata cuando existan sospechas fundadas de actividad ilícita, mientras se realiza una investigación interna o a petición de autoridad competente de cualquier jurisdicción.</p>
+  <p>Statwaves se reserva el derecho de suspender o congelar cuentas y fondos de forma inmediata cuando existan sospechas fundadas de actividad ilícita, mientras se realiza una investigación interna o a petición de autoridad competente de cualquier jurisdicción.</p>
 
   <h2>7. Contacto de cumplimiento</h2>
   <p>Para consultas relacionadas con esta política escríbenos a <strong>compliance@statwaves.com</strong>.</p>
 
 `,
 responsible:`
-  <div class="policy-highlight">En Futuros nos preocupamos por el bienestar de nuestros usuarios en todo el mundo. La participación en mercados de predicción debe ser entretenimiento, nunca una fuente de problemas.</div>
+  <div class="policy-highlight">En Statwaves nos preocupamos por el bienestar de nuestros usuarios en todo el mundo. La participación en mercados de predicción debe ser entretenimiento, nunca una fuente de problemas.</div>
 
   <h2>Juega de forma responsable</h2>
   <p>Las inversiones en mercados de predicción deben ser una actividad de entretenimiento controlada. Si sientes que tu participación está afectando tu vida financiera, emocional o social, es importante que actúes de inmediato.</p>
@@ -7927,7 +7919,7 @@ responsible:`
   </ul>
 
   <h2>Herramientas de autocontrol</h2>
-  <p>Futuros ofrece las siguientes herramientas para ayudarte a mantener el control:</p>
+  <p>Statwaves ofrece las siguientes herramientas para ayudarte a mantener el control:</p>
   <ul>
     <li><strong>Límite de depósito:</strong> puedes solicitar al equipo de soporte establecer un límite mensual de depósitos personalizado.</li>
     <li><strong>Autoexclusión temporal:</strong> puedes solicitar la suspensión de tu cuenta por 30, 90 o 180 días. Durante este período no podrás acceder ni operar en la plataforma.</li>
@@ -7936,7 +7928,7 @@ responsible:`
   <p>Para activar cualquiera de estas opciones escríbenos a <strong>support@statwaves.com</strong> con el asunto "Juego responsable".</p>
 
   <h2>Menores de edad</h2>
-  <p>Futuros está estrictamente prohibido para personas menores de 18 años en cualquier país. Si compartes dispositivos con menores, utiliza controles parentales y cierra sesión siempre al terminar. Si sospechas que un menor está usando la plataforma, repórtalo a <strong>support@statwaves.com</strong>.</p>
+  <p>Statwaves está estrictamente prohibido para personas menores de 18 años en cualquier país. Si compartes dispositivos con menores, utiliza controles parentales y cierra sesión siempre al terminar. Si sospechas que un menor está usando la plataforma, repórtalo a <strong>support@statwaves.com</strong>.</p>
 
   <h2>Recursos de ayuda internacionales</h2>
   <p>Si tú o alguien que conoces necesita apoyo, contacta un servicio de tu país:</p>
@@ -7953,10 +7945,10 @@ responsible:`
 `,
 // ── English versions ─────────────────────────────────────
 terms_en:`
-  <div class="policy-highlight">By using Futuros you accept these terms in full. If you disagree, you must not use the platform.</div>
+  <div class="policy-highlight">By using Statwaves you accept these terms in full. If you disagree, you must not use the platform.</div>
 
   <h2>1. Nature of the Service</h2>
-  <p>Futuros is a global prediction market platform that allows users to invest in the outcome of future events using an automated market-making model (LS-LMSR). The platform operates for entertainment purposes and does not constitute financial, investment, or any other type of advice.</p>
+  <p>Statwaves is a global prediction market platform that allows users to invest in the outcome of future events using an automated market-making model (LS-LMSR). The platform operates for entertainment purposes and does not constitute financial, investment, or any other type of advice.</p>
 
   <h2>2. Eligibility</h2>
   <ul>
@@ -7968,51 +7960,51 @@ terms_en:`
   </ul>
 
   <h2>3. Registration and Account</h2>
-  <p>By registering, you agree to provide truthful, complete, and up-to-date information. You are responsible for maintaining the confidentiality of your credentials. Futuros will not be liable for losses resulting from unauthorized access to your account due to your negligence.</p>
+  <p>By registering, you agree to provide truthful, complete, and up-to-date information. You are responsible for maintaining the confidentiality of your credentials. Statwaves will not be liable for losses resulting from unauthorized access to your account due to your negligence.</p>
 
   <h2>4. Deposits and Withdrawals</h2>
-  <p>Deposits are made via cryptocurrency on the Polygon network (MATIC/USDC/USDT) or Solana (SOL). Withdrawals are subject to a 1% platform fee and are processed once per day. Futuros reserves the right to request identity verification before processing withdrawals, in accordance with our AML/KYC policy.</p>
+  <p>Deposits are made via cryptocurrency on the Polygon network (MATIC/USDC/USDT) or Solana (SOL). Withdrawals are subject to a 1% platform fee and are processed once per day. Statwaves reserves the right to request identity verification before processing withdrawals, in accordance with our AML/KYC policy.</p>
 
   <h2>5. Market Mechanics</h2>
-  <p>Markets close on the indicated date and are resolved by the Futuros administration team based on public and verifiable sources. The resolution decision is final and binding. If an event cannot be determined with certainty, Futuros may cancel the market and return the invested funds.</p>
+  <p>Markets close on the indicated date and are resolved by the Statwaves administration team based on public and verifiable sources. The resolution decision is final and binding. If an event cannot be determined with certainty, Statwaves may cancel the market and return the invested funds.</p>
 
   <h2>6. Fees</h2>
-  <p>Futuros applies a 0.25% spread on each share buy and sell operation. This spread is included in the price displayed on screen. Additionally, a 1% fee applies to all fund withdrawals.</p>
+  <p>Statwaves applies a 0.25% spread on each share buy and sell operation. This spread is included in the price displayed on screen. Additionally, a 1% fee applies to all fund withdrawals.</p>
 
   <h2>7. Prohibited Conduct</h2>
   <ul>
     <li>Market manipulation or coordination with other users to artificially alter prices.</li>
-    <li>Use of bots, scripts, or automated tools without written authorisation from Futuros.</li>
+    <li>Use of bots, scripts, or automated tools without written authorisation from Statwaves.</li>
     <li>Money laundering, terrorist financing, or any illicit financial activity.</li>
     <li>Creating fake accounts, identity impersonation, or circumventing geographic restrictions via VPN.</li>
     <li>Exploiting bugs or system vulnerabilities. Any vulnerability must be reported to support.</li>
   </ul>
 
   <h2>8. Limitation of Liability</h2>
-  <p>Futuros does not guarantee uninterrupted service availability. In no event shall Futuros be liable for indirect, incidental, or consequential losses arising from the use of the platform. Futuros's maximum liability to any user shall not exceed the amount deposited by that user in the last 30 days.</p>
+  <p>Statwaves does not guarantee uninterrupted service availability. In no event shall Statwaves be liable for indirect, incidental, or consequential losses arising from the use of the platform. Statwaves's maximum liability to any user shall not exceed the amount deposited by that user in the last 30 days.</p>
 
   <h2>8.1. Execution Delays and Price Variations</h2>
-  <p>Prediction market prices update in real time and may change between when a user views a price and when their order is executed. Futuros does not guarantee that the price shown on screen will be identical to the final execution price. These delays (<em>lag</em>) may occur due to network latency, server congestion, simultaneous orders from other users, or system updates. By using the platform, you agree that:</p>
+  <p>Prediction market prices update in real time and may change between when a user views a price and when their order is executed. Statwaves does not guarantee that the price shown on screen will be identical to the final execution price. These delays (<em>lag</em>) may occur due to network latency, server congestion, simultaneous orders from other users, or system updates. By using the platform, you agree that:</p>
   <ul>
     <li>The final execution price may differ from the price shown at the start of the transaction.</li>
     <li>In high-activity markets, the price may move significantly during confirmation time.</li>
-    <li>Futuros is not responsible for price differences caused by technical delays inherent to distributed network technology.</li>
+    <li>Statwaves is not responsible for price differences caused by technical delays inherent to distributed network technology.</li>
     <li>The system will always attempt to execute at the most recent price available in the database at time of confirmation.</li>
   </ul>
   <p>Users are encouraged to verify the updated price before confirming any transaction using the refresh button available in the trade modal.</p>
 
   <h2>9. Modifications</h2>
-  <p>Futuros reserves the right to modify these terms at any time. Changes will take effect 7 days after publication on the platform. Continued use of the service implies acceptance of the new terms.</p>
+  <p>Statwaves reserves the right to modify these terms at any time. Changes will take effect 7 days after publication on the platform. Continued use of the service implies acceptance of the new terms.</p>
 
   <h2>10. Governing Law and Dispute Resolution</h2>
-  <p>These terms are governed by principles of international law applicable to global digital platforms. Futuros operates as an international entity and is not subject to any specific national jurisdiction. Any dispute shall be resolved through binding international arbitration under the rules of the International Chamber of Commerce (ICC). The language of arbitration shall be English or Spanish by agreement of the parties.</p>
+  <p>These terms are governed by principles of international law applicable to global digital platforms. Statwaves operates as an international entity and is not subject to any specific national jurisdiction. Any dispute shall be resolved through binding international arbitration under the rules of the International Chamber of Commerce (ICC). The language of arbitration shall be English or Spanish by agreement of the parties.</p>
 
 `,
 privacy_en:`
   <div class="policy-highlight">Your privacy matters to us. This policy explains what data we collect, how we use it, and how we protect it.</div>
 
   <h2>1. Data Controller</h2>
-  <p>Futuros is responsible for the processing of personal data collected through the platform. This policy complies with international data protection standards, including the EU General Data Protection Regulation (GDPR), the California Consumer Privacy Act (CCPA), and other applicable global privacy regulations.</p>
+  <p>Statwaves is responsible for the processing of personal data collected through the platform. This policy complies with international data protection standards, including the EU General Data Protection Regulation (GDPR), the California Consumer Privacy Act (CCPA), and other applicable global privacy regulations.</p>
 
   <h2>2. Data We Collect</h2>
   <ul>
@@ -8034,7 +8026,7 @@ privacy_en:`
   </ul>
 
   <h2>4. Legal Basis</h2>
-  <p>The processing of your data is based on: (a) the execution of the service contract accepted upon registration; (b) compliance with international legal obligations; and (c) Futuros's legitimate interest in operating the platform securely.</p>
+  <p>The processing of your data is based on: (a) the execution of the service contract accepted upon registration; (b) compliance with international legal obligations; and (c) Statwaves's legitimate interest in operating the platform securely.</p>
 
   <h2>5. International Data Transfers</h2>
   <p>As a global platform, your data may be processed on servers located in different countries. We ensure that such transfers comply with international data protection standards, including standard contractual clauses where applicable.</p>
@@ -8103,29 +8095,29 @@ risks_en:`
   <p>In markets with low volume, it may be difficult to sell your positions at a favorable price before closing. The LS-LMSR model guarantees you can always buy and sell, but the price may be unfavorable in less active markets.</p>
 
   <h2>4. Resolution Risk</h2>
-  <p>Market resolution depends on the Futuros team's interpretation of real-world events. In ambiguous cases, the resolution decision may not match your interpretation of the event. Futuros's decision is final.</p>
+  <p>Market resolution depends on the Statwaves team's interpretation of real-world events. In ambiguous cases, the resolution decision may not match your interpretation of the event. Statwaves's decision is final.</p>
 
   <h2>5. Technology Risk</h2>
-  <p>The platform may experience technical outages, cyberattacks, or infrastructure failures that temporarily affect access to funds or the ability to trade. Futuros works to minimize these risks but cannot guarantee 24/7 availability.</p>
+  <p>The platform may experience technical outages, cyberattacks, or infrastructure failures that temporarily affect access to funds or the ability to trade. Statwaves works to minimize these risks but cannot guarantee 24/7 availability.</p>
 
   <h2>6. Regulatory Risk</h2>
   <p>The regulatory framework for prediction platforms may change in your jurisdiction, which could affect your ability to use the service or withdraw funds.</p>
 
   <h2>7. Crypto Risk</h2>
-  <p>Withdrawals in MATIC or USDC are subject to cryptocurrency market volatility and the inherent risks of the Polygon network. Wallet addresses are unrecoverable if entered incorrectly. Futuros cannot reverse already confirmed blockchain transactions.</p>
+  <p>Withdrawals in MATIC or USDC are subject to cryptocurrency market volatility and the inherent risks of the Polygon network. Wallet addresses are unrecoverable if entered incorrectly. Statwaves cannot reverse already confirmed blockchain transactions.</p>
 
   <h2>8. Not Financial Advice</h2>
   <p>Nothing on this platform constitutes financial, investment, or legal advice. Make your decisions responsibly and consult a professional if in doubt.</p>
 `,
 
 aml_en:`
-  <div class="policy-highlight">Futuros is committed to preventing money laundering and terrorist financing, following the highest international standards.</div>
+  <div class="policy-highlight">Statwaves is committed to preventing money laundering and terrorist financing, following the highest international standards.</div>
 
   <h2>1. International Regulatory Framework</h2>
-  <p>This policy follows the recommendations of the Financial Action Task Force (FATF), Egmont Group standards, and international best practices for AML/CFT compliance applicable to Virtual Asset Service Providers (VASPs). Futuros applies these standards globally, regardless of the user's country of residence.</p>
+  <p>This policy follows the recommendations of the Financial Action Task Force (FATF), Egmont Group standards, and international best practices for AML/CFT compliance applicable to Virtual Asset Service Providers (VASPs). Statwaves applies these standards globally, regardless of the user's country of residence.</p>
 
   <h2>2. KYC Policy (Know Your Customer)</h2>
-  <p>Futuros may request identity verification in the following situations:</p>
+  <p>Statwaves may request identity verification in the following situations:</p>
   <ul>
     <li>Cumulative withdrawals exceeding $500 USD in a 30-day period.</li>
     <li>Deposits or activity patterns that are unusual or inconsistent with the user's profile.</li>
@@ -8135,10 +8127,10 @@ aml_en:`
   <p>Documentation we may request includes: valid official identity document (passport, national identity card), proof of address (official document no older than 3 months), and in justified cases, a source of funds declaration.</p>
 
   <h2>3. Restricted Jurisdictions</h2>
-  <p>Futuros does not provide services to users residing in countries under international sanctions from OFAC (USA), the EU, the UN, or other international bodies, including but not limited to: North Korea, Iran, Syria, Cuba, and Russia (current sanctions). Access from these jurisdictions is technically blocked.</p>
+  <p>Statwaves does not provide services to users residing in countries under international sanctions from OFAC (USA), the EU, the UN, or other international bodies, including but not limited to: North Korea, Iran, Syria, Cuba, and Russia (current sanctions). Access from these jurisdictions is technically blocked.</p>
 
   <h2>4. Alert Signals</h2>
-  <p>Futuros continuously monitors transactions to detect alert signals such as:</p>
+  <p>Statwaves continuously monitors transactions to detect alert signals such as:</p>
   <ul>
     <li>Immediate deposits and withdrawals without investment activity (structuring).</li>
     <li>Multiple accounts associated with the same person, device, or IP address.</li>
@@ -8148,17 +8140,17 @@ aml_en:`
   </ul>
 
   <h2>5. Suspicious Activity Reporting</h2>
-  <p>Futuros cooperates fully with competent authorities of any jurisdiction in accordance with applicable international treaties. We may report suspicious activities to relevant authorities without being required to notify the affected user.</p>
+  <p>Statwaves cooperates fully with competent authorities of any jurisdiction in accordance with applicable international treaties. We may report suspicious activities to relevant authorities without being required to notify the affected user.</p>
 
   <h2>6. Account Freezing</h2>
-  <p>Futuros reserves the right to immediately suspend or freeze accounts and funds when there is well-founded suspicion of illicit activity, while conducting an internal investigation or upon request from a competent authority of any jurisdiction.</p>
+  <p>Statwaves reserves the right to immediately suspend or freeze accounts and funds when there is well-founded suspicion of illicit activity, while conducting an internal investigation or upon request from a competent authority of any jurisdiction.</p>
 
   <h2>7. Compliance Contact</h2>
   <p>For inquiries related to this policy write to <strong>compliance@statwaves.com</strong>.</p>
 
 `,
 responsible_en:`
-  <div class="policy-highlight">At Futuros we care about the well-being of our users worldwide. Participation in prediction markets should be entertainment, never a source of problems.</div>
+  <div class="policy-highlight">At Statwaves we care about the well-being of our users worldwide. Participation in prediction markets should be entertainment, never a source of problems.</div>
 
   <h2>Play Responsibly</h2>
   <p>Investments in prediction markets should be a controlled entertainment activity. If you feel your participation is affecting your financial, emotional, or social life, it is important to act immediately.</p>
@@ -8174,7 +8166,7 @@ responsible_en:`
   </ul>
 
   <h2>Self-Control Tools</h2>
-  <p>Futuros offers the following tools to help you stay in control:</p>
+  <p>Statwaves offers the following tools to help you stay in control:</p>
   <ul>
     <li><strong>Deposit limit:</strong> you can ask the support team to set a personalised monthly deposit limit.</li>
     <li><strong>Temporary self-exclusion:</strong> you can request your account be suspended for 30, 90, or 180 days. During this period you will not be able to access or operate on the platform.</li>
@@ -8183,7 +8175,7 @@ responsible_en:`
   <p>To activate any of these options write to <strong>support@statwaves.com</strong> with the subject "Responsible Gaming".</p>
 
   <h2>Minors</h2>
-  <p>Futuros is strictly prohibited for persons under 18 years of age in any country. If you share devices with minors, use parental controls and always log out when finished. If you suspect a minor is using the platform, report it to <strong>support@statwaves.com</strong>.</p>
+  <p>Statwaves is strictly prohibited for persons under 18 years of age in any country. If you share devices with minors, use parental controls and always log out when finished. If you suspect a minor is using the platform, report it to <strong>support@statwaves.com</strong>.</p>
 
   <h2>International Help Resources</h2>
   <p>If you or someone you know needs support, contact a service in your country:</p>
@@ -8377,17 +8369,17 @@ function getReferralLink(user){
 function checkReferralOnLoad(){
   const params=new URLSearchParams(window.location.search);
   const ref=params.get("ref");
-  if(ref&&ref.length>3) localStorage.setItem("futuros_ref",ref);
+  if(ref&&ref.length>3) localStorage.setItem("sw_ref",ref);
 }
 async function assignReferral(newUser){
   const code=genReferralCode(newUser.username);
   newUser.referralCode=code;
-  const refCode=localStorage.getItem("futuros_ref");
+  const refCode=localStorage.getItem("sw_ref");
   if(refCode&&refCode!==code){
     const {data:referrer}=await db.from("users").select("id").eq("referral_code",refCode).maybeSingle();
     if(referrer&&referrer.id!==newUser.id) newUser.referredBy=referrer.id;
   }
-  localStorage.removeItem("futuros_ref");
+  localStorage.removeItem("sw_ref");
   return newUser;
 }
 async function payReferralCommission(userId,spreadAmount){
@@ -8447,7 +8439,7 @@ function renderAdminReferrals(){
         <div style="font-size:12px;color:var(--muted);margin-top:2px">Comisión: <strong>${rate}% del spread</strong> por cada trade del referido</div>
       </div>
       <button class="btn-ghost" style="font-size:12px;padding:7px 14px"
-        onclick="STATE.adminReferralsLoaded=false;STATE.adminReferralsData=null;render()">🔄 Actualizar</button>
+        onclick="STATE.adminReferralsLoaded=false;STATE.adminReferralsData=null;render()">Actualizar</button>
     </div>
 
     <!-- Tasa configurable -->
