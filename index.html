@@ -2693,44 +2693,71 @@ function renderHome(){
   const featuredCount=STATE.markets.filter(m=>m.featured&&!m.resolved).length;
   const isSearching = STATE.marketSearch.trim().length > 0;
 
-  // Panel lateral noticias + trending
-  const sidePanel = (STATE.news.length||STATE.trending.length) ? `
-    <div class="side-panel-hide" style="width:280px;flex-shrink:0">
-      ${STATE.news.length ? `
-        <div style="background:var(--card);border:1px solid var(--border);border-radius:16px;padding:18px;margin-bottom:16px">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
-            <span style="font-size:13px;font-weight:700;color:var(--text)">📰 ${STATE.lang==="en"?"Breaking news":"Noticias de última hora"}</span>
-          </div>
-          ${STATE.news.slice(0,5).map((n,i)=>`
-            <div onclick="${n.url?`window.open('${n.url}','_blank')`:'void(0)'}"
-              style="display:flex;align-items:flex-start;gap:10px;padding:10px 0;border-bottom:1px solid var(--border);cursor:${n.url?'pointer':'default'}${i===Math.min(STATE.news.length,5)-1?';border-bottom:none':''}">
-              <span style="font-size:12px;font-weight:700;color:var(--muted);width:14px;flex-shrink:0;margin-top:1px">${i+1}</span>
-              <div style="flex:1;min-width:0">
-                <div style="font-size:12px;font-weight:600;color:var(--text);line-height:1.4">${escHtml(n.title)}</div>
-                ${n.pct?`<div style="font-size:11px;font-weight:700;color:${n.pct_dir==="up"?"var(--yes)":"var(--no)"};margin-top:3px">${n.pct_dir==="up"?"↑":"↓"}${n.pct}%</div>`:""}
-              </div>
-            </div>
-          `).join("")}
-        </div>` : ""}
+  // Panel lateral — mercados existentes como noticias y tendencias
+  const activeMarkets = STATE.markets.filter(m=>!m.resolved&&!isMarketClosed(m));
+  const breakingMarkets = [...activeMarkets].sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt)).slice(0,5);
+  const trendingMarkets = [...activeMarkets].sort((a,b)=>b.totalVolume-a.totalVolume).slice(0,5);
 
-      ${STATE.trending.length ? `
-        <div style="background:var(--card);border:1px solid var(--border);border-radius:16px;padding:18px">
-          <div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:14px">🔥 ${STATE.lang==="en"?"Trending topics":"Temas populares"}</div>
-          ${STATE.trending.slice(0,5).map((tr,i)=>`
-            <div onclick="${tr.link?`window.open('${tr.link}','_blank')`:'void(0)'}"
-              style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--border);cursor:${tr.link?'pointer':'default'}${i===Math.min(STATE.trending.length,5)-1?';border-bottom:none':''}">
-              <span style="font-size:12px;font-weight:700;color:var(--muted);width:14px;flex-shrink:0">${tr.position||i+1}</span>
-              <div style="flex:1">
-                <div style="font-size:13px;font-weight:600;color:var(--text)">${escHtml(tr.label)}</div>
-                ${tr.volume?`<div style="font-size:11px;color:var(--muted)">${escHtml(tr.volume)}</div>`:""}
-              </div>
-              <span style="font-size:14px">🔥</span>
-            </div>
-          `).join("")}
-        </div>` : ""}
+  function mkBreakingRow(m,i,total){
+    const p=getPrice(m,"YES");
+    const prev=m.priceHistory.length>1?m.priceHistory[m.priceHistory.length-2]:p;
+    const chg=p-prev;
+    const border=i<total-1?"1px solid var(--border)":"none";
+    const title=escHtml(mTitle(m).slice(0,58))+(mTitle(m).length>58?"…":"");
+    const mid=m.id;
+    return [
+      '<div onclick="navigate(\'market\',{marketId:\''+mid+'\'})" style="display:flex;align-items:flex-start;gap:10px;padding:10px 0;border-bottom:'+border+';cursor:pointer;transition:opacity .15s" onmouseover="this.style.opacity=\'.7\';" onmouseout="this.style.opacity=\'1\';">',
+        '<span style="font-size:12px;font-weight:700;color:var(--muted);width:16px;flex-shrink:0;margin-top:2px">'+(i+1)+'</span>',
+        '<div style="flex:1;min-width:0">',
+          '<div style="font-size:12px;font-weight:600;color:var(--text);line-height:1.35;margin-bottom:4px">'+title+'</div>',
+          '<div style="display:flex;align-items:center;gap:6px">',
+            '<span style="font-size:12px;font-weight:800;color:var(--yes)">'+pct(p)+'</span>',
+            '<span style="font-size:10px;color:'+(chg>=0?"var(--yes)":"var(--no)")+';">'+(chg>=0?"↑":"↓")+pct(Math.abs(chg))+'</span>',
+            '<button onclick="event.stopPropagation();openTrade(\''+mid+'\',\'YES\',\'buy\')" style="margin-left:auto;padding:3px 8px;border-radius:6px;background:var(--yes-bg);color:var(--yes);font-size:10px;font-weight:700;border:none;cursor:pointer">YES</button>',
+            '<button onclick="event.stopPropagation();openTrade(\''+mid+'\',\'NO\',\'buy\')" style="padding:3px 8px;border-radius:6px;background:var(--no-bg);color:var(--no);font-size:10px;font-weight:700;border:none;cursor:pointer">NO</button>',
+          '</div>',
+        '</div>',
+      '</div>'
+    ].join("");
+  }
+
+  function mkTrendingRow(m,i,total){
+    const p=getPrice(m,"YES");
+    const border=i<total-1?"1px solid var(--border)":"none";
+    const title=escHtml(mTitle(m).slice(0,45))+(mTitle(m).length>45?"…":"");
+    const mid=m.id;
+    return [
+      '<div onclick="navigate(\'market\',{marketId:\''+mid+'\'})" style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:'+border+';cursor:pointer;transition:opacity .15s" onmouseover="this.style.opacity=\'.7\';" onmouseout="this.style.opacity=\'1\';">',
+        '<span style="font-size:13px;font-weight:800;color:var(--muted);width:16px;flex-shrink:0">'+(i+1)+'</span>',
+        '<div style="flex:1;min-width:0">',
+          '<div style="font-size:12px;font-weight:600;color:var(--text);line-height:1.3">'+title+'</div>',
+          '<div style="font-size:11px;color:var(--muted);margin-top:2px">'+fmtVol(m.totalVolume)+' vol · '+pct(p)+' YES</div>',
+        '</div>',
+        '<span style="font-size:12px">🔥</span>',
+      '</div>'
+    ].join("");
+  }
+
+  const sidePanelBreaking = breakingMarkets.map((m,i)=>mkBreakingRow(m,i,breakingMarkets.length)).join("");
+  const sidePanelTrending = trendingMarkets.map((m,i)=>mkTrendingRow(m,i,trendingMarkets.length)).join("");
+
+  const sidePanel = activeMarkets.length ? `
+    <div class="side-panel-hide" style="width:280px;flex-shrink:0;position:sticky;top:80px;align-self:flex-start">
+      <div style="background:var(--card);border:1px solid var(--border);border-radius:16px;padding:18px;margin-bottom:16px">
+        <div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:14px">
+          📰 ${STATE.lang==="en"?"Breaking":"Noticias de última hora"}
+        </div>
+        ${sidePanelBreaking}
+      </div>
+      <div style="background:var(--card);border:1px solid var(--border);border-radius:16px;padding:18px">
+        <div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:14px">
+          🔥 ${STATE.lang==="en"?"Trending":"Temas populares"}
+        </div>
+        ${sidePanelTrending}
+      </div>
     </div>` : "";
 
-  const html=`<div style="max-width:1200px;margin:0 auto;padding:0 20px">
+ const html=`<div style="max-width:1200px;margin:0 auto;padding:0 20px">
   <div style="display:flex;gap:24px;align-items:flex-start;padding-top:16px">
   <div style="flex:1;min-width:0" class="fade-up">
 
@@ -3127,15 +3154,15 @@ function renderFeaturedCarousel(){
 // ─── NEWS & TRENDING ────────────────────────────────────────────────────────
 
 async function dbLoadNewsAndTrending(){
+  // Las tablas news/trending_topics son opcionales — si no existen no afecta la app
   try{
-    const [{data:newsData},{data:trendData}] = await Promise.all([
-      db.from("news").select("*").order("created_at",{ascending:false}).limit(10),
-      db.from("trending_topics").select("*").order("position",{ascending:true}).limit(8),
-    ]);
-    STATE.news    = newsData    || [];
-    STATE.trending= trendData   || [];
-    render();
-  }catch(e){ /* tablas vacías aún */ }
+    const {data:newsData,error:e1} = await db.from("news").select("*").order("created_at",{ascending:false}).limit(10);
+    if(!e1) STATE.news = newsData||[];
+  }catch(e){}
+  try{
+    const {data:trendData,error:e2} = await db.from("trending_topics").select("*").order("position",{ascending:true}).limit(8);
+    if(!e2) STATE.trending = trendData||[];
+  }catch(e){}
 }
 
 async function adminSaveNews(item){
@@ -8421,7 +8448,7 @@ document.getElementById("app").innerHTML=`
       alt="Statwaves"/>
   </div>`;
 // Cargar datos de Supabase, luego seed si está vacío, luego render
-dbInit().then(()=>{ dbSeedMarketsIfEmpty(); checkReferralOnLoad(); dbLoadNewsAndTrending(); });
+dbInit().then(()=>{ dbSeedMarketsIfEmpty(); checkReferralOnLoad(); setTimeout(dbLoadNewsAndTrending, 2000); });
 </script>
 </body>
 </html>
