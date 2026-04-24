@@ -6787,7 +6787,75 @@ function renderOracleConfigHint(){
   }[type]||"";
 }
 
-function getMkPreview(){const f=STATE.mkForm;if(!f.title)return"";return`<div class="mkpreview"><strong>Preview:</strong> ${escHtml(f.emoji)} ${escHtml(f.title)} · α=${f.alpha} · ${t("admin_seed").replace(" ($)","=")}${((parseFloat(f.alpha)||0)*(parseFloat(f.seedLiquidity)||0)).toFixed(1)} · YES=${pct(parseFloat(f.yesWeight)||0.5)}</div>`;}
+function getMkPreview(){
+  const f = STATE.mkForm;
+  if(!f.title && !f.alpha && !f.seedLiquidity) return "";
+  const alpha = parseFloat(f.alpha) || 0.10;
+  const seed  = parseFloat(f.seedLiquidity) || 1000;
+  const yw    = parseFloat(f.yesWeight) || 0.5;
+
+  // b = alpha × seed (parámetro de liquidez del LMSR)
+  const b = alpha * seed;
+
+  // Pérdida máxima teórica = b × ln(2)
+  // Es el máximo que la plataforma puede perder si TODOS apuestan al mismo lado
+  const maxLoss = b * Math.LN2;
+
+  // Con la prob inicial yw, estimar cuántos shares iniciales hay en cada lado
+  // qYes y qNo vienen de initQfromProb
+  const diff = b * Math.log(yw / (1 - yw));
+  const qYes0 = (seed + diff) / 2;
+  const qNo0  = (seed - diff) / 2;
+  const pYes0 = Math.exp(qYes0/b) / (Math.exp(qYes0/b) + Math.exp(qNo0/b));
+
+  // Precio inicial de cada share
+  const priceYes = pYes0;
+  const priceNo  = 1 - pYes0;
+
+  // Pérdida si gana YES (pagas todos los shares YES al precio 1):
+  // = seed × (1 - pYes0)  aproximadamente
+  // Más exactamente: cost(qYes→∞) - cost(qYes0, qNo0)
+  // Usamos la fórmula exacta: maxLoss = b·ln(2) independiente del lado
+  // pero el escenario más probable de pérdida es el lado menos probable
+
+  // Capital en riesgo neto = seed (lo que pones como liquidez inicial)
+  // Retorno esperado si el mercado se equilibra = spread capturado
+
+  // Spread estimado al 1% sobre el volumen esperado
+  const spreadEst = seed * 0.01;
+
+  const rows = [
+    ["Parámetro b (liquidez)", `$${b.toFixed(2)}`],
+    ["Precio inicial YES", `${(priceYes*100).toFixed(1)}%`],
+    ["Precio inicial NO",  `${(priceNo*100).toFixed(1)}%`],
+    ["Capital en riesgo (seed)", `$${seed.toFixed(2)}`],
+    ["⚠️ Pérdida máxima teórica", `$${maxLoss.toFixed(2)}`],
+    ["💡 Spread estimado (1%)", `~$${spreadEst.toFixed(2)}`],
+  ];
+
+  return`<div style="background:var(--card2);border-radius:12px;padding:14px 16px;margin-top:4px;border:1px solid var(--border)">
+    <div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:10px">
+      📊 Análisis financiero del mercado
+    </div>
+    ${rows.map(([label,val],i)=>
+      `<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;
+        ${i<rows.length-1?"border-bottom:1px solid var(--border);":""}
+        ${label.includes("⚠️")?"background:rgba(224,40,74,.06);margin:0 -8px;padding:6px 8px;border-radius:6px;border-bottom:none!important":""}">
+        <span style="font-size:12px;color:${label.includes("⚠️")?"var(--no)":"var(--text-2)"};">${label}</span>
+        <span style="font-size:13px;font-weight:800;color:${label.includes("⚠️")?"var(--no)":label.includes("💡")?"var(--yes)":"var(--text)"};">${val}</span>
+      </div>`
+    ).join("")}
+    <div style="margin-top:10px;padding:8px 10px;background:rgba(224,40,74,.06);border-radius:8px;border-left:3px solid var(--no)">
+      <div style="font-size:11px;color:var(--no);font-weight:700;margin-bottom:3px">¿Qué significa la pérdida máxima?</div>
+      <div style="font-size:11px;color:var(--muted);line-height:1.5">
+        Si <strong>todos</strong> los usuarios apuestan al mismo lado y ese lado gana, la plataforma debe
+        pagar <strong>$${maxLoss.toFixed(2)}</strong> más de lo recaudado. En la práctica el mercado
+        se equilibra y la pérdida real es mucho menor.
+        ${maxLoss > 500 ? `<br><strong style="color:var(--no)">⚠️ Considera bajar el alpha o el seed para reducir el riesgo.</strong>` : ""}
+      </div>
+    </div>
+  </div>`;
+}
 
 // Carga el total invertido en YES/NO por mercado desde las transacciones de DB
 async function dbLoadMarketInvested(){
