@@ -1929,6 +1929,8 @@ const STATE={
   breakingIds:[],
   trendingIds:[],
   searchPanelOpen:false,
+  marketInvested:{},  // {marketId:{yes:$,no:$}} — cargado desde DB al abrir Resolver
+  marketInvested:{},  // {marketId: {yes:$, no:$}} — cargado desde DB al abrir Resolver
   // trade modal
   tradeOpen:false,tradeMarketId:null,tradeSide:"YES",tradeMode:"buy",tradeShares:"",tradeDollars:"",
   // auth form
@@ -6400,6 +6402,7 @@ function renderAdmin(){
 function setAdminTab(tab){
   STATE.adminTab=tab;
   if(tab==="withdrawals") dbLoadWithdrawals();
+  if(tab==="resolve")     dbLoadMarketInvested();
   else if(tab==="stats"){
     STATE.adminStatsLoaded=false;
     STATE.adminStats=null;
@@ -6786,6 +6789,40 @@ function renderOracleConfigHint(){
 
 function getMkPreview(){const f=STATE.mkForm;if(!f.title)return"";return`<div class="mkpreview"><strong>Preview:</strong> ${escHtml(f.emoji)} ${escHtml(f.title)} · α=${f.alpha} · ${t("admin_seed").replace(" ($)","=")}${((parseFloat(f.alpha)||0)*(parseFloat(f.seedLiquidity)||0)).toFixed(1)} · YES=${pct(parseFloat(f.yesWeight)||0.5)}</div>`;}
 
+// Carga el total invertido en YES/NO por mercado desde las transacciones de DB
+async function dbLoadMarketInvested(){
+  try{
+    const {data,error} = await db.from("transactions")
+      .select("description,amount,type")
+      .eq("type","buy")
+      .limit(5000);
+    if(error||!data) return;
+    const invested = {};
+    data.forEach(tx=>{
+      // description format: "Compra YES $10.00 → 5.23 shares · Título..."
+      // or: "Compra NO $10.00 → ..."
+      const matchId = tx.description?.match(/·\s*([a-zA-Z0-9_\-]{8,})\s*$/);
+      // Better: match by market title using STATE.markets
+      // Use amount directly and parse YES/NO from description
+      const isYes = /Compra\s+YES|Buy\s+YES|Compra\s+SÍ/i.test(tx.description||"");
+      const isNo  = /Compra\s+NO|Buy\s+NO/i.test(tx.description||"");
+      if(!isYes && !isNo) return;
+      const amt = Math.abs(Number(tx.amount)||0);
+      // Match to market by title fragment in description
+      STATE.markets.forEach(m=>{
+        const titleFrag = mTitle(m).slice(0,20).toLowerCase();
+        if((tx.description||"").toLowerCase().includes(titleFrag)){
+          if(!invested[m.id]) invested[m.id]={yes:0,no:0};
+          if(isYes) invested[m.id].yes += amt;
+          if(isNo)  invested[m.id].no  += amt;
+        }
+      });
+    });
+    STATE.marketInvested = invested;
+    render();
+  }catch(e){ console.warn("dbLoadMarketInvested:",e); }
+}
+
 function renderAdminResolve(){
   const locked   = STATE.markets.filter(m => m.oracleLocked && !m.manualPaused && !m.resolved);
   const pending  = STATE.markets.filter(m => !m.oracleLocked && !m.manualPaused && !m.resolved);
@@ -6809,8 +6846,6 @@ function renderAdminResolve(){
     });
     const totalYesShares = positions.reduce((s,p)=>s+p.yes,0);
     const totalNoShares  = positions.reduce((s,p)=>s+p.no,0);
-    // Dinero pagado por cada lado = shares × precio promedio ≈ totalPaid × pYes / (pYes + pNo)
-    // Mejor usar totalPaid y splitear por proporción de shares
     const totalPaid = m.totalPaid || 0;
     const spreadPool = m.spreadPool || 0;
     const availForPayout = Math.max(0, totalPaid - spreadPool);
@@ -6818,9 +6853,15 @@ function renderAdminResolve(){
     const payoutPerShareNo  = calcPayoutPerShare(m, "NO");
     const totalPayoutIfYes  = Math.round(totalYesShares * payoutPerShareYes * 100) / 100;
     const totalPayoutIfNo   = Math.round(totalNoShares  * payoutPerShareNo  * 100) / 100;
-    // Estimación de dinero invertido en cada lado
-    const investedYes = positions.reduce((s,p)=>s+p.yes*pYes,0);
-    const investedNo  = positions.reduce((s,p)=>s+p.no*(1-pYes),0);
+
+    // Invertido real por lado — desde DB si disponible, sino proporcional al totalPaid
+    const inv = STATE.marketInvested[m.id] || null;
+    const totalShares = totalYesShares + totalNoShares;
+    const investedYes = inv ? inv.yes
+      : (totalShares > 0 ? Math.round(totalPaid * (totalYesShares / totalShares) * 100) / 100 : 0);
+    const investedNo  = inv ? inv.no
+      : (totalShares > 0 ? Math.round(totalPaid * (totalNoShares  / totalShares) * 100) / 100 : 0);
+    const investedLabel = inv ? "" : ' <span style="font-size:9px;opacity:.55">(est.)</span>';
 
     const financeRow = totalPaid > 0 ? `
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px">
@@ -6830,6 +6871,12 @@ function renderAdminResolve(){
           </div>
           <div style="font-size:11px;color:var(--text-2);margin-bottom:2px">
             Shares: <strong>${totalYesShares.toFixed(2)}</strong>
+          </div>
+          <div style="font-size:11px;color:var(--text-2);margin-bottom:2px">
+            Invertido: <strong>${usd(investedYes)}</strong>${investedLabel}
+          </div>
+          <div style="font-size:11px;color:var(--text-2);margin-bottom:2px">
+            Market cap: <strong>${usd(totalYesShares * pYes)}</strong>
           </div>
           <div style="font-size:11px;color:var(--text-2);margin-bottom:2px">
             Payout/share: <strong>${usd(payoutPerShareYes)}</strong>
@@ -6844,6 +6891,12 @@ function renderAdminResolve(){
           </div>
           <div style="font-size:11px;color:var(--text-2);margin-bottom:2px">
             Shares: <strong>${totalNoShares.toFixed(2)}</strong>
+          </div>
+          <div style="font-size:11px;color:var(--text-2);margin-bottom:2px">
+            Invertido: <strong>${usd(investedNo)}</strong>${investedLabel}
+          </div>
+          <div style="font-size:11px;color:var(--text-2);margin-bottom:2px">
+            Market cap: <strong>${usd(totalNoShares * (1-pYes))}</strong>
           </div>
           <div style="font-size:11px;color:var(--text-2);margin-bottom:2px">
             Payout/share: <strong>${usd(payoutPerShareNo)}</strong>
