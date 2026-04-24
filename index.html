@@ -1862,7 +1862,40 @@ const CAT_SVG={
   </svg>`,
 };
 
-// Función para generar tag de categoría con icono SVG
+// Detectar idioma por IP — solo si el usuario no ha cambiado el idioma manualmente
+async function detectLangByIP(){
+  // Si ya hay preferencia guardada en localStorage, respetarla
+  const saved = localStorage.getItem("sw_lang");
+  if(saved === "en" || saved === "es"){
+    STATE.lang = saved;
+    document.documentElement.lang = saved;
+    return;
+  }
+  // Primero intentar con el idioma del navegador (más rápido, sin red)
+  const browserLang = navigator.language || navigator.userLanguage || "";
+  const browserIsSpanish = /^es/i.test(browserLang);
+  // Países hispanohablantes
+  const spanishCountries = new Set([
+    "AR","BO","CL","CO","CR","CU","DO","EC","SV","GQ","GT","HN",
+    "MX","NI","PA","PY","PE","PR","ES","UY","VE","US" // US incluido por comunidad hispana grande
+  ]);
+  try{
+    // Usar ipapi.co — gratuito, sin API key, responde rápido
+    const res = await fetch("https://ipapi.co/json/", {signal:AbortSignal.timeout(3000)});
+    const data = await res.json();
+    const country = (data.country_code||"").toUpperCase();
+    const lang = spanishCountries.has(country) ? "es" : "en";
+    STATE.lang = lang;
+    document.documentElement.lang = lang;
+  }catch(e){
+    // Fallback al idioma del navegador
+    STATE.lang = browserIsSpanish ? "es" : "en";
+    document.documentElement.lang = STATE.lang;
+  }
+}
+
+// Guardar preferencia cuando el usuario cambia idioma manualmente
+
 function mkCatTag(category, color){
   const icon = CAT_SVG[category] ? CAT_SVG[category](color, 13) : "";
   return `<span class="tag cat-tag" style="background:${color}22;color:${color};display:inline-flex;align-items:center;gap:5px">${icon}<span>${escHtml(category)}</span></span>`;
@@ -2483,7 +2516,12 @@ const t=k=>LANG[STATE.lang][k]||LANG.es[k]||k;
 // Get translated market field (title or description)
 const mTitle = m => (STATE.lang==="en" && m.title_en) ? m.title_en : m.title;
 const mDesc  = m => (STATE.lang==="en" && m.description_en) ? m.description_en : (m.description||"");
-function toggleLang(){STATE.lang=STATE.lang==="es"?"en":"es";document.documentElement.lang=STATE.lang;render();renderFooter();}
+function toggleLang(){
+  STATE.lang=STATE.lang==="es"?"en":"es";
+  localStorage.setItem("sw_lang", STATE.lang);
+  document.documentElement.lang=STATE.lang;
+  render();renderFooter();
+}
 
 
 // ═══════════════════════════════════════════════════════════════════
@@ -8601,7 +8639,9 @@ document.getElementById("app").innerHTML=`
       alt="Statwaves"/>
   </div>`;
 // Cargar datos de Supabase, luego seed si está vacío, luego render
-dbInit().then(()=>{ dbSeedMarketsIfEmpty(); checkReferralOnLoad(); setTimeout(dbLoadNewsAndTrending, 2000); });
+detectLangByIP().then(()=>{
+  dbInit().then(()=>{ dbSeedMarketsIfEmpty(); checkReferralOnLoad(); setTimeout(dbLoadNewsAndTrending, 2000); });
+});
 </script>
 </body>
 </html>
