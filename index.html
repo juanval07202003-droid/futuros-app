@@ -931,6 +931,34 @@ td{padding:12px;vertical-align:middle;color:var(--text-2);}
   .card,.card-sm{padding:12px;}
 }
 
+/* Panel lateral — solo en desktop */
+@media(max-width:1024px){
+  .side-panel-hide{display:none!important;}
+}
+/* Panel búsqueda — funciona en mobile y desktop */
+.search-panel-overlay{
+  position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:300;
+  display:flex;flex-direction:column;justify-content:flex-start;
+  animation:fadeIn .15s ease;
+}
+.search-panel-sheet{
+  background:var(--bg);border-radius:0 0 24px 24px;
+  max-height:92vh;overflow-y:auto;padding:16px 20px 24px;
+}
+@media(min-width:768px){
+  .search-panel-overlay{
+    align-items:center;
+    justify-content:flex-start;
+    padding-top:70px;
+  }
+  .search-panel-sheet{
+    width:100%;max-width:560px;
+    border-radius:16px;
+    box-shadow:0 20px 60px rgba(0,0,0,.25);
+    max-height:78vh;
+  }
+}
+
 /* ════════════════════════════════════════════════
    RESPONSIVE — MÓVIL MUY PEQUEÑO  (≤ 320px)
 ════════════════════════════════════════════════ */
@@ -1774,7 +1802,7 @@ function mkSparklineSVG(history,color="#00e5a0"){
   return`<svg width="${W}" height="${H}" style="overflow:visible;display:block"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linejoin="round"/></svg>`;
 }
 function mkTag(text,color="#00e5a0"){return`<span class="tag" style="background:${color}22;color:${color}">${escHtml(text)}</span>`;}
-const CAT_COLOR={Deportes:"#00b4d8",Economía:"#ffc800",Cultura:"#c864ff",Tecnología:"#00e5a0",Política:"#ff6b35",Todos:"#00e5a0"};
+const CAT_COLOR={Deportes:"#00b4d8",Economía:"#ffc800",Cultura:"#c864ff",Tecnología:"#00e5a0",Política:"#ff6b35",Todos:"#00e5a0",Breaking:"#e05c2a",Trending:"#00b4d8"};
 
 // Iconos globales de la marca
 const LOGIN_ICON = `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h4a2 2 0 012 2v14a2 2 0 01-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>`;
@@ -1816,6 +1844,21 @@ const CAT_SVG={
     <path d="M2 12H22" stroke="${color}" stroke-width="1.4"/>
     <path d="M12 2C9 6 9 18 12 22" stroke="${color}" stroke-width="1.4"/>
     <path d="M12 2C15 6 15 18 12 22" stroke="${color}" stroke-width="1.4"/>
+  </svg>`,
+  Breaking: (color,size=14)=>`<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M4 4H20V6H4V4Z" stroke="${color}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M4 8H14" stroke="${color}" stroke-width="1.8" stroke-linecap="round"/>
+    <path d="M4 11H12" stroke="${color}" stroke-width="1.6" stroke-linecap="round"/>
+    <path d="M4 14H10" stroke="${color}" stroke-width="1.4" stroke-linecap="round"/>
+    <circle cx="18" cy="17" r="4" stroke="${color}" stroke-width="1.8"/>
+    <path d="M18 15V17L19.5 18.5" stroke="${color}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>`,
+  Trending: (color,size=14)=>`<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M3 17L8 11L12 14L17 8L21 10" stroke="${color}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M17 8H21V12" stroke="${color}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="8" cy="11" r="1.5" fill="${color}"/>
+    <circle cx="12" cy="14" r="1.5" fill="${color}"/>
+    <circle cx="17" cy="8" r="1.5" fill="${color}"/>
   </svg>`,
 };
 
@@ -1875,8 +1918,11 @@ const STATE={
   marketTab: {},            // {[marketId]: "comments"|"holders"|"positions"}
   marketHolders: {},        // {[marketId]: [{userId,username,yes,no}]}
   withdrawals:[],
-  news:[],        // [{id,title,url,pct,pctDir,createdAt}]
-  trending:[],    // [{id,label,volume,link}]
+  news:[],
+  trending:[],
+  breakingIds:[],
+  trendingIds:[],
+  searchPanelOpen:false,
   // trade modal
   tradeOpen:false,tradeMarketId:null,tradeSide:"YES",tradeMode:"buy",tradeShares:"",tradeDollars:"",
   // auth form
@@ -2604,9 +2650,13 @@ function render(){
     case"aml":      app.innerHTML=renderPolicy("aml");       break;
     case"responsible":app.innerHTML=renderPolicy("responsible");break;
   }
-  if(STATE.tradeOpen)  renderTradeModal();
-  if(STATE.depositOpen)renderDepositModal();
-  if(STATE.withdrawOpen)renderWithdrawModal();
+  if(STATE.tradeOpen)    renderTradeModal();
+  if(STATE.depositOpen)  renderDepositModal();
+  if(STATE.withdrawOpen) renderWithdrawModal();
+  // Search panel (mobile overlay — siempre encima de todo)
+  let sp=document.getElementById("search-panel-root");
+  if(!sp){sp=document.createElement("div");sp.id="search-panel-root";document.body.appendChild(sp);}
+  sp.innerHTML=renderSearchPanel();
   renderFooter();
 }
 
@@ -2640,12 +2690,16 @@ function renderNav(){
     (u?'<button class="nav-btn'+(vw==="wallet"?' active':'')+'" onclick="navigate(\'wallet\')">💳 '+t("nav_wallet")+'</button>':'')+
     (admin?'<button class="nav-btn admin-btn'+(vw==="admin"?' active':'')+'" onclick="navigate(\'admin\')">⚙️ '+t("nav_admin")+'</button>':'');
 
+  const searchBtn='<button onclick="openSearchPanel()" style="padding:6px 8px;border-radius:10px;border:none;background:transparent;cursor:pointer;color:var(--muted);display:flex;align-items:center;justify-content:center;transition:color .15s" onmouseover="this.style.color=\'var(--yes)\'" onmouseout="this.style.color=\'var(--muted)\'" title="Buscar mercados"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg></button>';
+
   document.getElementById("nav-right").innerHTML=u
     ?'<div class="user-name-nav"><span>@'+escHtml(u.username)+'</span>'+(u.role==="admin"?'<span class="badge-admin">ADMIN</span>':'')+'</div>'+
       '<div class="balance-pill" onclick="openDeposit()" title="'+t("wallet_deposit")+'">'+usd(u.balance)+' <span style="font-size:10px;opacity:.6">+</span></div>'+
+      searchBtn+
       '<button class="btn-ghost" style="padding:5px 12px;font-size:12px" onclick="toggleLang()">'+langFlag+'</button>'+
       '<button class="btn-ghost" style="padding:5px 12px;font-size:12px" onclick="handleLogout()">'+t("nav_logout")+'</button>'
-    :'<button class="btn-ghost" style="padding:5px 12px;font-size:13px" onclick="toggleLang()">'+langFlag+'</button>'+
+    :searchBtn+
+      '<button class="btn-ghost" style="padding:5px 12px;font-size:13px" onclick="toggleLang()">'+langFlag+'</button>'+
       '<button class="btn-green" style="padding:6px 14px;font-size:13px;display:inline-flex;align-items:center;gap:6px" onclick="navigate(\'auth\')"><span style="display:flex;opacity:.9">' + LOGIN_ICON.replace('22','15') + '</span>'+t("nav_login")+'</button>';
 
   // Bottom nav (móvil)
@@ -2674,13 +2728,120 @@ function renderNav(){
   }).join("");
 }
 
+// ─── SEARCH PANEL (mobile) ─────────────────────────────────────────
+function openSearchPanel(){ STATE.searchPanelOpen=true; render(); setTimeout(()=>document.getElementById("sp-input")?.focus(),80); }
+function closeSearchPanel(){ STATE.searchPanelOpen=false; render(); }
+function renderSearchPanel(){
+  if(!STATE.searchPanelOpen) return "";
+  const q = STATE.marketSearch.trim().toLowerCase();
+  const cats = ["Todos","Deportes","Economía","Cultura","Tecnología","Breaking","Trending"];
+  const browseFilters = [
+    {id:"Todos",     label:STATE.lang==="en"?"New":"Nuevo",      icon:`<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>`},
+    {id:"Trending",  label:STATE.lang==="en"?"Trending":"Tendencias", icon:`<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17L8 11L12 14L17 8L21 10"/><path d="M17 8H21V12"/></svg>`},
+    {id:"Breaking",  label:STATE.lang==="en"?"Breaking":"Última hora", icon:`<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 4H20V6H4z"/><path d="M4 8H14M4 11H11"/><circle cx="18" cy="17" r="4"/><path d="M18 15V17L19.5 18.5"/></svg>`},
+  ];
+  const topicCats = [
+    {id:"Deportes",   label:STATE.lang==="en"?"Sports":"Deportes",   color:"#00b4d8"},
+    {id:"Economía",   label:STATE.lang==="en"?"Economy":"Economía",  color:"#ffc800"},
+    {id:"Cultura",    label:STATE.lang==="en"?"Culture":"Cultura",   color:"#c864ff"},
+    {id:"Tecnología", label:STATE.lang==="en"?"Tech":"Tecnología",   color:"#00e5a0"},
+  ];
+
+  // Resultados de búsqueda en tiempo real
+  const results = q ? STATE.markets.filter(m=>{
+    return !m.resolved && (
+      m.title.toLowerCase().includes(q) ||
+      (m.title_en||"").toLowerCase().includes(q) ||
+      m.category.toLowerCase().includes(q)
+    );
+  }).slice(0,8) : [];
+
+  return`<div class="search-panel-overlay" onclick="if(event.target===this)closeSearchPanel()">
+    <div class="search-panel-sheet">
+
+      <!-- Buscador -->
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px">
+        <div style="flex:1;display:flex;align-items:center;background:var(--card2);border-radius:12px;padding:10px 14px;gap:8px;border:1.5px solid var(--yes)">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--muted)" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+          <input id="sp-input" type="text" placeholder="${STATE.lang==="en"?"Search markets…":"Buscar mercados…"}"
+            value="${escHtml(STATE.marketSearch)}"
+            oninput="STATE.marketSearch=this.value;render()"
+            style="border:none;background:transparent;font-size:14px;color:var(--text);font-family:inherit;width:100%;outline:none"/>
+          ${STATE.marketSearch?`<button onclick="STATE.marketSearch='';render()" style="border:none;background:none;color:var(--muted);cursor:pointer;font-size:16px;padding:0;line-height:1">✕</button>`:""}
+        </div>
+        <button onclick="closeSearchPanel()" style="border:none;background:none;color:var(--yes);font-size:14px;font-weight:600;cursor:pointer;padding:4px;white-space:nowrap">
+          ${STATE.lang==="en"?"Cancel":"Cancelar"}
+        </button>
+      </div>
+
+      ${results.length ? `
+        <!-- Resultados en tiempo real -->
+        <div style="margin-bottom:20px">
+          <div style="font-size:10px;font-weight:700;color:var(--muted);letter-spacing:.8px;text-transform:uppercase;margin-bottom:10px">${STATE.lang==="en"?"Results":"Resultados"}</div>
+          ${results.map(m=>{
+            const p=getPrice(m,"YES");
+            return`<div onclick="closeSearchPanel();navigate('market',{marketId:'${m.id}'})"
+              style="display:flex;align-items:center;gap:12px;padding:12px;background:var(--card);border-radius:12px;margin-bottom:8px;cursor:pointer;border:1px solid var(--border)">
+              <div style="width:36px;height:36px;border-radius:10px;background:${CAT_COLOR[m.category]||"#888"}22;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+                ${CAT_SVG[m.category]?CAT_SVG[m.category](CAT_COLOR[m.category]||"#888",18):""}
+              </div>
+              <div style="flex:1;min-width:0">
+                <div style="font-size:13px;font-weight:600;color:var(--text);line-height:1.3">${escHtml(mTitle(m).slice(0,50))}${mTitle(m).length>50?"…":""}</div>
+                <div style="font-size:11px;color:var(--muted);margin-top:2px">${escHtml(m.category)}</div>
+              </div>
+              <div style="text-align:right;flex-shrink:0">
+                <div style="font-size:14px;font-weight:800;color:var(--yes)">${pct(p)}</div>
+                <div style="font-size:10px;color:var(--muted)">YES</div>
+              </div>
+            </div>`;
+          }).join("")}
+        </div>` : `
+
+        <!-- Browse filters -->
+        <div style="margin-bottom:20px">
+          <div style="font-size:10px;font-weight:700;color:var(--muted);letter-spacing:.8px;text-transform:uppercase;margin-bottom:10px">BROWSE</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            ${browseFilters.map(f=>`
+              <button onclick="closeSearchPanel();setFilter('${f.id}')"
+                style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:20px;
+                border:1.5px solid var(--border);background:var(--card);font-size:13px;font-weight:600;
+                color:var(--text-2);cursor:pointer;font-family:inherit">
+                ${f.icon} ${f.label}
+              </button>`).join("")}
+          </div>
+        </div>
+
+        <!-- Topics -->
+        <div>
+          <div style="font-size:10px;font-weight:700;color:var(--muted);letter-spacing:.8px;text-transform:uppercase;margin-bottom:10px">TOPICS</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+            ${topicCats.map(tc=>`
+              <button onclick="closeSearchPanel();setFilter('${tc.id}')"
+                style="display:flex;align-items:center;gap:10px;padding:12px 14px;border-radius:14px;
+                border:1.5px solid var(--border);background:var(--card);cursor:pointer;text-align:left;font-family:inherit">
+                <div style="width:36px;height:36px;border-radius:10px;background:${tc.color}22;
+                  display:flex;align-items:center;justify-content:center;flex-shrink:0">
+                  ${CAT_SVG[tc.id]?CAT_SVG[tc.id](tc.color,18):""}
+                </div>
+                <span style="font-size:13px;font-weight:600;color:var(--text)">${tc.label}</span>
+              </button>`).join("")}
+          </div>
+        </div>`}
+
+    </div>
+  </div>`;
+}
+
 // ─── HOME ──────────────────────────────────────────────────────────
 function renderHome(){
   const catKeys=["all","sports","economy","culture","tech"];
   const catIds=["Todos","Deportes","Economía","Cultura","Tecnología"];
   const catLabels=catKeys.map(k=>t("cat_"+k));
   const filtered = STATE.markets.filter(m => {
-    const catMatch = STATE.filterCat === "Todos" || m.category === STATE.filterCat;
+    let catMatch;
+    if(STATE.filterCat==="Breaking")  catMatch = STATE.breakingIds.includes(m.id);
+    else if(STATE.filterCat==="Trending") catMatch = STATE.trendingIds.includes(m.id);
+    else catMatch = STATE.filterCat==="Todos" || m.category===STATE.filterCat;
     const q = STATE.marketSearch.toLowerCase().trim();
     const searchMatch = !q ||
       m.title.toLowerCase().includes(q) ||
@@ -2744,14 +2905,16 @@ function renderHome(){
   const sidePanel = activeMarkets.length ? `
     <div class="side-panel-hide" style="width:280px;flex-shrink:0;position:sticky;top:80px;align-self:flex-start">
       <div style="background:var(--card);border:1px solid var(--border);border-radius:16px;padding:18px;margin-bottom:16px">
-        <div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:14px">
-          📰 ${STATE.lang==="en"?"Breaking":"Noticias de última hora"}
+        <div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:14px;display:flex;align-items:center;gap:7px">
+          ${CAT_SVG.Breaking("var(--yes)",14)}
+          ${STATE.lang==="en"?"Breaking":"Última hora"}
         </div>
         ${sidePanelBreaking}
       </div>
       <div style="background:var(--card);border:1px solid var(--border);border-radius:16px;padding:18px">
-        <div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:14px">
-          🔥 ${STATE.lang==="en"?"Trending":"Temas populares"}
+        <div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:14px;display:flex;align-items:center;gap:7px">
+          ${CAT_SVG.Trending("var(--accent)",14)}
+          ${STATE.lang==="en"?"Trending":"Tendencias"}
         </div>
         ${sidePanelTrending}
       </div>
@@ -2784,24 +2947,28 @@ function renderHome(){
       type="text"
       placeholder="${STATE.lang==="en"?"Search markets…":"Buscar mercados…"}"
       value="${escHtml(STATE.marketSearch)}"
+      onfocus="if(window.innerWidth<768)openSearchPanel()"
       oninput="updateMarketSearch(this.value)"
       onkeydown="if(event.key==='Escape'){updateMarketSearch('');}"
     />
     ${isSearching?`<button class="market-search-clear" onclick="updateMarketSearch('')">✕</button>`:""}
   </div>
 
-  <!-- Categorías debajo del buscador -->
+  <!-- Categorías debajo del buscador — incluye Breaking y Trending -->
   <div style="display:flex;gap:0;border-bottom:2px solid var(--border);margin-bottom:20px;overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch;">
-    ${catIds.map((c,i)=>`
-      <button onclick="setFilter('${c}')"
-        style="padding:10px 16px;font-size:13px;font-weight:${STATE.filterCat===c?"700":"500"};
+    ${[...catIds.map((c,i)=>({id:c,label:catLabels[i],count:c!=="Todos"?STATE.markets.filter(m=>m.category===c&&!m.resolved).length:null})),
+       {id:"Breaking",label:(STATE.lang==="en"?"Breaking":"Última hora"),count:STATE.breakingIds.length||null},
+       {id:"Trending",label:(STATE.lang==="en"?"Trending":"Tendencias"),count:STATE.trendingIds.length||null},
+    ].map(tab=>`
+      <button onclick="setFilter('${tab.id}')"
+        style="padding:10px 16px;font-size:13px;font-weight:${STATE.filterCat===tab.id?"700":"500"};
         border:none;background:transparent;cursor:pointer;white-space:nowrap;font-family:inherit;
-        color:${STATE.filterCat===c?"var(--yes)":"var(--muted)"};
-        border-bottom:${STATE.filterCat===c?"2px solid var(--yes)":"2px solid transparent"};
+        color:${STATE.filterCat===tab.id?"var(--yes)":"var(--muted)"};
+        border-bottom:${STATE.filterCat===tab.id?"2px solid var(--yes)":"2px solid transparent"};
         margin-bottom:-2px;transition:all .15s;display:flex;align-items:center;gap:5px">
-        ${CAT_SVG[c]?CAT_SVG[c](STATE.filterCat===c?"var(--yes)":CAT_COLOR[c]||"#888",13):""}
-        ${catLabels[i]}
-        ${c!=="Todos"?`<span style="font-size:10px;opacity:.5">${STATE.markets.filter(m=>m.category===c&&!m.resolved).length}</span>`:""}
+        ${CAT_SVG[tab.id]?CAT_SVG[tab.id](STATE.filterCat===tab.id?"var(--yes)":CAT_COLOR[tab.id]||"#888",13):""}
+        ${tab.label}
+        ${tab.count!=null?`<span style="font-size:10px;opacity:.5">${tab.count}</span>`:""}
       </button>`).join("")}
   </div>
 
@@ -3154,15 +3321,33 @@ function renderFeaturedCarousel(){
 // ─── NEWS & TRENDING ────────────────────────────────────────────────────────
 
 async function dbLoadNewsAndTrending(){
-  // Las tablas news/trending_topics son opcionales — si no existen no afecta la app
   try{
-    const {data:newsData,error:e1} = await db.from("news").select("*").order("created_at",{ascending:false}).limit(10);
-    if(!e1) STATE.news = newsData||[];
+    const {data,error} = await db.from("market_sections").select("*");
+    if(!error && data){
+      STATE.breakingIds = data.filter(r=>r.section==="breaking").map(r=>r.market_id);
+      STATE.trendingIds = data.filter(r=>r.section==="trending").map(r=>r.market_id);
+      render();
+    }
   }catch(e){}
+}
+
+async function adminAddToSection(marketId, section){
+  if(!marketId||!section) return;
   try{
-    const {data:trendData,error:e2} = await db.from("trending_topics").select("*").order("position",{ascending:true}).limit(8);
-    if(!e2) STATE.trending = trendData||[];
-  }catch(e){}
+    await db.from("market_sections").upsert({market_id:marketId, section, created_at:new Date().toISOString()},{onConflict:"market_id,section"});
+    await dbLoadNewsAndTrending();
+    notify("✅ Añadido a "+section,"success");
+  }catch(e){ notify("Error: "+e.message,"error"); }
+}
+
+async function adminRemoveFromSection(marketId, section){
+  try{
+    await db.from("market_sections").delete().eq("market_id",marketId).eq("section",section);
+    if(section==="breaking") STATE.breakingIds=STATE.breakingIds.filter(id=>id!==marketId);
+    else STATE.trendingIds=STATE.trendingIds.filter(id=>id!==marketId);
+    render();
+    notify("Eliminado","info");
+  }catch(e){ notify("Error: "+e.message,"error"); }
 }
 
 async function adminSaveNews(item){
@@ -3194,105 +3379,69 @@ async function adminDeleteTrending(id){
 }
 
 function renderAdminNews(){
-  const genId=()=>Math.random().toString(36).slice(2,10);
-  return`<div style="margin-top:24px">
-    <h3 style="margin-bottom:16px;font-size:15px">📰 Noticias de última hora</h3>
-    <p style="font-size:12px;color:var(--muted);margin-bottom:20px">Aparecen en el panel lateral de la página principal. Máximo 5 recomendado.</p>
-
-    <!-- Formulario nueva noticia -->
-    <div style="background:var(--card2);border-radius:14px;padding:18px;margin-bottom:24px;border:1px solid var(--border)">
-      <div style="font-size:13px;font-weight:700;margin-bottom:14px">+ Nueva noticia</div>
-      <div style="display:flex;flex-direction:column;gap:10px">
-        <input id="news-title" placeholder="Título de la noticia…" style="padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:var(--card);font-size:13px;color:var(--text);font-family:inherit;width:100%;box-sizing:border-box"/>
-        <div style="display:flex;gap:10px">
-          <input id="news-url" placeholder="URL (opcional)" style="flex:1;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:var(--card);font-size:13px;color:var(--text);font-family:inherit"/>
-          <input id="news-pct" type="number" min="1" max="99" placeholder="%" style="width:80px;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:var(--card);font-size:13px;color:var(--text);font-family:inherit;text-align:center"/>
-          <select id="news-dir" style="padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:var(--card);font-size:13px;color:var(--text);font-family:inherit">
-            <option value="up">↑ Sube</option>
-            <option value="down">↓ Baja</option>
-          </select>
-        </div>
-        <button onclick="(()=>{
-          const title=document.getElementById('news-title').value.trim();
-          const url=document.getElementById('news-url').value.trim();
-          const pct=document.getElementById('news-pct').value;
-          const dir=document.getElementById('news-dir').value;
-          if(!title)return notify('Escribe un título','error');
-          adminSaveNews({id:'n_'+Math.random().toString(36).slice(2,8),title,url,pct:pct||null,pct_dir:dir,created_at:new Date().toISOString()});
-        })()"
-          style="padding:10px 20px;border-radius:10px;background:var(--yes);color:#fff;font-weight:700;font-size:13px;border:none;cursor:pointer;align-self:flex-end">
-          Guardar noticia
-        </button>
-      </div>
-    </div>
-
-    <!-- Lista de noticias -->
-    ${STATE.news.length===0?`<div style="text-align:center;padding:32px;color:var(--muted);font-size:13px">Sin noticias aún</div>`:""}
-    ${STATE.news.map((n,i)=>`
-      <div style="display:flex;align-items:flex-start;gap:12px;padding:14px;background:var(--card);border-radius:12px;margin-bottom:10px;border:1px solid var(--border)">
-        <div style="flex-shrink:0;font-size:18px;font-weight:900;color:var(--muted);width:20px;text-align:center">${i+1}</div>
-        <div style="flex:1;min-width:0">
-          <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:4px">${escHtml(n.title)}</div>
-          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-            ${n.pct?`<span style="font-size:12px;font-weight:700;color:${n.pct_dir==="up"?"var(--yes)":"var(--no)"}">${n.pct_dir==="up"?"↑":"↓"}${n.pct}%</span>`:""}
-            ${n.url?`<a href="${escHtml(n.url)}" target="_blank" style="font-size:11px;color:var(--accent)">🔗 Ver enlace</a>`:""}
-          </div>
-        </div>
-        <button onclick="adminDeleteNews('${n.id}')"
-          style="flex-shrink:0;padding:6px 12px;border-radius:8px;background:var(--no-bg);color:var(--no);font-size:12px;font-weight:700;border:none;cursor:pointer">
-          Eliminar
-        </button>
-      </div>
-    `).join("")}
-  </div>`;
+  return renderAdminSection("breaking","Última hora","Mercados que aparecen en la pestaña «Última hora»");
 }
 
 function renderAdminTrending(){
-  return`<div style="margin-top:24px">
-    <h3 style="margin-bottom:16px;font-size:15px">🔥 Temas en tendencia</h3>
-    <p style="font-size:12px;color:var(--muted);margin-bottom:20px">Aparecen en el panel lateral. Máximo 5 recomendado. El orden es por posición.</p>
+  return renderAdminSection("trending","Tendencias","Mercados que aparecen en la pestaña «Tendencias»");
+}
 
-    <!-- Formulario nuevo tema -->
-    <div style="background:var(--card2);border-radius:14px;padding:18px;margin-bottom:24px;border:1px solid var(--border)">
-      <div style="font-size:13px;font-weight:700;margin-bottom:14px">+ Nuevo tema</div>
-      <div style="display:flex;flex-direction:column;gap:10px">
-        <input id="trend-label" placeholder="Nombre del tema (ej: Bitcoin, Iran, Lakers…)" style="padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:var(--card);font-size:13px;color:var(--text);font-family:inherit;width:100%;box-sizing:border-box"/>
-        <div style="display:flex;gap:10px">
-          <input id="trend-volume" placeholder="Volumen (ej: $628K hoy)" style="flex:1;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:var(--card);font-size:13px;color:var(--text);font-family:inherit"/>
-          <input id="trend-pos" type="number" min="1" max="20" placeholder="#" style="width:70px;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:var(--card);font-size:13px;text-align:center;font-family:inherit;color:var(--text)"/>
-        </div>
-        <input id="trend-link" placeholder="URL del mercado relacionado (opcional)" style="padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:var(--card);font-size:13px;color:var(--text);font-family:inherit;width:100%;box-sizing:border-box"/>
+function renderAdminSection(section, title, desc){
+  const activeIds = section==="breaking" ? STATE.breakingIds : STATE.trendingIds;
+  const activeMarkets = activeIds.map(id=>STATE.markets.find(m=>m.id===id)).filter(Boolean);
+  const available = STATE.markets.filter(m=>!m.resolved&&!activeIds.includes(m.id));
+
+  return`<div style="margin-top:24px">
+    <h3 style="margin-bottom:6px;font-size:15px">${title}</h3>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:20px">${desc} · Aparecen como pestaña en la página principal.</p>
+
+    <!-- Añadir mercado -->
+    <div style="background:var(--card2);border-radius:14px;padding:16px;margin-bottom:24px;border:1px solid var(--border)">
+      <div style="font-size:13px;font-weight:700;margin-bottom:12px">+ Añadir mercado</div>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <select id="section-select-${section}"
+          style="flex:1;min-width:200px;padding:10px 12px;border-radius:10px;border:1px solid var(--border);
+          background:var(--card);font-size:13px;color:var(--text);font-family:inherit">
+          <option value="">— Selecciona un mercado —</option>
+          ${available.map(m=>`<option value="${m.id}">${escHtml(mTitle(m).slice(0,60))}</option>`).join("")}
+        </select>
         <button onclick="(()=>{
-          const label=document.getElementById('trend-label').value.trim();
-          const volume=document.getElementById('trend-volume').value.trim();
-          const pos=parseInt(document.getElementById('trend-pos').value)||STATE.trending.length+1;
-          const link=document.getElementById('trend-link').value.trim();
-          if(!label)return notify('Escribe un nombre','error');
-          adminSaveTrending({id:'tr_'+Math.random().toString(36).slice(2,8),label,volume,position:pos,link,created_at:new Date().toISOString()});
+          const sel=document.getElementById('section-select-${section}');
+          if(!sel.value)return notify('Selecciona un mercado','error');
+          adminAddToSection(sel.value,'${section}');
         })()"
-          style="padding:10px 20px;border-radius:10px;background:var(--yes);color:#fff;font-weight:700;font-size:13px;border:none;cursor:pointer;align-self:flex-end">
-          Guardar tema
+          style="padding:10px 18px;border-radius:10px;background:var(--yes);color:#fff;font-weight:700;font-size:13px;border:none;cursor:pointer;flex-shrink:0">
+          Añadir
         </button>
       </div>
     </div>
 
-    <!-- Lista tendencias -->
-    ${STATE.trending.length===0?`<div style="text-align:center;padding:32px;color:var(--muted);font-size:13px">Sin temas aún</div>`:""}
-    ${STATE.trending.map((tr,i)=>`
-      <div style="display:flex;align-items:center;gap:12px;padding:14px;background:var(--card);border-radius:12px;margin-bottom:10px;border:1px solid var(--border)">
-        <div style="flex-shrink:0;font-size:16px;font-weight:900;color:var(--muted);width:20px;text-align:center">${tr.position||i+1}</div>
-        <div style="flex:1;min-width:0">
-          <div style="font-size:13px;font-weight:700;color:var(--text)">${escHtml(tr.label)}</div>
-          ${tr.volume?`<div style="font-size:11px;color:var(--muted);margin-top:2px">${escHtml(tr.volume)} 🔥</div>`:""}
-        </div>
-        <button onclick="adminDeleteTrending('${tr.id}')"
-          style="flex-shrink:0;padding:6px 12px;border-radius:8px;background:var(--no-bg);color:var(--no);font-size:12px;font-weight:700;border:none;cursor:pointer">
-          Eliminar
-        </button>
-      </div>
-    `).join("")}
+    <!-- Mercados actuales -->
+    <div style="font-size:13px;font-weight:700;margin-bottom:12px;color:var(--text-2)">
+      ${activeMarkets.length} mercado${activeMarkets.length!==1?"s":""} en esta sección
+    </div>
+    ${activeMarkets.length===0
+      ? `<div style="text-align:center;padding:32px;color:var(--muted);font-size:13px;background:var(--card);border-radius:12px;border:1px solid var(--border)">
+          Sin mercados aún — añade uno desde el selector de arriba
+         </div>`
+      : activeMarkets.map(m=>{
+          const p=getPrice(m,"YES");
+          return`<div style="display:flex;align-items:center;gap:12px;padding:14px;background:var(--card);
+            border-radius:12px;margin-bottom:8px;border:1px solid var(--border)">
+            <div style="flex:1;min-width:0">
+              <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:3px">${escHtml(mTitle(m))}</div>
+              <div style="font-size:11px;color:var(--muted)">${escHtml(m.category)} · ${pct(p)} YES · ${fmtVol(m.totalVolume)} vol</div>
+            </div>
+            <button onclick="adminRemoveFromSection('${m.id}','${section}')"
+              style="flex-shrink:0;padding:6px 14px;border-radius:8px;background:var(--no-bg);color:var(--no);
+              font-size:12px;font-weight:700;border:none;cursor:pointer">
+              Quitar
+            </button>
+          </div>`;
+        }).join("")}
   </div>`;
 }
+
 
 // ─── AUTH ──────────────────────────────────────────────────────────
 function renderAuth(){
@@ -6195,8 +6344,8 @@ function renderAdmin(){
     {k:"withdrawals",l:`💸 Retiros`,                    count:pendingWd||null},
     {k:"deposits", l:`💰 Depósitos`,                    count:pendingDep||null},
     {k:"referrals",l:`🔗 Referidos`,                   count:null},
-    {k:"news",      l:`📰 Noticias`,                      count:STATE.news.length||null},
-    {k:"trending",  l:`🔥 Tendencias`,                    count:STATE.trending.length||null},
+    {k:"news",      l:`Última hora`,                    count:STATE.breakingIds.length||null},
+    {k:"trending",  l:`Tendencias`,                     count:STATE.trendingIds.length||null},
   ];
   let content="";
   if(STATE.adminTab==="accounts")   content=renderAdminAccounts();
