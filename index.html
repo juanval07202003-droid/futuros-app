@@ -2854,10 +2854,14 @@ function renderHome(){
   const featuredCount=STATE.markets.filter(m=>m.featured&&!m.resolved).length;
   const isSearching = STATE.marketSearch.trim().length > 0;
 
-  // Panel lateral — mercados existentes como noticias y tendencias
+  // Panel lateral — usa los IDs seleccionados por admin, con fallback automático
   const activeMarkets = STATE.markets.filter(m=>!m.resolved&&!isMarketClosed(m));
-  const breakingMarkets = [...activeMarkets].sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt)).slice(0,5);
-  const trendingMarkets = [...activeMarkets].sort((a,b)=>b.totalVolume-a.totalVolume).slice(0,5);
+  const breakingMarkets = STATE.breakingIds.length
+    ? STATE.breakingIds.map(id=>activeMarkets.find(m=>m.id===id)).filter(Boolean)
+    : [...activeMarkets].sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt)).slice(0,5);
+  const trendingMarkets = STATE.trendingIds.length
+    ? STATE.trendingIds.map(id=>activeMarkets.find(m=>m.id===id)).filter(Boolean)
+    : [...activeMarkets].sort((a,b)=>b.totalVolume-a.totalVolume).slice(0,5);
 
   function mkBreakingRow(m,i,total){
     const p=getPrice(m,"YES");
