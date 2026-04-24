@@ -1367,6 +1367,7 @@ function marketToDbRow(m){
     title_en: m.title_en||null,
     category: m.category,
     emoji: m.emoji,
+    imageUrl: row.image_url||null,
     description: m.description||"",
     description_en: m.description_en||null,
     alpha: m.alpha,
@@ -1382,6 +1383,7 @@ function marketToDbRow(m){
     price_history: m.priceHistory||[0.5],
     featured: m.featured||false,
     created_at: m.createdAt||new Date().toISOString(),
+    image_url: m.imageUrl||null,
     oracle_type: m.oracleType||"none",
     oracle_config: m.oracleConfig||"",
     oracle_locked: m.oracleLocked||false,
@@ -1581,8 +1583,8 @@ function dbStopRealtime(){
 // ═══════════════════════════════════════════════════════════════════
 
 // ── Parámetros de spread dinámico ─────────────────────────────────
-const SPREAD_BASE = 0.005;   // 0.50% — mínimo siempre (contrarian o mercado neutral)
-const SPREAD_MAX  = 0.02;    // 2.00% — máximo al acercarse a 0 o 1
+const SPREAD_BASE = 0.02;    // 2.00% — mínimo siempre (contrarian o mercado neutral)
+const SPREAD_MAX  = 0.05;    // 5.00% — máximo al acercarse a 0 o 1
 
 // Spread ASIMÉTRICO por DIRECCIÓN:
 //   · Si compras el lado que YA domina (empujas hacia el extremo) → spread sube
@@ -1879,7 +1881,7 @@ function mkCatTag(category, color){
 // ═══════════════════════════════════════════════════════════════════
 function mkMarket(id,title,category,emoji,description,alpha,seedLiquidity,daysLeft,yw=0.5,featured=false){
   const {qYes,qNo}=initQfromProb(seedLiquidity,alpha,yw);
-  return{id,title,category,emoji,description,alpha,seedLiquidity,qYes,qNo,totalVolume:0,spreadPool:0,totalPaid:0,
+  return{id,title,category,emoji,description,alpha,seedLiquidity,qYes,qNo,totalVolume:0,spreadPool:0,totalPaid:0,imageUrl:null,
     closesAt:new Date(Date.now()+daysLeft*86400000).toISOString(),resolved:false,resolution:null,priceHistory:[yw],createdAt:new Date().toISOString(),featured};
 }
 
@@ -1937,7 +1939,7 @@ const STATE={
   authForm:{username:"",email:"",password:"",confirmPassword:""},
   // admin forms
   newAcc:{username:"",email:"",role:"user",balance:"1000"},
-  mkForm:{title:"",title_en:"",category:"Deportes",emoji:"🎯",description:"",description_en:"",alpha:"0.10",seedLiquidity:"1000",closesAt:"",yesWeight:"0.5",oracleType:"none",oracleConfig:""},
+  mkForm:{title:"",title_en:"",category:"Deportes",emoji:"🎯",description:"",description_en:"",alpha:"0.10",seedLiquidity:"1000",closesAt:"",yesWeight:"0.5",oracleType:"none",oracleConfig:"",imageUrl:null},
   adjustOpen:null,adjustAmt:"",
   // deposit/withdraw modal
   depositOpen:false,
@@ -3050,7 +3052,10 @@ function renderMarketCard(m){
        </div>`;
   return`<div class="market-card" onclick="navigate('market',{marketId:'${m.id}'})">
   <div class="card-meta">${mkCatTag(m.category,cc)}<span style="font-size:11px;color:var(--muted)">${timeLeft(m.closesAt)}</span></div>
-  <div style="font-weight:700;font-size:14px;line-height:1.4;margin-bottom:14px;min-height:38px">${escHtml(mTitle(m))}</div>
+  <div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:14px">
+    <div style="font-weight:700;font-size:14px;line-height:1.4;flex:1;min-height:38px">${escHtml(mTitle(m))}</div>
+    ${m.imageUrl?`<img src="${escHtml(m.imageUrl)}" style="width:48px;height:48px;object-fit:cover;border-radius:10px;flex-shrink:0;border:1px solid var(--border)" loading="lazy"/>`:``}
+  </div>
   <div class="prob-row">
     <div style="font-size:30px;font-weight:900;color:var(--yes);letter-spacing:-1px">${pct(pYes)}</div>
     <div style="text-align:right"><div style="font-size:14px;font-weight:700;color:var(--no)">${t("detail_no")} ${pct(1-pYes)}</div>
@@ -4475,7 +4480,9 @@ function renderMarket(){
       <h2 style="font-size:clamp(20px,5vw,26px);margin:10px 0 8px;line-height:1.25">${escHtml(mTitle(m))}</h2>
       <p style="color:var(--muted);font-size:13px;line-height:1.5">${escHtml(mDesc(m))}</p>
     </div>
-    <div style="text-align:right;flex-shrink:0"><div class="mkt-prob-big">${pct(pYes)}</div><div style="color:var(--muted);font-size:12px;margin-top:4px">prob. ${t("detail_yes")}</div></div>
+    ${m.imageUrl
+      ? `<img src="${escHtml(m.imageUrl)}" style="width:72px;height:72px;object-fit:cover;border-radius:14px;flex-shrink:0;border:1px solid var(--border);margin-left:16px" loading="lazy"/>`
+      : `<div style="text-align:right;flex-shrink:0"><div class="mkt-prob-big">${pct(pYes)}</div><div style="color:var(--muted);font-size:12px;margin-top:4px">prob. ${t("detail_yes")}</div></div>`}
   </div>
   <div class="stats-grid">
     ${[[t("detail_volume"),fmtVol(m.totalVolume)],[t("detail_closes"),timeLeft(m.closesAt)],[t("detail_liquidity"),b.toFixed(1)],...(u?[[t("detail_positions"),`${t("detail_yes")} ${(pos.YES||0).toFixed(2)} · ${t("detail_no")} ${(pos.NO||0).toFixed(2)}`]]:[])].filter(([l,v])=>l&&v!==undefined).map(([l,v])=>`<div class="card-sm"><div class="lbl">${l}</div><div style="font-size:18px;font-weight:800;color:var(--text)">${v}</div></div>`).join("")}
@@ -5913,10 +5920,16 @@ function renderTradeModal(){
         ${(()=>{
           const heldRaw = (u&&u.positions[m.id]||{})[side]||0;
           const heldFloor = Math.floor(heldRaw*100)/100;
-          return`<input class="inp" id="trade-shares-input" type="number" min="0.01" step="0.01"
-            max="${heldFloor}"
-            value="${STATE.tradeShares}" placeholder="0.00"
-            oninput="STATE.tradeShares=Math.min(this.value,${heldFloor});this.value=STATE.tradeShares;updateTradePreview()"/>
+          return`<input class="inp" id="trade-shares-input" type="text" inputmode="decimal"
+            placeholder="0.00"
+            value="${STATE.tradeShares||""}"
+            oninput="(()=>{
+              const raw=this.value.replace(',','.');
+              this.value=raw;
+              const n=parseFloat(raw);
+              if(!isNaN(n)&&n>0){STATE.tradeShares=Math.min(n,${heldFloor});updateTradePreview();}
+              else{STATE.tradeShares=0;updateTradePreview();}
+            })()"/>
           <div style="font-size:11px;color:var(--muted);margin-top:5px">
             ${t("trade_you_have")}: <strong style="color:${sideColor};cursor:pointer"
               onclick="STATE.tradeShares=${heldFloor};document.getElementById('trade-shares-input').value=${heldFloor};updateTradePreview()">
@@ -6729,6 +6742,25 @@ function renderAdminMarkets(){
     <div class="full"><label class="lbl">Título en inglés <span style="color:var(--muted);font-weight:400">(opcional)</span></label><input class="inp" type="text" value="${escHtml(f.title_en||'')}" placeholder="Who will win...?" oninput="STATE.mkForm.title_en=this.value"/></div>
     <div><label class="lbl">${t("admin_category")}</label><select class="inp" onchange="STATE.mkForm.category=this.value;document.getElementById('mk-prev').innerHTML=getMkPreview()">${["Deportes","Economía","Cultura","Tecnología"].map(c=>`<option${f.category===c?" selected":""}>${c}</option>`).join("")}</select></div>
     <div><label class="lbl">${t("admin_emoji")}</label><input class="inp" value="${escHtml(f.emoji)}" oninput="STATE.mkForm.emoji=this.value;document.getElementById('mk-prev').innerHTML=getMkPreview()"/></div>
+    <div class="full">
+      <label class="lbl">Imagen del mercado <span style="color:var(--muted);font-weight:400">(opcional · aparece en la card)</span></label>
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        ${f.imageUrl
+          ? `<img src="${escHtml(f.imageUrl)}" style="width:56px;height:56px;object-fit:cover;border-radius:12px;border:1px solid var(--border);flex-shrink:0"/>`
+          : `<div style="width:56px;height:56px;border-radius:12px;border:2px dashed var(--border);display:flex;align-items:center;justify-content:center;flex-shrink:0;color:var(--muted);font-size:22px">📷</div>`}
+        <div style="flex:1;min-width:0">
+          <input type="file" id="mk-image-input" accept="image/*" style="display:none"
+            onchange="uploadMarketImage(this)"/>
+          <button class="btn-ghost" style="font-size:13px;padding:8px 16px;width:100%"
+            onclick="document.getElementById('mk-image-input').click()">
+            ${f.imageUrl ? "Cambiar imagen" : "Subir imagen"}
+          </button>
+          ${f.imageUrl ? `<button class="btn-ghost" style="font-size:11px;padding:4px 12px;margin-top:6px;color:var(--no);border-color:var(--no)"
+            onclick="STATE.mkForm.imageUrl=null;renderAdmin()">Quitar</button>` : ""}
+        </div>
+      </div>
+      <div id="mk-img-status" style="font-size:11px;color:var(--muted);margin-top:6px"></div>
+    </div>
     <div><label class="lbl">${t("admin_alpha")}</label><input class="inp" type="number" step="0.01" min="0.01" max="1" value="${f.alpha}" oninput="STATE.mkForm.alpha=this.value;document.getElementById('mk-prev').innerHTML=getMkPreview()"/><div class="hint">${t("admin_alpha_hint")}</div></div>
     <div><label class="lbl">${t("admin_seed")}</label><input class="inp" type="number" min="100" value="${f.seedLiquidity}" oninput="STATE.mkForm.seedLiquidity=this.value;document.getElementById('mk-prev').innerHTML=getMkPreview()"/></div>
     <div><label class="lbl">${t("admin_prob")}</label><input class="inp" type="number" step="0.01" min="0.01" max="0.99" value="${f.yesWeight}" oninput="STATE.mkForm.yesWeight=this.value;document.getElementById('mk-prev').innerHTML=getMkPreview()"/><div class="hint">${t("admin_prob_hint")}</div></div>
@@ -6761,6 +6793,46 @@ function renderAdminMarkets(){
   <button class="btn-green" style="width:100%;padding:13px;font-size:15px;margin-top:16px" onclick="adminCreateMarket()">${t("admin_create_btn")}</button>
 </div></div>`;
 }
+async function uploadMarketImage(input){
+  const file = input.files[0];
+  if(!file) return;
+  const status = document.getElementById("mk-img-status");
+  if(status) status.textContent = "⏳ Subiendo imagen...";
+
+  try{
+    // Resize to max 400px and convert to webp-like quality
+    const img = await new Promise((res,rej)=>{
+      const i = new Image();
+      i.onload = ()=>res(i);
+      i.onerror = rej;
+      i.src = URL.createObjectURL(file);
+    });
+    const MAX = 400;
+    const ratio = Math.min(MAX/img.width, MAX/img.height, 1);
+    const canvas = document.createElement("canvas");
+    canvas.width  = Math.round(img.width  * ratio);
+    canvas.height = Math.round(img.height * ratio);
+    canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+
+    const blob = await new Promise(res=>canvas.toBlob(res,"image/jpeg",0.85));
+    const fileName = `markets/${Date.now()}_${Math.random().toString(36).slice(2,8)}.jpg`;
+
+    const {data, error} = await db.storage
+      .from("market-images")
+      .upload(fileName, blob, {contentType:"image/jpeg", upsert:false});
+
+    if(error) throw error;
+
+    const {data:{publicUrl}} = db.storage.from("market-images").getPublicUrl(fileName);
+    STATE.mkForm.imageUrl = publicUrl;
+    if(status) status.textContent = "✅ Imagen subida";
+    renderAdmin();
+  }catch(e){
+    if(status) status.textContent = "❌ Error: "+( e?.message||e);
+    console.error("uploadMarketImage:",e);
+  }
+}
+
 function renderOracleConfigHint(){
   const type = STATE.mkForm.oracleType;
   const hint = document.getElementById("oracle-hint");
@@ -7753,6 +7825,7 @@ async function adminCreateMarket(){
     closesAt:new Date(f.closesAt).toISOString(), resolved:false, resolution:null,
     oracleType:f.oracleType||"none", oracleConfig:f.oracleConfig||"",
     title_en:f.title_en||null, description_en:f.description_en||null, oracleLocked:false,
+    imageUrl:f.imageUrl||null,
     priceHistory:[yw], createdAt:new Date().toISOString(), featured:false
   };
   // Guardar en DB primero — si falla no agregar al STATE
