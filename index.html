@@ -7238,6 +7238,111 @@ async function adminUnlockMarket(id){
   render();
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// ORACLE ENGINE — solo pausa mercados, nunca resuelve automáticamente
+// Corre cada 30 minutos. El admin verifica y resuelve manualmente.
+// ═══════════════════════════════════════════════════════════════════
+
+const ORACLE_INTERVAL_MS = 30 * 60 * 1000; // 30 minutos
+let   oracleTimer = null;
+
+// Parsea la config del oracle para extraer condición
+// Formatos soportados:
+//   Crypto:  "BTC>100000"  "ETH<2000"  "SOL>200"
+function parseOracleCondition(config){
+  const m = config.trim().match(/^([A-Z]+)\s*([><]=?)\s*([\d.]+)$/i);
+  if(!m) return null;
+  return {coin: m[1].toLowerCase(), op: m[2], target: parseFloat(m[3])};
+}
+
+// Evalúa la condición contra el precio actual
+function evalCondition(price, op, target){
+  if(op===">" ) return price >  target;
+  if(op===">=") return price >= target;
+  if(op==="<" ) return price <  target;
+  if(op==="<=") return price <= target;
+  return false;
+}
+
+// Mapa de símbolos → id de CoinGecko
+const COINGECKO_IDS = {
+  btc:"bitcoin", eth:"ethereum", sol:"solana", matic:"matic-network",
+  bnb:"binancecoin", xrp:"ripple", ada:"cardano", doge:"dogecoin",
+  avax:"avalanche-2", link:"chainlink", dot:"polkadot", ltc:"litecoin",
+};
+
+async function runOracleCrypto(){
+  const cryptoMarkets = STATE.markets.filter(m=>
+    m.oracleType==="crypto" && !m.resolved && !m.oracleLocked && !m.manualPaused
+  );
+  if(!cryptoMarkets.length) return;
+
+  // Recoger todos los coins únicos que necesitamos
+  const needed = new Set();
+  cryptoMarkets.forEach(m=>{
+    const c = parseOracleCondition(m.oracleConfig||"");
+    if(c) needed.add(c.coin);
+  });
+  if(!needed.size) return;
+
+  const ids = [...needed].map(s=>COINGECKO_IDS[s]||s).join(",");
+  try{
+    const res = await fetch(
+      `https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=usd`,
+      {signal: AbortSignal.timeout(8000)}
+    );
+    if(!res.ok) return;
+    const prices = await res.json();
+
+    for(const m of cryptoMarkets){
+      const cond = parseOracleCondition(m.oracleConfig||"");
+      if(!cond) continue;
+      const geckoId = COINGECKO_IDS[cond.coin] || cond.coin;
+      const price   = prices[geckoId]?.usd;
+      if(price == null) continue;
+
+      console.log(`[Oracle Crypto] ${m.title.slice(0,30)} | ${cond.coin.toUpperCase()} = $${price.toLocaleString()} | condición: ${price} ${cond.op} ${cond.target} → ${evalCondition(price,cond.op,cond.target)}`);
+
+      if(evalCondition(price, cond.op, cond.target)){
+        // Condición cumplida → pausar mercado para revisión manual
+        await lockMarketForReview(m, `Oracle Crypto: ${cond.coin.toUpperCase()} = $${price.toLocaleString()} (condición: ${cond.op}${cond.target.toLocaleString()})`);
+      }
+    }
+  }catch(e){
+    console.warn("[Oracle Crypto] Error consultando CoinGecko:", e?.message||e);
+  }
+}
+
+// Bloquea el mercado para revisión del admin
+async function lockMarketForReview(m, reason){
+  const idx = STATE.markets.findIndex(x=>x.id===m.id);
+  if(idx<0) return;
+  console.log(`[Oracle] 🔒 Bloqueando "${m.title.slice(0,40)}" — ${reason}`);
+  await db.from("markets").update({oracle_locked:true}).eq("id",m.id);
+  STATE.markets[idx] = {...STATE.markets[idx], oracleLocked:true};
+  // Log en consola (podrías añadir notificación push aquí en el futuro)
+  console.warn(`[Oracle] ⚠️ Mercado bloqueado para revisión manual: "${m.title}"\nMotivo: ${reason}`);
+  // Si el admin está en el panel resolver, re-renderizar
+  if(STATE.view==="admin" && STATE.adminTab==="resolve") render();
+}
+
+// Punto de entrada del oracle — corre crypto por ahora
+async function runOracleCheck(){
+  console.log(`[Oracle] ▶ Chequeando mercados — ${new Date().toLocaleTimeString()}`);
+  await runOracleCrypto();
+  console.log(`[Oracle] ✅ Check completado — próximo en 30 min`);
+}
+
+// Iniciar el oracle (llamar después de dbInit)
+function startOracle(){
+  if(oracleTimer) clearInterval(oracleTimer);
+  runOracleCheck(); // primera vez inmediatamente
+  oracleTimer = setInterval(runOracleCheck, ORACLE_INTERVAL_MS);
+  console.log("[Oracle] 🚀 Iniciado — intervalo: 30 minutos");
+}
+
+// ── Fin oracle engine ──────────────────────────────────────────────
+
 // ── PANEL DE RETIROS ─────────────────────────────────────────────
 async function dbLoadWithdrawals(){
   try{
@@ -8887,7 +8992,12 @@ document.getElementById("app").innerHTML=`
   </div>`;
 // Cargar datos de Supabase, luego seed si está vacío, luego render
 detectLangByIP().then(()=>{
-  dbInit().then(()=>{ dbSeedMarketsIfEmpty(); checkReferralOnLoad(); setTimeout(dbLoadNewsAndTrending, 2000); });
+  dbInit().then(()=>{
+    dbSeedMarketsIfEmpty();
+    checkReferralOnLoad();
+    setTimeout(dbLoadNewsAndTrending, 2000);
+    startOracle(); // Oracle de precios — solo pausa, nunca resuelve
+  });
 });
 </script>
 </body>
