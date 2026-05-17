@@ -9153,7 +9153,8 @@ function openAvatarModal(){
         <button class="btn-ghost" style="width:100%;padding:10px" onclick="document.getElementById('avatar-file-input').click()">
           📁 Seleccionar imagen
         </button>
-        <div class="hint">JPG, PNG o GIF · Máx 2MB</div>
+        <div class="hint">JPG, PNG o GIF · Cualquier tamaño — se comprime automáticamente</div>
+        <div id="avatar-upload-status" style="font-size:11px;color:var(--muted);margin-top:4px;min-height:16px"></div>
       </div>
       <div class="form-group">
         <label class="lbl">O pega una URL de imagen</label>
@@ -9177,16 +9178,37 @@ function previewAvatarUrl(url){
   preview.innerHTML=renderAvatar(u.username,url||null,90,36);
 }
 function handleAvatarFile(input){
-  const file=input.files[0];if(!file)return;
-  if(file.size>2*1024*1024){notify("La imagen no puede superar 2MB","error");return;}
-  const reader=new FileReader();
-  reader.onload=e=>{
-    const dataUrl=e.target.result;
+  const file=input.files[0]; if(!file) return;
+
+  // Sin límite de tamaño — redimensionamos y comprimimos automáticamente
+  const status = document.getElementById("avatar-upload-status");
+  if(status) status.textContent = "⏳ Procesando imagen…";
+
+  const img = new Image();
+  img.onload = () => {
+    // Redimensionar a máximo 400x400 manteniendo proporción
+    const MAX = 400;
+    const ratio = Math.min(MAX/img.width, MAX/img.height, 1);
+    const canvas = document.createElement("canvas");
+    canvas.width  = Math.round(img.width  * ratio);
+    canvas.height = Math.round(img.height * ratio);
+    canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+
+    // Comprimir a JPEG 85% calidad
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+
     previewAvatarUrl(dataUrl);
-    const urlInput=document.getElementById("avatar-url-input");
-    if(urlInput)urlInput.value=dataUrl;
+    const urlInput = document.getElementById("avatar-url-input");
+    if(urlInput) urlInput.value = dataUrl;
+
+    const kb = Math.round(dataUrl.length * 0.75 / 1024);
+    if(status) status.textContent = `✅ Imagen lista (${kb}KB)`;
+    URL.revokeObjectURL(img.src);
   };
-  reader.readAsDataURL(file);
+  img.onerror = () => {
+    if(status) status.textContent = "❌ Error al procesar la imagen";
+  };
+  img.src = URL.createObjectURL(file);
 }
 async function saveAvatar(){
   const u=getUser();if(!u)return;
