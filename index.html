@@ -1026,6 +1026,13 @@ input, select, textarea{
       <a onclick="navigate('risks')" id="footer-risks">Riesgos</a>
       <a onclick="navigate('responsible')" id="footer-responsible">Juego responsable</a>
     </div>
+    <div class="footer-col">
+      <h4 id="footer-support-title">Soporte</h4>
+      <a href="mailto:statwaves.help@gmail.com" id="footer-support-email" style="display:flex;align-items:center;gap:6px">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M2 7l10 7 10-7"/></svg>
+        statwaves.help@gmail.com
+      </a>
+    </div>
   </div>
   <div class="footer-bottom">
     <p id="footer-copy">© 2026 Statwaves. Todos los derechos reservados. Plataforma operada con fines de entretenimiento.</p>
@@ -2715,6 +2722,8 @@ function renderFooter(){
   set("footer-resp",en?"Responsibility":"Responsabilidad");
   set("footer-risks",en?"Risks":"Riesgos");
   set("footer-responsible",en?"Responsible gambling":"Juego responsable");
+  set("footer-support-title",en?"Support":"Soporte");
+  set("footer-support-email","statwaves.help@gmail.com");
   set("footer-copy",en?"© 2026 Statwaves. All rights reserved. Platform operated for entertainment purposes.":"© 2026 Statwaves. Todos los derechos reservados. Plataforma operada con fines de entretenimiento.");
   set("footer-badge-resp",en?"Responsible gambling":"Juego responsable");
   set("footer-badge-ssl",en?"SSL secure":"SSL seguro");
@@ -6705,9 +6714,31 @@ function renderAdminAccounts(){
       <td style="color:var(--muted);font-size:12px">${escHtml(u.email)}</td>
       <td>${mkTag(u.role,u.role==="admin"?"var(--gold)":"#666")}</td>
       <td style="font-weight:700;color:var(--yes)">${usd(u.balance)}</td>
-      <td>${mkTag(u.active?t("admin_active"):t("admin_inactive"),u.active?"var(--yes)":"var(--no)")}</td>
       <td style="color:var(--muted)">${mktCount}</td>
-      <td style="font-size:11px;color:var(--muted)">${new Date(u.createdAt).toLocaleDateString(STATE.lang==="en"?"en-US":"es-CO")}</td>
+      <td style="font-size:11px;color:var(--muted)">
+        ${u.walletAddress
+          ? `<div style="display:flex;align-items:center;gap:6px">
+               <span style="font-family:monospace;font-size:10px">${u.walletAddress.slice(0,6)}…${u.walletAddress.slice(-4)}</span>
+               <button onclick="navigator.clipboard.writeText('${u.walletAddress}').then(()=>notify('Copiado','success'))"
+                 style="border:none;background:none;cursor:pointer;color:var(--muted);padding:0;font-size:11px;flex-shrink:0"
+                 title="${u.walletAddress}">📋</button>
+               <a href="https://solscan.io/account/${u.walletAddress}" target="_blank"
+                 style="font-size:10px;color:var(--accent);text-decoration:none" title="Ver en Solscan">↗</a>
+             </div>`
+          : `<span style="color:var(--border)">—</span>`}
+        ${u.evmAddress
+          ? `<div style="display:flex;align-items:center;gap:6px;margin-top:3px">
+               <span style="font-family:monospace;font-size:10px;color:var(--muted)">${u.evmAddress.slice(0,6)}…${u.evmAddress.slice(-4)}</span>
+               <button onclick="navigator.clipboard.writeText('${u.evmAddress}').then(()=>notify('Copiado','success'))"
+                 style="border:none;background:none;cursor:pointer;color:var(--muted);padding:0;font-size:11px"
+                 title="${u.evmAddress}">📋</button>
+               <a href="https://etherscan.io/address/${u.evmAddress}" target="_blank"
+                 style="font-size:10px;color:var(--accent);text-decoration:none" title="Ver en Etherscan">↗</a>
+             </div>`
+          : ""}
+      </td>
+      <td>${mkTag(u.active?t("admin_active"):t("admin_inactive"),u.active?"var(--yes)":"var(--no)")}</td>
+      <td style="color:var(--muted);font-size:11px">${new Date(u.createdAt).toLocaleDateString(STATE.lang==="en"?"en-US":"es-CO")}</td>
       <td><div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
         ${adjustHtml}
         <button class="${u.active?"btn-deactivate":"btn-activate"}" onclick="adminToggle('${u.id}')">${u.active?t("admin_deactivate"):t("admin_activate")}</button>
@@ -6715,7 +6746,7 @@ function renderAdminAccounts(){
       </div></td>
     </tr>`;
   }).join("");
-  const thLabels=[t("admin_th_user"),t("admin_th_email"),t("admin_th_role"),t("admin_th_balance"),t("admin_th_status"),t("admin_th_markets"),t("admin_th_created"),t("admin_th_actions")];
+  const thLabels=[t("admin_th_user"),t("admin_th_email"),t("admin_th_role"),t("admin_th_balance"),t("admin_th_markets"),"Wallet",t("admin_th_status"),t("admin_th_created"),t("admin_th_actions")];
   return`<div class="slide-in">
   <div class="card" style="margin-bottom:20px">
     <div class="admin-section-title">➕ ${t("admin_new_account")}</div>
@@ -6842,7 +6873,7 @@ function renderOracleConfigHint(){
   const hints = {
     none:   ["",""],
     sports: ["— ID del fixture en API-Sports",
-             "💡 Ejemplo: <code>fixture:1234567</code> (fútbol) · <code>game:856432</code> (NBA) · <code>match:99321</code> (MMA)<br>Busca el ID en api-sports.io → Live Demo → ingresa el partido"],
+             "💡 Formato: <code>fixture:ID</code> · Busca el ID en <a href='https://dashboard.api-sports.io' target='_blank' style='color:var(--accent)'>dashboard.api-sports.io</a> → Live Demo → Football → Fixtures → busca el partido<br>Ejemplo final Copa América: <code>fixture:1089871</code> · El oracle se activa cuando el partido termina (FT/AET/PEN)"],
     crypto: ["— condición de precio",
              "💡 Ejemplos: <code>BTC>100000</code> · <code>ETH>5000</code> · <code>BTC&lt;50000</code> · <code>SOL>300</code>"],
     news:   ["— palabras clave (separadas por coma)",
@@ -7068,6 +7099,19 @@ function renderAdminResolve(){
             ${oracleTag}
           </div>
           ${m.oracleConfig?`<div style="font-size:11px;color:var(--muted);margin-top:4px">Config: <code>${escHtml(m.oracleConfig)}</code></div>`:""}
+          ${STATE.gdeltAlerts?.[m.id] ? `
+            <div style="margin-top:10px;padding:10px 12px;background:rgba(245,158,11,.08);border-radius:10px;border-left:3px solid #f59e0b">
+              <div style="font-size:11px;font-weight:800;color:#f59e0b;margin-bottom:6px">
+                📡 GDELT detectó ${STATE.gdeltAlerts[m.id].count} artículos en las últimas 2h
+              </div>
+              ${STATE.gdeltAlerts[m.id].titles.map(a=>`
+                <div style="font-size:11px;color:var(--text-2);margin-bottom:4px">
+                  ${a.url ? `<a href="${escHtml(a.url)}" target="_blank" style="color:var(--accent);text-decoration:none">→ ${escHtml((a.title||"").slice(0,80))}</a>` : escHtml((a.title||"").slice(0,80))}
+                </div>`).join("")}
+              <div style="font-size:10px;color:var(--muted);margin-top:6px">
+                Verificado: ${new Date(STATE.gdeltAlerts[m.id].checkedAt).toLocaleTimeString()} · Confirma en 2+ fuentes antes de resolver
+              </div>
+            </div>` : ""}
           ${!m.resolved ? financeRow : ""}
         </div>
         <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end">
@@ -7246,6 +7290,82 @@ async function adminUnlockMarket(id){
 const ORACLE_INTERVAL_MS = 30 * 60 * 1000; // 30 minutos
 let   oracleTimer = null;
 
+// ── API-Sports key — obtén la tuya gratis en dashboard.api-sports.io ──
+// Pégala aquí después de registrarte (plan gratuito = 100 req/día)
+const API_SPORTS_KEY = "3ac005a85b59631356010e9983c239e5";
+
+// ── Formatos de config para oracle type="sports" ──────────────────────
+// fixture:1234567       → resultado de un partido específico (fútbol)
+// league:1:season:2026  → si algún equipo ganó un torneo
+// Ejemplo mercado Mundial: "fixture:1089871" (busca el fixture del partido final)
+
+async function runOracleSports(){
+  if(!API_SPORTS_KEY){
+    console.log("[Oracle Sports] ⚠️ Sin API key — configura API_SPORTS_KEY en el código");
+    return;
+  }
+
+  const sportsMarkets = STATE.markets.filter(m=>
+    m.oracleType==="sports" && !m.resolved && !m.oracleLocked && !m.manualPaused
+  );
+  if(!sportsMarkets.length) return;
+
+  for(const m of sportsMarkets){
+    const config = (m.oracleConfig||"").trim();
+
+    // Formato: fixture:ID → consultar resultado de un partido específico
+    const fixtureMatch = config.match(/fixture:(\d+)/i);
+    if(fixtureMatch){
+      const fixtureId = fixtureMatch[1];
+      try{
+        const res = await fetch(
+          `https://v3.football.api-sports.io/fixtures?id=${fixtureId}`,
+          {headers:{"x-apisports-key": API_SPORTS_KEY}, signal:AbortSignal.timeout(8000)}
+        );
+        const data = await res.json();
+        const fixture = data?.response?.[0];
+        if(!fixture) continue;
+
+        const status   = fixture.fixture?.status?.short; // FT=full time, NS=not started
+        const homeTeam = fixture.teams?.home?.name;
+        const awayTeam = fixture.teams?.away?.name;
+        const homeGoals= fixture.goals?.home;
+        const awayGoals= fixture.goals?.away;
+        const homeWon  = fixture.teams?.home?.winner;
+        const awayWon  = fixture.teams?.away?.winner;
+
+        console.log(`[Oracle Sports] Fixture ${fixtureId} | ${homeTeam} ${homeGoals}-${awayGoals} ${awayTeam} | Status: ${status}`);
+
+        if(status === "FT" || status === "AET" || status === "PEN"){
+          // Partido terminado — alertar al admin
+          const result = homeWon ? `${homeTeam} ganó` : awayWon ? `${awayTeam} ganó` : "Empate";
+          console.warn(`[Oracle Sports] 🏁 Partido terminado: ${result}`);
+
+          if(!STATE.gdeltAlerts) STATE.gdeltAlerts = {};
+          STATE.gdeltAlerts[m.id] = {
+            count: 1,
+            titles: [{
+              title: `⚽ ${homeTeam} ${homeGoals} - ${awayGoals} ${awayTeam} (${status}) · ${result}`,
+              url: `https://www.api-football.com/`
+            }],
+            checkedAt: new Date().toISOString(),
+            source: "API-Sports"
+          };
+
+          // Bloquear automáticamente cuando el partido termina
+          await lockMarketForReview(m,
+            `API-Sports: ${homeTeam} ${homeGoals}-${awayGoals} ${awayTeam} [${status}] — ${result}`
+          );
+        }
+      }catch(e){
+        console.warn(`[Oracle Sports] Error fixture ${fixtureId}:`, e?.message||e);
+      }
+      await new Promise(r=>setTimeout(r,1500));
+    }
+  }
+}
+
+
 // Parsea la config del oracle para extraer condición
 // Formatos soportados:
 //   Crypto:  "BTC>100000"  "ETH<2000"  "SOL>200"
@@ -7327,9 +7447,69 @@ async function lockMarketForReview(m, reason){
 }
 
 // Punto de entrada del oracle — corre crypto por ahora
+async function runOracleGDELT(){
+  const newsMarkets = STATE.markets.filter(m=>
+    (m.oracleType==="news" || m.oracleType==="sports") &&
+    !m.resolved && !m.oracleLocked && !m.manualPaused
+  );
+  if(!newsMarkets.length) return;
+
+  for(const m of newsMarkets){
+    const keywords = (m.oracleConfig||"").trim();
+    if(!keywords) continue;
+
+    // Buscar artículos de las últimas 2 horas con las keywords del mercado
+    // GDELT acepta múltiples keywords con OR entre ellas
+    const kwList = keywords.split(",").map(k=>k.trim()).filter(Boolean);
+    if(!kwList.length) continue;
+
+    // Construir query: "keyword1" OR "keyword2" OR ...
+    const query = kwList.map(k=>`"${k}"`).join(" OR ");
+    const url = `https://api.gdeltproject.org/api/v2/doc/doc?query=${encodeURIComponent(query)}&mode=artlist&maxrecords=10&format=json&timespan=2h`;
+
+    try{
+      const res = await fetch(url, {signal: AbortSignal.timeout(10000)});
+      if(!res.ok) continue;
+      const data = await res.json();
+      const articles = data?.articles || [];
+
+      console.log(`[Oracle GDELT] "${m.title.slice(0,30)}" | keywords: ${kwList.slice(0,2).join(", ")} | artículos encontrados: ${articles.length}`);
+
+      // Umbral: si hay 3+ artículos en las últimas 2 horas → el evento probablemente ocurrió
+      // Este umbral es conservador para evitar falsos positivos
+      if(articles.length >= 3){
+        const titles = articles.slice(0,3).map(a=>a.title||"").join(" | ");
+        console.warn(`[Oracle GDELT] 🔔 Cobertura significativa detectada para "${m.title.slice(0,30)}"`);
+        console.warn(`[Oracle GDELT] Artículos: ${titles}`);
+
+        // NO bloqueamos automáticamente — solo alertamos en consola
+        // El admin debe revisar manualmente antes de resolver
+        // Para bloquear automáticamente descomenta la siguiente línea:
+        // await lockMarketForReview(m, `GDELT: ${articles.length} artículos en 2h · "${titles.slice(0,100)}"`);
+
+        // En cambio, guardamos el log en STATE para mostrar en admin
+        if(!STATE.gdeltAlerts) STATE.gdeltAlerts = {};
+        STATE.gdeltAlerts[m.id] = {
+          count: articles.length,
+          titles: articles.slice(0,3).map(a=>({title:a.title, url:a.url})),
+          checkedAt: new Date().toISOString()
+        };
+        if(STATE.view==="admin" && STATE.adminTab==="resolve") render();
+      }
+    }catch(e){
+      console.warn(`[Oracle GDELT] Error para "${m.title.slice(0,25)}":`, e?.message||e);
+    }
+
+    // Esperar 2s entre consultas para no sobrecargar la API
+    await new Promise(r=>setTimeout(r,2000));
+  }
+}
+
 async function runOracleCheck(){
   console.log(`[Oracle] ▶ Chequeando mercados — ${new Date().toLocaleTimeString()}`);
   await runOracleCrypto();
+  await runOracleSports();
+  await runOracleGDELT();
   console.log(`[Oracle] ✅ Check completado — próximo en 30 min`);
 }
 
@@ -7338,7 +7518,7 @@ function startOracle(){
   if(oracleTimer) clearInterval(oracleTimer);
   runOracleCheck(); // primera vez inmediatamente
   oracleTimer = setInterval(runOracleCheck, ORACLE_INTERVAL_MS);
-  console.log("[Oracle] 🚀 Iniciado — intervalo: 30 minutos");
+  console.log("[Oracle] 🚀 Iniciado — Crypto (CoinGecko) + Sports (API-Sports) + Noticias (GDELT)");
 }
 
 // ── Fin oracle engine ──────────────────────────────────────────────
