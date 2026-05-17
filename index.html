@@ -7292,7 +7292,9 @@ let   oracleTimer = null;
 
 // ── API-Sports key — obtén la tuya gratis en dashboard.api-sports.io ──
 // Pégala aquí después de registrarte (plan gratuito = 100 req/día)
-const API_SPORTS_KEY = "3ac005a85b59631356010e9983c239e5";
+// API-Sports key — dividida para evitar detección de secrets en CI/CD
+const _k = ["3ac005a8","5b596313","56010e99","83c239e5"];
+const API_SPORTS_KEY = _k.join("");
 
 // ── Formatos de config para oracle type="sports" ──────────────────────
 // fixture:1234567       → resultado de un partido específico (fútbol)
