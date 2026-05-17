@@ -1938,7 +1938,9 @@ const STATE={
   breakingIds:[],
   trendingIds:[],
   searchPanelOpen:false,
-  marketInvested:{},  // {marketId:{yes:$,no:$}} — cargado desde DB al abrir Resolver
+  marketInvested:{},
+  copyTraderView:null,   // userId del trader que se está viendo
+  following:[],          // [userId] que sigue el usuario actual
   marketInvested:{},  // {marketId: {yes:$, no:$}} — cargado desde DB al abrir Resolver
   // trade modal
   tradeOpen:false,tradeMarketId:null,tradeSide:"YES",tradeMode:"buy",tradeShares:"",tradeDollars:"",
@@ -2796,13 +2798,34 @@ function updateSearchPanelResults(q){
     );
   }).slice(0,8) : [];
 
+  // Búsqueda de usuarios (si empieza con @ o coincide con username)
+  const userResults = q.trim() ? STATE.users.filter(u=>{
+    const clean = q.replace(/^@/,"").toLowerCase();
+    return u.username.toLowerCase().includes(clean);
+  }).slice(0,3) : [];
+
   const clearBtn = document.getElementById("sp-clear");
   if(clearBtn) clearBtn.style.display = q ? "block" : "none";
 
-  if(results.length){
-    container.innerHTML = `
-      <div style="font-size:10px;font-weight:700;color:var(--muted);letter-spacing:.8px;text-transform:uppercase;margin-bottom:10px">${STATE.lang==="en"?"Results":"Resultados"}</div>
-      ${results.map(m=>{
+  if(results.length || userResults.length){
+    container.innerHTML =
+      // Usuarios encontrados
+      (userResults.length ? `
+        <div style="font-size:10px;font-weight:700;color:var(--muted);letter-spacing:.8px;text-transform:uppercase;margin-bottom:10px">Traders</div>
+        ${userResults.map(u=>`
+          <div onclick="closeSearchPanel();STATE.portfolioTab='leaderboard';STATE.copyTraderView='${u.id}';navigate('portfolio')"
+            style="display:flex;align-items:center;gap:10px;padding:10px;background:var(--card);border-radius:12px;margin-bottom:6px;cursor:pointer;border:1px solid var(--border)">
+            ${renderAvatar(u.username,u.avatarUrl||null,36,14)}
+            <div style="flex:1;min-width:0">
+              <div style="font-size:13px;font-weight:700">@${escHtml(u.username)}</div>
+              <div style="font-size:11px;color:var(--muted)">Ver perfil</div>
+            </div>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--muted)" stroke-width="2" stroke-linecap="round"><path d="M9 18l6-6-6-6"/></svg>
+          </div>`).join("")}
+        ${results.length?`<div style="font-size:10px;font-weight:700;color:var(--muted);letter-spacing:.8px;text-transform:uppercase;margin:14px 0 10px">Mercados</div>`:""}
+      `:"") +
+      // Mercados encontrados
+      results.map(m=>{
         const p=getPrice(m,"YES");
         return`<div onclick="closeSearchPanel();navigate('market',{marketId:'${m.id}'})"
           style="display:flex;align-items:center;gap:12px;padding:12px;background:var(--card);border-radius:12px;margin-bottom:8px;cursor:pointer;border:1px solid var(--border)">
@@ -2818,7 +2841,7 @@ function updateSearchPanelResults(q){
             <div style="font-size:10px;color:var(--muted)">YES</div>
           </div>
         </div>`;
-      }).join("")}`;
+      }).join("");
   } else if(q.trim()){
     container.innerHTML = `<div style="text-align:center;padding:32px;color:var(--muted);font-size:13px">Sin resultados para "<strong>${escHtml(q)}</strong>"</div>`;
   } else {
@@ -4995,8 +5018,233 @@ function submitComment(marketId){
 }
 
 // ─── PORTFOLIO ─────────────────────────────────────────────────────
+// ─── COPYTRADING ────────────────────────────────────────────────────
+
+async function followTrader(userId){
+  const u = getUser(); if(!u) return notify("Inicia sesión primero","error");
+  if(userId === u.id) return notify("No puedes seguirte a ti mismo","error");
+  if(STATE.following.includes(userId)){
+    STATE.following = STATE.following.filter(id=>id!==userId);
+    notify("Dejaste de seguir a este trader","info");
+  } else {
+    STATE.following.push(userId);
+    notify("¡Ahora sigues a este trader!","success");
+  }
+  // Guardar en localStorage
+  localStorage.setItem("sw_following_"+u.id, JSON.stringify(STATE.following));
+  render();
+}
+
+function loadFollowing(){
+  const u = getUser(); if(!u) return;
+  const saved = localStorage.getItem("sw_following_"+u.id);
+  if(saved) try{ STATE.following = JSON.parse(saved); }catch(e){}
+}
+
+function renderTraderProfile(userId){
+  const trader = STATE.users.find(u=>u.id===userId);
+  if(!trader) return;
+  STATE.copyTraderView = userId;
+  render();
+}
+
+function renderLeaderboard(){
+  const q = (STATE.leaderboardQ||"").toLowerCase().trim();
+
+  const traders = STATE.users.map(u=>{
+    const positions = Object.entries(u.positions||{}).filter(([,p])=>(p.YES||0)>0||(p.NO||0)>0);
+    const totalValue = positions.reduce((sum,[mid,pos])=>{
+      const m=getMarket(mid); if(!m) return sum;
+      return sum + (pos.YES>0?calcSellReturn(m,"YES",pos.YES):0) + (pos.NO>0?calcSellReturn(m,"NO",pos.NO):0);
+    },0);
+    const resolvedWins = Object.entries(u.positions||{}).filter(([mid,pos])=>{
+      const m=getMarket(mid); if(!m||!m.resolved) return false;
+      return (m.resolution==="YES"&&(pos.YES||0)>0)||(m.resolution==="NO"&&(pos.NO||0)>0);
+    }).length;
+    const resolvedTotal = Object.entries(u.positions||{}).filter(([mid])=>{
+      const m=getMarket(mid); return m&&m.resolved;
+    }).length;
+    return {
+      ...u,
+      activePositions: positions.length,
+      portfolioValue: totalValue,
+      wins: resolvedWins,
+      total: resolvedTotal,
+      winRate: resolvedTotal>0 ? Math.round((resolvedWins/resolvedTotal)*100) : null,
+    };
+  }).filter(u=>{
+    const hasActivity = u.activePositions>0||u.wins>0;
+    if(!hasActivity) return false;
+    if(!q) return true;
+    return u.username.toLowerCase().includes(q) || (u.email||"").toLowerCase().includes(q);
+  }).sort((a,b)=>b.portfolioValue-a.portfolioValue).slice(0,50);
+
+  const currentUser = getUser();
+
+  return`<div>
+    <!-- Buscador de usuarios -->
+    <div style="position:relative;margin-bottom:16px">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--muted)" stroke-width="2"
+        stroke-linecap="round" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);pointer-events:none">
+        <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
+      </svg>
+      <input type="text" placeholder="Buscar trader por @username…"
+        value="${escHtml(STATE.leaderboardQ||"")}"
+        oninput="STATE.leaderboardQ=this.value;document.getElementById('lb-results').innerHTML=renderLeaderboard()"
+        style="width:100%;padding:10px 12px 10px 36px;border-radius:12px;border:1.5px solid var(--border);
+        background:var(--card);font-size:13px;color:var(--text);font-family:inherit;box-sizing:border-box;outline:none"
+        onfocus="this.style.borderColor='var(--yes)'" onblur="this.style.borderColor='var(--border)'"/>
+      ${STATE.leaderboardQ?`<button onclick="STATE.leaderboardQ='';render()"
+        style="position:absolute;right:10px;top:50%;transform:translateY(-50%);border:none;
+        background:none;color:var(--muted);cursor:pointer;font-size:16px;padding:0">✕</button>`:""}
+    </div>
+
+    <div id="lb-results">
+    ${traders.length===0
+      ? `<div style="text-align:center;padding:48px;color:var(--muted)">
+          <div style="font-size:32px;margin-bottom:12px">🔍</div>
+          <div style="font-weight:600">${q?"Sin resultados para \""+escHtml(q)+"\"":"Aún no hay traders con actividad"}</div>
+         </div>`
+      : traders.map((trader,i)=>{
+          const isSelf = currentUser&&trader.id===currentUser.id;
+          const isFollowing = STATE.following.includes(trader.id);
+          const rank = q ? null : i; // No mostrar ranking si está buscando
+          const medal = rank===0?'🥇':rank===1?'🥈':rank===2?'🥉':rank!==null?`<span style="font-weight:700;color:var(--muted)">${i+1}</span>`:"";
+          return`<div style="display:flex;align-items:center;gap:12px;padding:14px;background:var(--card);
+              border-radius:14px;margin-bottom:8px;border:1px solid var(--border);cursor:pointer;transition:border-color .15s"
+              onmouseover="this.style.borderColor='var(--yes)'" onmouseout="this.style.borderColor='var(--border)'"
+              onclick="renderTraderProfile('${trader.id}')">
+            ${rank!==null?`<div style="width:28px;text-align:center;flex-shrink:0;font-size:16px">${medal}</div>`:""}
+            <div style="flex-shrink:0">${renderAvatar(trader.username,trader.avatarUrl||null,42,17)}</div>
+            <div style="flex:1;min-width:0">
+              <div style="font-weight:700;font-size:14px">@${escHtml(trader.username)}${isSelf?`<span style="margin-left:6px;font-size:10px;color:var(--yes)">TÚ</span>`:""}</div>
+              <div style="font-size:11px;color:var(--muted);margin-top:2px;display:flex;gap:10px;flex-wrap:wrap">
+                <span>${trader.activePositions} posicion${trader.activePositions!==1?"es":""} activas</span>
+                ${trader.winRate!==null?`<span style="color:var(--yes)">✓ ${trader.winRate}% win rate</span>`:""}
+              </div>
+            </div>
+            <div style="text-align:right;flex-shrink:0">
+              <div style="font-weight:800;font-size:15px;color:var(--yes)">${usd(trader.portfolioValue)}</div>
+              <div style="font-size:10px;color:var(--muted);margin-top:2px">portfolio</div>
+            </div>
+            ${!isSelf?`<button onclick="event.stopPropagation();followTrader('${trader.id}')"
+              style="flex-shrink:0;padding:6px 14px;border-radius:20px;font-size:12px;font-weight:700;
+              border:1.5px solid ${isFollowing?"var(--yes)":"var(--border)"};
+              background:${isFollowing?"var(--yes-bg)":"transparent"};
+              color:${isFollowing?"var(--yes)":"var(--muted)"};cursor:pointer;font-family:inherit">
+              ${isFollowing?"✓ Siguiendo":"+ Seguir"}
+            </button>`:""}
+          </div>`;
+        }).join("")}
+    </div>
+  </div>`;
+}
+
+function renderCopyTraderView(){
+  const trader = STATE.users.find(u=>u.id===STATE.copyTraderView);
+  if(!trader) return `<div class="container-sm"><p>Usuario no encontrado</p></div>`;
+
+  const currentUser = getUser();
+  const isSelf = currentUser && trader.id === currentUser.id;
+  const isFollowing = STATE.following.includes(trader.id);
+  const tab = STATE.profileTab || "activity";
+
+  const allPositions = Object.entries(trader.positions||{});
+  const activePos = allPositions.filter(([mid,p])=>{
+    const m=getMarket(mid); return m&&!m.resolved&&((p.YES||0)>0||(p.NO||0)>0);
+  });
+  const resolvedPos = allPositions.filter(([mid,p])=>{
+    const m=getMarket(mid); return m&&m.resolved&&((p.YES||0)>0||(p.NO||0)>0);
+  });
+  const wins = resolvedPos.filter(([mid,pos])=>{
+    const m=getMarket(mid);
+    return(m.resolution==="YES"&&(pos.YES||0)>0)||(m.resolution==="NO"&&(pos.NO||0)>0);
+  });
+  const winRate = resolvedPos.length>0?Math.round((wins.length/resolvedPos.length)*100):null;
+  const portfolioValue = activePos.reduce((sum,[mid,pos])=>{
+    const m=getMarket(mid); if(!m) return sum;
+    return sum+(pos.YES>0?calcSellReturn(m,"YES",pos.YES):0)+(pos.NO>0?calcSellReturn(m,"NO",pos.NO):0);
+  },0);
+
+  const userComments = [];
+  Object.entries(STATE.comments||{}).forEach(([marketId,comments])=>{
+    const m=getMarket(marketId); if(!m) return;
+    (comments||[]).forEach(c=>{
+      if(c.author===trader.username) userComments.push({...c,market:m,marketId});
+    });
+  });
+  userComments.sort((a,b)=>new Date(b.ts)-new Date(a.ts));
+
+  const activityFeed=[];
+  activePos.forEach(([mid,pos])=>{const m=getMarket(mid);if(m)activityFeed.push({type:"position",m,pos,ts:m.createdAt||""});});
+  resolvedPos.forEach(([mid,pos])=>{
+    const m=getMarket(mid);if(!m)return;
+    const won=(m.resolution==="YES"&&(pos.YES||0)>0)||(m.resolution==="NO"&&(pos.NO||0)>0);
+    activityFeed.push({type:"resolved",m,pos,won,ts:m.createdAt||""});
+  });
+  userComments.forEach(c=>activityFeed.push({type:"comment",...c,ts:c.ts}));
+  activityFeed.sort((a,b)=>new Date(b.ts)-new Date(a.ts));
+
+  const tabs=[{id:"activity",label:"Actividad"},{id:"positions",label:"Posiciones ("+activePos.length+")"},{id:"history",label:"Historial ("+resolvedPos.length+")"},{id:"comments",label:"Comentarios ("+userComments.length+")"}];
+
+  return`<div class="container-sm fade-up">
+    <button onclick="STATE.copyTraderView=null;STATE.profileTab=null;render()"
+      style="display:inline-flex;align-items:center;gap:6px;border:none;background:none;
+      color:var(--muted);cursor:pointer;font-size:13px;padding:0;margin-bottom:20px;font-family:inherit">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+      Volver
+    </button>
+    <div class="card" style="margin-bottom:20px;padding:24px;position:relative;overflow:hidden">
+      <div style="position:absolute;top:0;right:0;width:200px;height:100%;background:linear-gradient(135deg,transparent,var(--yes-bg));opacity:.4;pointer-events:none"></div>
+      <div style="display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap;position:relative">
+        <div style="flex-shrink:0">${renderAvatar(trader.username,trader.avatarUrl||null,80,32)}</div>
+        <div style="flex:1;min-width:200px">
+          <div style="font-weight:900;font-size:22px;margin-bottom:2px">@${escHtml(trader.username)}</div>
+          ${trader.walletAddress?`<div style="font-size:11px;color:var(--muted);font-family:monospace;margin-bottom:8px;display:flex;align-items:center;gap:6px"><span>${trader.walletAddress.slice(0,8)}…${trader.walletAddress.slice(-6)}</span><a href="https://solscan.io/account/${trader.walletAddress}" target="_blank" style="font-size:10px;color:var(--accent)">↗ Solscan</a></div>`:""}
+          <div style="font-size:12px;color:var(--muted)">Miembro desde ${trader.createdAt?new Date(trader.createdAt).toLocaleDateString("es-CO",{month:"long",year:"numeric"}):"—"}</div>
+        </div>
+        ${!isSelf?`<button onclick="followTrader('${trader.id}')" style="padding:10px 22px;border-radius:24px;font-size:13px;font-weight:700;border:2px solid ${isFollowing?"var(--yes)":"var(--border)"};background:${isFollowing?"var(--yes-bg)":"transparent"};color:${isFollowing?"var(--yes)":"var(--text)"};cursor:pointer;font-family:inherit;flex-shrink:0">${isFollowing?"✓ Siguiendo":"+ Seguir"}</button>`:""}
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:20px;padding-top:20px;border-top:1px solid var(--border)">
+        <div style="text-align:center"><div style="font-size:22px;font-weight:900;color:var(--yes)">${usd(portfolioValue)}</div><div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">Portfolio</div></div>
+        <div style="text-align:center"><div style="font-size:22px;font-weight:900">${activePos.length}</div><div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">Activas</div></div>
+        <div style="text-align:center"><div style="font-size:22px;font-weight:900;color:${winRate>=60?"var(--yes)":winRate<40?"var(--no)":"var(--text)"}">${winRate!==null?winRate+"%":"—"}</div><div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">Win rate</div></div>
+        <div style="text-align:center"><div style="font-size:22px;font-weight:900">${userComments.length}</div><div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">Comentarios</div></div>
+      </div>
+    </div>
+    <div style="display:flex;gap:0;border-bottom:2px solid var(--border);margin-bottom:20px;overflow-x:auto;scrollbar-width:none">
+      ${tabs.map(tb=>`<button onclick="STATE.profileTab='${tb.id}';render()" style="padding:10px 16px;font-size:13px;font-weight:${tab===tb.id?"700":"500"};border:none;background:transparent;cursor:pointer;font-family:inherit;white-space:nowrap;color:${tab===tb.id?"var(--yes)":"var(--muted)"};border-bottom:${tab===tb.id?"2px solid var(--yes)":"2px solid transparent"};margin-bottom:-2px">${tb.label}</button>`).join("")}
+    </div>
+    ${tab==="activity"?activityFeed.slice(0,20).map(item=>{
+      if(item.type==="position"){
+        const pYes=getPrice(item.m,"YES");
+        const val=(item.pos.YES>0?calcSellReturn(item.m,"YES",item.pos.YES):0)+(item.pos.NO>0?calcSellReturn(item.m,"NO",item.pos.NO):0);
+        return`<div style="display:flex;gap:12px;padding:14px;background:var(--card);border-radius:14px;margin-bottom:8px;border:1px solid var(--border);cursor:pointer" onclick="navigate('market',{marketId:'${item.m.id}'})"><div style="width:36px;height:36px;border-radius:10px;background:var(--yes-bg);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:18px;font-weight:700;color:var(--yes)">↑</div><div style="flex:1;min-width:0"><div style="font-size:11px;color:var(--muted);margin-bottom:3px">Posición abierta</div><div style="font-weight:600;font-size:13px;margin-bottom:6px">${escHtml(mTitle(item.m).slice(0,60))}${mTitle(item.m).length>60?"…":""}</div><div style="display:flex;gap:8px;flex-wrap:wrap">${item.pos.YES>0?`<span style="padding:3px 10px;border-radius:20px;background:var(--yes-bg);color:var(--yes);font-size:11px;font-weight:700">YES · ${item.pos.YES.toFixed(1)} shares</span>`:""}${item.pos.NO>0?`<span style="padding:3px 10px;border-radius:20px;background:var(--no-bg);color:var(--no);font-size:11px;font-weight:700">NO · ${item.pos.NO.toFixed(1)} shares</span>`:""}<span style="font-size:11px;color:var(--muted)">≈ ${usd(val)}</span></div></div><div style="text-align:right;flex-shrink:0"><div style="font-weight:800;color:var(--yes)">${pct(pYes)}</div><div style="font-size:10px;color:var(--muted)">prob YES</div></div></div>`;
+      }
+      if(item.type==="resolved"){
+        return`<div style="display:flex;gap:12px;padding:14px;background:var(--card);border-radius:14px;margin-bottom:8px;border:1px solid var(--border);opacity:.8;cursor:pointer" onclick="navigate('market',{marketId:'${item.m.id}'})"><div style="width:36px;height:36px;border-radius:10px;background:${item.won?"var(--yes-bg)":"var(--no-bg)"};display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:18px;font-weight:900;color:${item.won?"var(--yes)":"var(--no)"}">${item.won?"✓":"✗"}</div><div style="flex:1;min-width:0"><div style="font-size:11px;color:var(--muted);margin-bottom:3px">Mercado resuelto</div><div style="font-weight:600;font-size:13px;margin-bottom:4px">${escHtml(mTitle(item.m).slice(0,60))}${mTitle(item.m).length>60?"…":""}</div><span style="padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700;background:${item.won?"var(--yes-bg)":"var(--no-bg)"};color:${item.won?"var(--yes)":"var(--no)"}">${item.won?"Ganó":"Perdió"} · ${item.m.resolution}</span></div></div>`;
+      }
+      if(item.type==="comment"){
+        return`<div style="display:flex;gap:12px;padding:14px;background:var(--card);border-radius:14px;margin-bottom:8px;border:1px solid var(--border);cursor:pointer" onclick="navigate('market',{marketId:'${item.marketId}'})"><div style="width:36px;height:36px;border-radius:10px;background:var(--card2);display:flex;align-items:center;justify-content:center;flex-shrink:0"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--muted)" stroke-width="2" stroke-linecap="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg></div><div style="flex:1;min-width:0"><div style="font-size:11px;color:var(--accent);font-weight:600;margin-bottom:4px">${escHtml(mTitle(item.market).slice(0,50))}</div><div style="font-size:13px;color:var(--text);line-height:1.4;font-style:italic">"${escHtml(item.text)}"</div></div><div style="font-size:10px;color:var(--muted);flex-shrink:0;white-space:nowrap;margin-left:8px">${timeAgo(item.ts)}</div></div>`;
+      }
+      return"";
+    }).join("")||`<div style="text-align:center;padding:48px;color:var(--muted)">Sin actividad aún</div>`:""}
+    ${tab==="positions"?activePos.length===0?`<div style="text-align:center;padding:48px;color:var(--muted)">Sin posiciones activas</div>`:activePos.map(([mid,pos])=>{const m=getMarket(mid);if(!m)return"";const pYes=getPrice(m,"YES");const val=(pos.YES>0?calcSellReturn(m,"YES",pos.YES):0)+(pos.NO>0?calcSellReturn(m,"NO",pos.NO):0);return`<div class="card" style="margin-bottom:10px;cursor:pointer" onclick="navigate('market',{marketId:'${m.id}'})"><div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:10px"><div style="font-weight:700;font-size:14px;flex:1">${escHtml(mTitle(m))}</div><div style="text-align:right;flex-shrink:0"><div style="font-weight:800;color:var(--yes);font-size:15px">${pct(pYes)}</div><div style="font-size:10px;color:var(--muted)">prob YES</div></div></div><div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:${!isSelf?"10":"0"}px">${pos.YES>0?`<span style="padding:5px 12px;border-radius:20px;background:var(--yes-bg);color:var(--yes);font-size:12px;font-weight:700">YES · ${pos.YES.toFixed(1)} shares · ${usd(calcSellReturn(m,"YES",pos.YES))}</span>`:""}${pos.NO>0?`<span style="padding:5px 12px;border-radius:20px;background:var(--no-bg);color:var(--no);font-size:12px;font-weight:700">NO · ${pos.NO.toFixed(1)} shares · ${usd(calcSellReturn(m,"NO",pos.NO))}</span>`:""}</div>${!isSelf?`<div style="display:flex;gap:8px">${pos.YES>0?`<button onclick="event.stopPropagation();openTrade('${m.id}','YES','buy')" style="flex:1;padding:8px;border-radius:10px;background:var(--yes-bg);color:var(--yes);font-size:12px;font-weight:700;border:1px solid var(--yes);cursor:pointer">Copiar → YES</button>`:""}${pos.NO>0?`<button onclick="event.stopPropagation();openTrade('${m.id}','NO','buy')" style="flex:1;padding:8px;border-radius:10px;background:var(--no-bg);color:var(--no);font-size:12px;font-weight:700;border:1px solid var(--no);cursor:pointer">Copiar → NO</button>`:""}</div>`:""}</div>`;}).join(""):""}
+    ${tab==="history"?resolvedPos.length===0?`<div style="text-align:center;padding:48px;color:var(--muted)">Sin historial</div>`:resolvedPos.map(([mid,pos])=>{const m=getMarket(mid);if(!m)return"";const won=(m.resolution==="YES"&&(pos.YES||0)>0)||(m.resolution==="NO"&&(pos.NO||0)>0);return`<div class="card" style="margin-bottom:8px;cursor:pointer;opacity:.85" onclick="navigate('market',{marketId:'${m.id}'})"><div style="display:flex;align-items:center;gap:12px"><div style="width:40px;height:40px;border-radius:10px;flex-shrink:0;background:${won?"var(--yes-bg)":"var(--no-bg)"};display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:900;color:${won?"var(--yes)":"var(--no)"}">${won?"✓":"✗"}</div><div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13px;margin-bottom:4px">${escHtml(mTitle(m))}</div><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span style="font-size:11px;padding:3px 10px;border-radius:20px;font-weight:700;background:${won?"var(--yes-bg)":"var(--no-bg)"};color:${won?"var(--yes)":"var(--no)"}">${won?"Ganó":"Perdió"} · ${m.resolution}</span>${pos.YES>0?`<span style="font-size:11px;color:var(--muted)">YES · ${pos.YES.toFixed(1)} shares</span>`:""}${pos.NO>0?`<span style="font-size:11px;color:var(--muted)">NO · ${pos.NO.toFixed(1)} shares</span>`:""}</div></div></div></div>`;}).join(""):""}
+    ${tab==="comments"?userComments.length===0?`<div style="text-align:center;padding:48px;color:var(--muted)">Sin comentarios aún</div>`:userComments.map(c=>`<div style="display:flex;gap:12px;padding:14px;background:var(--card);border-radius:14px;margin-bottom:8px;border:1px solid var(--border);cursor:pointer" onclick="navigate('market',{marketId:'${c.marketId}'})">${renderAvatar(trader.username,trader.avatarUrl||null,40,16)}<div style="flex:1;min-width:0"><div style="font-size:11px;color:var(--accent);font-weight:600;margin-bottom:6px">${escHtml(mTitle(c.market).slice(0,50))}${mTitle(c.market).length>50?"…":""}</div><div style="font-size:13px;color:var(--text);line-height:1.5">${escHtml(c.text)}</div></div><div style="font-size:10px;color:var(--muted);flex-shrink:0;white-space:nowrap;margin-left:8px">${timeAgo(c.ts)}</div></div>`).join(""):""}
+  </div>`;
+}
+
+
 function renderPortfolio(){
   const u=getUser();if(!u)return`<div class="container-sm"><p>${t("sign_in_required")}</p></div>`;
+
+  // Si estamos viendo el perfil de un trader
+  if(STATE.copyTraderView) return renderCopyTraderView();
+
+  loadFollowing();
+
+  const tab = STATE.portfolioTab || "positions";
   const active=Object.entries(u.positions).filter(([,p])=>(p.YES||0)>0||(p.NO||0)>0);
   const totalValue=active.reduce((sum,[mid,pos])=>{
     const m=getMarket(mid);if(!m)return sum;
@@ -5039,8 +5287,25 @@ function renderPortfolio(){
     <button class="btn-green" style="padding:10px 20px" onclick="openDeposit()">💳 ${t("wallet_deposit")}</button>
     <button class="btn-ghost" style="padding:10px 20px" onclick="openWithdraw()">↑ ${t("wallet_withdraw")}</button>
   </div>
-  ${renderReferralSection(u)}
-  ${active.length===0
+
+  <!-- Tabs: Mis Posiciones / Leaderboard / Siguiendo -->
+  <div style="display:flex;gap:0;border-bottom:2px solid var(--border);margin-bottom:20px">
+    ${[
+      {id:"positions", label:"Mis posiciones"},
+      {id:"leaderboard", label:"Leaderboard"},
+      {id:"following", label:`Siguiendo (${STATE.following.length})`},
+    ].map(tb=>`
+      <button onclick="STATE.portfolioTab='${tb.id}';render()"
+        style="padding:10px 16px;font-size:13px;font-weight:${tab===tb.id?"700":"500"};
+        border:none;background:transparent;cursor:pointer;font-family:inherit;
+        color:${tab===tb.id?"var(--yes)":"var(--muted)"};
+        border-bottom:${tab===tb.id?"2px solid var(--yes)":"2px solid transparent"};
+        margin-bottom:-2px;transition:all .15s">
+        ${tb.label}
+      </button>`).join("")}
+  </div>
+
+  ${tab==="positions" ? (active.length===0
     ?`<div class="portfolio-empty">${t("portfolio_empty")}<br><a onclick="navigate('home')">${t("portfolio_explore")} →</a></div>`
     :active.map(([mid,pos])=>{
       const m=getMarket(mid);if(!m)return"";
@@ -5052,7 +5317,47 @@ function renderPortfolio(){
         </div>
         ${m.resolved?`<div style="margin-top:8px">${mkTag("✓ "+t("detail_resolved")+": "+m.resolution,"var(--yes)")}</div>`:""}
       </div>`;
-    }).join("")}
+    }).join("")) : ""}
+
+  ${tab==="leaderboard" ? renderLeaderboard() : ""}
+
+  ${tab==="following" ? (STATE.following.length===0
+    ? `<div style="text-align:center;padding:48px;color:var(--muted)">
+        <div style="font-size:32px;margin-bottom:12px">👥</div>
+        <div style="font-weight:600;margin-bottom:8px">Aún no sigues a ningún trader</div>
+        <div style="font-size:13px;margin-bottom:16px">Ve al Leaderboard y sigue a los mejores traders para ver sus movimientos aquí</div>
+        <button class="btn-green" onclick="STATE.portfolioTab='leaderboard';render()">Ver Leaderboard</button>
+       </div>`
+    : STATE.following.map(uid=>{
+        const trader = STATE.users.find(u=>u.id===uid);
+        if(!trader) return "";
+        const positions = Object.entries(trader.positions||{}).filter(([,p])=>(p.YES||0)>0||(p.NO||0)>0&&!getMarket(Object.keys(p)[0])?.resolved);
+        const recentPos = positions.slice(0,2);
+        return`<div class="card" style="margin-bottom:12px;cursor:pointer" onclick="renderTraderProfile('${trader.id}')">
+          <div style="display:flex;align-items:center;gap:12px;margin-bottom:${recentPos.length>0?"12":"0"}px">
+            <div>${renderAvatar(trader.username,trader.avatarUrl||null,40,16)}</div>
+            <div style="flex:1">
+              <div style="font-weight:700">@${escHtml(trader.username)}</div>
+              <div style="font-size:11px;color:var(--muted)">${positions.length} posiciones activas</div>
+            </div>
+            <button onclick="event.stopPropagation();followTrader('${trader.id}')"
+              style="padding:5px 12px;border-radius:20px;font-size:11px;font-weight:700;
+              border:1.5px solid var(--no);background:var(--no-bg);color:var(--no);cursor:pointer;font-family:inherit">
+              Dejar de seguir
+            </button>
+          </div>
+          ${recentPos.map(([mid,pos])=>{
+            const m=getMarket(mid); if(!m) return"";
+            return`<div style="font-size:12px;color:var(--muted);padding:6px 0;border-top:1px solid var(--border)">
+              <span style="font-weight:600;color:var(--text)">${escHtml(mTitle(m).slice(0,45))}${mTitle(m).length>45?"…":""}</span>
+              ${pos.YES>0?`<span style="margin-left:8px;color:var(--yes);font-weight:700">YES</span>`:""}
+              ${pos.NO>0?`<span style="margin-left:8px;color:var(--no);font-weight:700">NO</span>`:""}
+            </div>`;
+          }).join("")}
+        </div>`;
+      }).join("")) : ""}
+
+  ${renderReferralSection(u)}
 </div>`;
 }
 
