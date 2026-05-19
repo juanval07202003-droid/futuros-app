@@ -1082,7 +1082,6 @@ input, select, textarea{
     </div>
     <div style="font-size:12px;color:var(--muted)" id="footer-copy-social">Statwaves © 2026</div>
   </div>
-  </div>
   <div class="footer-bottom">
     <p id="footer-copy">© 2026 Statwaves. Todos los derechos reservados. Plataforma operada con fines de entretenimiento.</p>
     <div class="footer-badges">
@@ -3041,6 +3040,94 @@ function renderHome(){
   <div style="display:flex;gap:24px;align-items:flex-start;padding-top:16px">
   <div style="flex:1;min-width:0" class="fade-up">
 
+  <!-- Banner Early Access — primeros 200 usuarios -->
+  ${(()=>{
+    const u = getUser();
+    const totalUsers = STATE.users.length;
+    const spotsLeft = Math.max(0, 200 - totalUsers);
+    const pct200 = Math.min(100, Math.round((totalUsers/200)*100));
+    if(totalUsers >= 200 && u) return "";
+    const badge = en ? "EARLY ACCESS — LIMITED SPOTS" : "EARLY ACCESS — PLAZAS LIMITADAS";
+    const title = en
+      ? "Join the first <span style=\"color:#00a870\">200 users</span> of Statwaves"
+      : "Únete a los primeros <span style=\"color:#00a870\">200 usuarios</span> de Statwaves";
+    const desc = en
+      ? "The first 200 registered users get exclusive access to the <strong style=\"color:#fff\">$STW</strong> pre-sale private group and the launch airdrop."
+      : "Los primeros 200 registrados acceden al grupo privado de pre-sale de <strong style=\"color:#fff\">$STW</strong> y al airdrop de lanzamiento.";
+    const benefits = (en
+      ? [["🎁","$STW Airdrop","Free tokens for early adopters"],
+         ["💎","Exclusive pre-sale","$STW before public listing"],
+         ["👥","Private group","Exclusive early members Telegram"]]
+      : [["🎁","Airdrop $STW","Tokens gratis para early adopters"],
+         ["💎","Pre-sale exclusiva","$STW antes del listing público"],
+         ["👥","Grupo privado","Telegram exclusivo de early members"]]
+    ).map(([ic,tit,d])=>
+      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:7px">'+
+      '<span>'+ic+'</span>'+
+      '<span style="font-size:13px;font-weight:700;color:#fff">'+tit+'</span>'+
+      '<span style="font-size:11px;color:rgba(255,255,255,.45)">· '+d+'</span>'+
+      '</div>'
+    ).join("");
+    const cta = !u
+      ? '<div style="display:flex;gap:10px;flex-wrap:wrap">'+
+          '<button onclick="navigate(\'auth\')" style="padding:11px 22px;background:#00a870;border:none;'+
+          'border-radius:12px;font-size:14px;font-weight:800;color:#fff;cursor:pointer;font-family:inherit;'+
+          'box-shadow:0 4px 16px rgba(0,168,112,.3)">'+
+          (en ? "Sign up free →" : "Registrarme gratis →")+
+          '</button>'+
+          '<a href="https://t.me/statwaves" target="_blank" style="padding:11px 18px;'+
+          'background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.15);border-radius:12px;'+
+          'font-size:13px;font-weight:700;color:rgba(255,255,255,.8);text-decoration:none;'+
+          'display:flex;align-items:center;gap:6px">Telegram</a>'+
+        '</div>'
+      : '<div style="display:flex;align-items:center;gap:10px;padding:11px 14px;'+
+          'background:rgba(0,168,112,.1);border:1px solid rgba(0,168,112,.2);border-radius:12px">'+
+          '<span style="font-size:18px">✅</span>'+
+          '<div>'+
+            '<div style="font-size:13px;font-weight:700;color:#00a870">'+
+              (en ? "You\'re in the early access" : "Estás en el early access")+
+            '</div>'+
+            '<a href="https://t.me/+-2Jy8WVtzEwzODQ1" target="_blank" '+
+              'style="font-size:11px;color:rgba(255,255,255,.6);text-decoration:none;font-weight:600">'+
+              (en ? "→ Join the private group" : "→ Unirme al grupo privado")+
+            '</a>'+
+          '</div>'+
+        '</div>';
+    const spotsLabel = en ? "spots left" : "plazas restantes";
+    const regLabel = en ? "registered" : "registrados";
+    return '<div style="background:linear-gradient(135deg,#0f1923 0%,#0d2137 50%,#0a1628 100%);'+
+      'border-radius:20px;padding:24px;margin-bottom:24px;position:relative;overflow:hidden;'+
+      'border:1px solid rgba(0,168,112,.25)">'+
+      '<div style="position:absolute;top:-30px;right:-30px;width:180px;height:180px;'+
+        'background:radial-gradient(circle,rgba(0,168,112,.12) 0%,transparent 70%);pointer-events:none"></div>'+
+      '<div style="position:relative">'+
+        '<div style="display:inline-flex;align-items:center;gap:6px;background:rgba(0,168,112,.15);'+
+          'border:1px solid rgba(0,168,112,.3);border-radius:20px;padding:4px 12px;margin-bottom:14px">'+
+          '<div style="width:6px;height:6px;border-radius:50%;background:#00a870;box-shadow:0 0 8px #00a870"></div>'+
+          '<span style="font-size:11px;font-weight:700;color:#00a870;letter-spacing:.5px">'+badge+'</span>'+
+        '</div>'+
+        '<div style="display:flex;align-items:flex-start;gap:20px;flex-wrap:wrap">'+
+          '<div style="flex:1;min-width:220px">'+
+            '<h2 style="font-size:20px;font-weight:900;color:#fff;margin:0 0 8px;line-height:1.2">'+title+'</h2>'+
+            '<p style="font-size:13px;color:rgba(255,255,255,.6);margin:0 0 14px;line-height:1.6">'+desc+'</p>'+
+            '<div style="display:flex;flex-direction:column;margin-bottom:16px">'+benefits+'</div>'+
+            cta+
+          '</div>'+
+          '<div style="flex-shrink:0;min-width:150px;text-align:center">'+
+            '<div style="background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:16px;padding:18px 14px">'+
+              '<div style="font-size:44px;font-weight:900;line-height:1;margin-bottom:4px;color:'+(spotsLeft>0?"#00a870":"#ef4444")+'">'+spotsLeft+'</div>'+
+              '<div style="font-size:12px;color:rgba(255,255,255,.45);margin-bottom:12px">'+spotsLabel+'</div>'+
+              '<div style="background:rgba(255,255,255,.1);border-radius:20px;height:5px;overflow:hidden;margin-bottom:8px">'+
+                '<div style="height:100%;border-radius:20px;background:linear-gradient(90deg,#00a870,#00c080);width:'+pct200+'%"></div>'+
+              '</div>'+
+              '<div style="font-size:10px;color:rgba(255,255,255,.35)">'+totalUsers+' / 200 '+regLabel+'</div>'+
+            '</div>'+
+          '</div>'+
+        '</div>'+
+      '</div>'+
+    '</div>';
+  })()}
+
   <!-- Título + Carousel destacados -->
   ${!isSearching && featuredCount>0 ? `
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
@@ -4183,6 +4270,94 @@ async function _authConnectFinish(walletType, address, evmAddress=null){
   notify(`Conectado: ${address.slice(0,6)}…${address.slice(-4)}`,"success");
   const needsUsername = !user.username || user.username.includes("…") || user.username.length < 2;
   if(needsUsername) setTimeout(()=>showUsernameModal(user.id), 500);
+
+  // Mostrar acceso al grupo privado si es uno de los primeros 200
+  const totalRegistered = STATE.users.length;
+  const isFirstTime = !localStorage.getItem("sw_early_shown_"+user.id);
+  if(totalRegistered <= 200 && isFirstTime){
+    localStorage.setItem("sw_early_shown_"+user.id, "1");
+    setTimeout(()=>showEarlyAccessModal(totalRegistered), needsUsername ? 2500 : 800);
+  }
+}
+
+function showEarlyAccessModal(position){
+  const en = STATE.lang==="en";
+  const PRIVATE_LINK = "https://t.me/+-2Jy8WVtzEwzODQ1";
+  const html=`<div id="early-access-modal" style="position:fixed;inset:0;background:rgba(0,0,0,.7);
+    z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px;backdrop-filter:blur(6px)">
+    <div style="background:linear-gradient(135deg,#0f1923 0%,#0d2137 100%);
+      border-radius:24px;padding:32px;max-width:420px;width:100%;position:relative;
+      border:1px solid rgba(0,168,112,.3);box-shadow:0 24px 64px rgba(0,0,0,.5)">
+
+      <!-- Confetti emoji -->
+      <div style="text-align:center;font-size:48px;margin-bottom:16px">🎉</div>
+
+      <!-- Badge posición -->
+      <div style="text-align:center;margin-bottom:16px">
+        <span style="background:rgba(0,168,112,.15);border:1px solid rgba(0,168,112,.3);
+          border-radius:20px;padding:6px 16px;font-size:12px;font-weight:700;color:#00a870">
+          ${en?`#${position} of the first 200`:`#${position} de los primeros 200`}
+        </span>
+      </div>
+
+      <h2 style="text-align:center;font-size:22px;font-weight:900;color:#fff;margin:0 0 12px;line-height:1.3">
+        ${en?"You're in the Early Access! 🌊":"¡Estás en el Early Access! 🌊"}
+      </h2>
+      <p style="text-align:center;font-size:13px;color:rgba(255,255,255,.6);margin:0 0 24px;line-height:1.6">
+        ${en?`As one of the first ${position} users, you have exclusive access to the <strong style="color:#fff">$STW pre-sale</strong> and launch airdrop.`
+            :`Como uno de los primeros ${position} usuarios, tienes acceso exclusivo a la <strong style="color:#fff">pre-sale de $STW</strong> y al airdrop de lanzamiento.`}
+      </p>
+
+      <!-- Beneficios -->
+      <div style="background:rgba(255,255,255,.05);border-radius:14px;padding:16px;margin-bottom:24px">
+        ${[en
+          ?[["🎁","$STW Airdrop","Free tokens — just for being here"],
+            ["💎","Pre-sale price","Buy $STW before public listing"],
+            ["👥","Private group","Exclusive community on Telegram"]]
+          :[["🎁","Airdrop de $STW","Tokens gratis por ser early adopter"],
+            ["💎","Precio pre-sale","Compra $STW antes del listing público"],
+            ["👥","Grupo privado","Comunidad exclusiva en Telegram"]]
+        ].flat().map(([ic,tit,desc])=>`
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+            <span style="font-size:18px;flex-shrink:0">${ic}</span>
+            <div>
+              <div style="font-size:13px;font-weight:700;color:#fff">${tit}</div>
+              <div style="font-size:11px;color:rgba(255,255,255,.45)">${desc}</div>
+            </div>
+          </div>`).join("")}
+      </div>
+
+      <!-- CTA principal -->
+      <a href="${PRIVATE_LINK}" target="_blank"
+        style="display:flex;align-items:center;justify-content:center;gap:10px;
+        width:100%;padding:14px;background:#00a870;border-radius:14px;
+        font-size:15px;font-weight:800;color:#fff;text-decoration:none;
+        box-shadow:0 4px 20px rgba(0,168,112,.4);margin-bottom:12px;box-sizing:border-box">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.894 8.221l-1.97 9.28c-.145.658-.537.818-1.084.508l-3-2.21-1.447 1.394c-.16.16-.295.295-.605.295l.213-3.053 5.56-5.023c.242-.213-.054-.333-.373-.12l-6.871 4.326-2.962-.924c-.643-.204-.657-.643.136-.953l11.57-4.461c.537-.194 1.006.131.833.941z"/></svg>
+        ${en?"Join the private group →":"Unirme al grupo privado →"}
+      </a>
+
+      <!-- Link copiable -->
+      <div style="background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);
+        border-radius:10px;padding:10px 14px;margin-bottom:20px;display:flex;align-items:center;gap:8px">
+        <span style="font-size:11px;color:rgba(255,255,255,.4);font-family:monospace;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+          ${PRIVATE_LINK}
+        </span>
+        <button onclick="navigator.clipboard.writeText('${PRIVATE_LINK}').then(()=>notify('${en?"Link copied!":"Link copiado!"}','success'))"
+          style="border:none;background:none;color:rgba(255,255,255,.4);cursor:pointer;padding:0;flex-shrink:0;font-size:11px">
+          📋
+        </button>
+      </div>
+
+      <!-- Cerrar -->
+      <button onclick="document.getElementById('early-access-modal').remove()"
+        style="width:100%;padding:11px;border:1px solid rgba(255,255,255,.15);border-radius:12px;
+        background:transparent;color:rgba(255,255,255,.5);font-size:13px;cursor:pointer;font-family:inherit;box-sizing:border-box">
+        ${en?"I'll join later":"Me uno después"}
+      </button>
+    </div>
+  </div>`;
+  document.body.insertAdjacentHTML("beforeend", html);
 }
 
 async function _authConnectEVM(walletType,provider=window.ethereum){
