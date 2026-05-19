@@ -3040,93 +3040,7 @@ function renderHome(){
   <div style="display:flex;gap:24px;align-items:flex-start;padding-top:16px">
   <div style="flex:1;min-width:0" class="fade-up">
 
-  <!-- Banner Early Access — primeros 200 usuarios -->
-  ${(()=>{
-    const u = getUser();
-    const totalUsers = STATE.users.length;
-    const spotsLeft = Math.max(0, 200 - totalUsers);
-    const pct200 = Math.min(100, Math.round((totalUsers/200)*100));
-    if(totalUsers >= 200 && u) return "";
-    const badge = en ? "EARLY ACCESS — LIMITED SPOTS" : "EARLY ACCESS — PLAZAS LIMITADAS";
-    const title = en
-      ? "Join the first <span style=\"color:#00a870\">200 users</span> of Statwaves"
-      : "Únete a los primeros <span style=\"color:#00a870\">200 usuarios</span> de Statwaves";
-    const desc = en
-      ? "The first 200 registered users get exclusive access to the <strong style=\"color:#fff\">$STW</strong> pre-sale private group and the launch airdrop."
-      : "Los primeros 200 registrados acceden al grupo privado de pre-sale de <strong style=\"color:#fff\">$STW</strong> y al airdrop de lanzamiento.";
-    const benefits = (en
-      ? [["🎁","$STW Airdrop","Free tokens for early adopters"],
-         ["💎","Exclusive pre-sale","$STW before public listing"],
-         ["👥","Private group","Exclusive early members Telegram"]]
-      : [["🎁","Airdrop $STW","Tokens gratis para early adopters"],
-         ["💎","Pre-sale exclusiva","$STW antes del listing público"],
-         ["👥","Grupo privado","Telegram exclusivo de early members"]]
-    ).map(([ic,tit,d])=>
-      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:7px">'+
-      '<span>'+ic+'</span>'+
-      '<span style="font-size:13px;font-weight:700;color:#fff">'+tit+'</span>'+
-      '<span style="font-size:11px;color:rgba(255,255,255,.45)">· '+d+'</span>'+
-      '</div>'
-    ).join("");
-    const cta = !u
-      ? '<div style="display:flex;gap:10px;flex-wrap:wrap">'+
-          '<button onclick="navigate(\'auth\')" style="padding:11px 22px;background:#00a870;border:none;'+
-          'border-radius:12px;font-size:14px;font-weight:800;color:#fff;cursor:pointer;font-family:inherit;'+
-          'box-shadow:0 4px 16px rgba(0,168,112,.3)">'+
-          (en ? "Sign up free →" : "Registrarme gratis →")+
-          '</button>'+
-          '<a href="https://t.me/statwaves" target="_blank" style="padding:11px 18px;'+
-          'background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.15);border-radius:12px;'+
-          'font-size:13px;font-weight:700;color:rgba(255,255,255,.8);text-decoration:none;'+
-          'display:flex;align-items:center;gap:6px">Telegram</a>'+
-        '</div>'
-      : '<div style="display:flex;align-items:center;gap:10px;padding:11px 14px;'+
-          'background:rgba(0,168,112,.1);border:1px solid rgba(0,168,112,.2);border-radius:12px">'+
-          '<span style="font-size:18px">✅</span>'+
-          '<div>'+
-            '<div style="font-size:13px;font-weight:700;color:#00a870">'+
-              (en ? "You\'re in the early access" : "Estás en el early access")+
-            '</div>'+
-            '<a href="https://t.me/+-2Jy8WVtzEwzODQ1" target="_blank" '+
-              'style="font-size:11px;color:rgba(255,255,255,.6);text-decoration:none;font-weight:600">'+
-              (en ? "→ Join the private group" : "→ Unirme al grupo privado")+
-            '</a>'+
-          '</div>'+
-        '</div>';
-    const spotsLabel = en ? "spots left" : "plazas restantes";
-    const regLabel = en ? "registered" : "registrados";
-    return '<div style="background:linear-gradient(135deg,#0f1923 0%,#0d2137 50%,#0a1628 100%);'+
-      'border-radius:20px;padding:24px;margin-bottom:24px;position:relative;overflow:hidden;'+
-      'border:1px solid rgba(0,168,112,.25)">'+
-      '<div style="position:absolute;top:-30px;right:-30px;width:180px;height:180px;'+
-        'background:radial-gradient(circle,rgba(0,168,112,.12) 0%,transparent 70%);pointer-events:none"></div>'+
-      '<div style="position:relative">'+
-        '<div style="display:inline-flex;align-items:center;gap:6px;background:rgba(0,168,112,.15);'+
-          'border:1px solid rgba(0,168,112,.3);border-radius:20px;padding:4px 12px;margin-bottom:14px">'+
-          '<div style="width:6px;height:6px;border-radius:50%;background:#00a870;box-shadow:0 0 8px #00a870"></div>'+
-          '<span style="font-size:11px;font-weight:700;color:#00a870;letter-spacing:.5px">'+badge+'</span>'+
-        '</div>'+
-        '<div style="display:flex;align-items:flex-start;gap:20px;flex-wrap:wrap">'+
-          '<div style="flex:1;min-width:220px">'+
-            '<h2 style="font-size:20px;font-weight:900;color:#fff;margin:0 0 8px;line-height:1.2">'+title+'</h2>'+
-            '<p style="font-size:13px;color:rgba(255,255,255,.6);margin:0 0 14px;line-height:1.6">'+desc+'</p>'+
-            '<div style="display:flex;flex-direction:column;margin-bottom:16px">'+benefits+'</div>'+
-            cta+
-          '</div>'+
-          '<div style="flex-shrink:0;min-width:150px;text-align:center">'+
-            '<div style="background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:16px;padding:18px 14px">'+
-              '<div style="font-size:44px;font-weight:900;line-height:1;margin-bottom:4px;color:'+(spotsLeft>0?"#00a870":"#ef4444")+'">'+spotsLeft+'</div>'+
-              '<div style="font-size:12px;color:rgba(255,255,255,.45);margin-bottom:12px">'+spotsLabel+'</div>'+
-              '<div style="background:rgba(255,255,255,.1);border-radius:20px;height:5px;overflow:hidden;margin-bottom:8px">'+
-                '<div style="height:100%;border-radius:20px;background:linear-gradient(90deg,#00a870,#00c080);width:'+pct200+'%"></div>'+
-              '</div>'+
-              '<div style="font-size:10px;color:rgba(255,255,255,.35)">'+totalUsers+' / 200 '+regLabel+'</div>'+
-            '</div>'+
-          '</div>'+
-        '</div>'+
-      '</div>'+
-    '</div>';
-  })()}
+  <!-- Early Access popup se muestra via showEarlyAccessPopup() -->
 
   <!-- Título + Carousel destacados -->
   ${!isSearching && featuredCount>0 ? `
@@ -4278,6 +4192,122 @@ async function _authConnectFinish(walletType, address, evmAddress=null){
     localStorage.setItem("sw_early_shown_"+user.id, "1");
     setTimeout(()=>showEarlyAccessModal(totalRegistered), needsUsername ? 2500 : 800);
   }
+}
+
+function showEarlyAccessPopup(){
+  // Solo mostrar si ya existe el elemento en el DOM
+  if(document.getElementById("early-popup")) return;
+  const en = STATE.lang==="en";
+  const u = getUser();
+  const totalUsers = STATE.users.length;
+  if(totalUsers >= 200 && u) return; // Ya lleno y está registrado
+  // No mostrar si ya lo cerró esta sesión
+  if(sessionStorage.getItem("sw_popup_closed")) return;
+
+  const spotsLeft = Math.max(0, 200 - totalUsers);
+  const pct200 = Math.min(100, Math.round((totalUsers/200)*100));
+  const PRIVATE_LINK = "https://t.me/+-2Jy8WVtzEwzODQ1";
+
+  const html = '<div id="early-popup" style="position:fixed;inset:0;background:rgba(0,0,0,.6);'+
+    'z-index:9000;display:flex;align-items:center;justify-content:center;padding:16px;'+
+    'backdrop-filter:blur(4px);animation:fadeIn .25s ease">'+
+    '<div style="background:linear-gradient(135deg,#0f1923 0%,#0d2137 50%,#0a1628 100%);'+
+      'border-radius:24px;padding:28px 24px;max-width:400px;width:100%;position:relative;'+
+      'border:1px solid rgba(0,168,112,.3);box-shadow:0 24px 64px rgba(0,0,0,.6);'+
+      'animation:slideUp .3s ease">'+
+
+      // Close button
+      '<button onclick="document.getElementById(\'early-popup\').remove();sessionStorage.setItem(\'sw_popup_closed\',\'1\')" '+
+        'style="position:absolute;top:14px;right:14px;width:28px;height:28px;border-radius:50%;'+
+        'border:1px solid rgba(255,255,255,.15);background:rgba(255,255,255,.08);color:rgba(255,255,255,.5);'+
+        'cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center;'+
+        'font-family:inherit;line-height:1">✕</button>'+
+
+      // Badge
+      '<div style="display:inline-flex;align-items:center;gap:6px;background:rgba(0,168,112,.15);'+
+        'border:1px solid rgba(0,168,112,.3);border-radius:20px;padding:4px 12px;margin-bottom:16px">'+
+        '<div style="width:6px;height:6px;border-radius:50%;background:#00a870;box-shadow:0 0 6px #00a870"></div>'+
+        '<span style="font-size:11px;font-weight:700;color:#00a870;letter-spacing:.5px">'+
+          (en?"EARLY ACCESS — LIMITED SPOTS":"EARLY ACCESS — PLAZAS LIMITADAS")+
+        '</span>'+
+      '</div>'+
+
+      // Title
+      '<h2 style="font-size:20px;font-weight:900;color:#fff;margin:0 0 10px;line-height:1.25">'+
+        (en?'Join the first <span style="color:#00a870">200 users</span> of Statwaves'
+           :'Únete a los primeros <span style="color:#00a870">200 usuarios</span> de Statwaves')+
+      '</h2>'+
+
+      // Description
+      '<p style="font-size:13px;color:rgba(255,255,255,.6);margin:0 0 16px;line-height:1.6">'+
+        (en?'The first 200 registered users get exclusive access to the <strong style="color:#fff">$STW</strong> pre-sale private group and the launch airdrop.'
+           :'Los primeros 200 registrados acceden al grupo privado de pre-sale de <strong style="color:#fff">$STW</strong> y al airdrop de lanzamiento.')+
+      '</p>'+
+
+      // Benefits
+      '<div style="display:flex;flex-direction:column;gap:8px;margin-bottom:20px">'+
+        [en?[["🎁","$STW Airdrop","Free tokens for early adopters"],
+              ["💎","Exclusive pre-sale","$STW before public listing"],
+              ["👥","Private group","Exclusive Telegram community"]]
+           :[["🎁","Airdrop $STW","Tokens gratis por ser early adopter"],
+             ["💎","Pre-sale exclusiva","$STW antes del listing público"],
+             ["👥","Grupo privado","Comunidad exclusiva en Telegram"]]
+        ].flat().map(([ic,tit,d])=>
+          '<div style="display:flex;align-items:center;gap:8px">'+
+          '<span style="font-size:16px">'+ic+'</span>'+
+          '<span style="font-size:13px;font-weight:700;color:#fff">'+tit+'</span>'+
+          '<span style="font-size:11px;color:rgba(255,255,255,.4)">· '+d+'</span>'+
+          '</div>'
+        ).join("")+
+      '</div>'+
+
+      // Progress counter
+      '<div style="background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08);'+
+        'border-radius:14px;padding:14px 16px;margin-bottom:20px">'+
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'+
+          '<span style="font-size:12px;color:rgba(255,255,255,.5)">'+
+            (en?totalUsers+" / 200 registered":totalUsers+" / 200 registrados")+
+          '</span>'+
+          '<span style="font-size:14px;font-weight:800;color:'+(spotsLeft>0?"#00a870":"#ef4444")+'">'+
+            spotsLeft+' '+(en?"left":"restantes")+
+          '</span>'+
+        '</div>'+
+        '<div style="background:rgba(255,255,255,.1);border-radius:20px;height:5px;overflow:hidden">'+
+          '<div style="height:100%;border-radius:20px;background:linear-gradient(90deg,#00a870,#00c080);width:'+pct200+'%"></div>'+
+        '</div>'+
+      '</div>'+
+
+      // CTA buttons
+      (!u
+        ? '<button onclick="document.getElementById(\'early-popup\').remove();navigate(\'auth\')" '+
+            'style="width:100%;padding:13px;background:#00a870;border:none;border-radius:14px;'+
+            'font-size:15px;font-weight:800;color:#fff;cursor:pointer;font-family:inherit;'+
+            'box-shadow:0 4px 20px rgba(0,168,112,.35);margin-bottom:10px;box-sizing:border-box">'+
+            (en?"Sign up free →":"Registrarme gratis →")+
+          '</button>'+
+          '<a href="https://t.me/statwaves" target="_blank" '+
+            'style="display:flex;align-items:center;justify-content:center;gap:8px;width:100%;padding:12px;'+
+            'background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.12);border-radius:12px;'+
+            'font-size:13px;font-weight:700;color:rgba(255,255,255,.7);text-decoration:none;box-sizing:border-box">'+
+            '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.894 8.221l-1.97 9.28c-.145.658-.537.818-1.084.508l-3-2.21-1.447 1.394c-.16.16-.295.295-.605.295l.213-3.053 5.56-5.023c.242-.213-.054-.333-.373-.12l-6.871 4.326-2.962-.924c-.643-.204-.657-.643.136-.953l11.57-4.461c.537-.194 1.006.131.833.941z"/></svg>'+
+            'Telegram'+
+          '</a>'
+        : '<a href="'+PRIVATE_LINK+'" target="_blank" '+
+            'style="display:flex;align-items:center;justify-content:center;gap:8px;width:100%;padding:13px;'+
+            'background:#00a870;border:none;border-radius:14px;font-size:15px;font-weight:800;color:#fff;'+
+            'text-decoration:none;box-shadow:0 4px 20px rgba(0,168,112,.35);margin-bottom:10px;box-sizing:border-box">'+
+            '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.894 8.221l-1.97 9.28c-.145.658-.537.818-1.084.508l-3-2.21-1.447 1.394c-.16.16-.295.295-.605.295l.213-3.053 5.56-5.023c.242-.213-.054-.333-.373-.12l-6.871 4.326-2.962-.924c-.643-.204-.657-.643.136-.953l11.57-4.461c.537-.194 1.006.131.833.941z"/></svg>'+
+            (en?"Join the private group →":"Unirme al grupo privado →")+
+          '</a>'+
+          '<button onclick="document.getElementById(\'early-popup\').remove();sessionStorage.setItem(\'sw_popup_closed\',\'1\')" '+
+            'style="width:100%;padding:11px;border:1px solid rgba(255,255,255,.12);border-radius:12px;'+
+            'background:transparent;color:rgba(255,255,255,.4);font-size:13px;cursor:pointer;font-family:inherit;box-sizing:border-box">'+
+            (en?"Close":"Cerrar")+
+          '</button>'
+      )+
+    '</div>'+
+  '</div>';
+  document.body.insertAdjacentHTML("beforeend", html);
 }
 
 function showEarlyAccessModal(position){
@@ -9905,7 +9935,8 @@ detectLangByIP().then(()=>{
     dbSeedMarketsIfEmpty();
     checkReferralOnLoad();
     setTimeout(dbLoadNewsAndTrending, 2000);
-    startOracle(); // Oracle de precios — solo pausa, nunca resuelve
+    startOracle();
+    setTimeout(showEarlyAccessPopup, 1500); // Popup early access tras 1.5s
   });
 });
 </script>
