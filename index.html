@@ -4216,7 +4216,7 @@ function showEarlyAccessPopup(){
   const pct200 = Math.min(100, Math.round((totalUsers/200)*100));
   const PRIVATE_LINK = "https://t.me/+-2Jy8WVtzEwzODQ1";
 
-  const html = '<div id="early-popup" style="position:fixed;inset:0;background:rgba(0,0,0,.6);'+
+  const html = '<div id="early-popup" style="position:fixed;inset:0;background:rgba(10,31,46,.5);'+
     'z-index:9000;display:flex;align-items:center;justify-content:center;padding:16px;'+
     'backdrop-filter:blur(4px);animation:fadeIn .25s ease">'+
     '<div style="background:linear-gradient(135deg,#0f1923 0%,#0d2137 50%,#0a1628 100%);'+
@@ -4227,27 +4227,27 @@ function showEarlyAccessPopup(){
       // Close button
       '<button onclick="document.getElementById(\'early-popup\').remove();sessionStorage.setItem(\'sw_popup_closed\',\'1\')" '+
         'style="position:absolute;top:14px;right:14px;width:28px;height:28px;border-radius:50%;'+
-        'border:1px solid rgba(255,255,255,.15);background:rgba(255,255,255,.08);color:rgba(255,255,255,.5);'+
+        'border:1px solid var(--border);background:var(--card2);color:var(--muted);'+
         'cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center;'+
         'font-family:inherit;line-height:1">✕</button>'+
 
       // Badge
       '<div style="display:inline-flex;align-items:center;gap:6px;background:rgba(0,168,112,.15);'+
         'border:1px solid rgba(0,168,112,.3);border-radius:20px;padding:4px 12px;margin-bottom:16px">'+
-        '<div style="width:6px;height:6px;border-radius:50%;background:#00a870;box-shadow:0 0 6px #00a870"></div>'+
-        '<span style="font-size:11px;font-weight:700;color:#00a870;letter-spacing:.5px">'+
+        '<div style="width:6px;height:6px;border-radius:50%;background:var(--yes)"></div>'+
+        '<span style="font-size:11px;font-weight:700;color:var(--yes);letter-spacing:.5px">'+
           (en?"EARLY ACCESS — LIMITED SPOTS":"EARLY ACCESS — PLAZAS LIMITADAS")+
         '</span>'+
       '</div>'+
 
       // Title
-      '<h2 style="font-size:20px;font-weight:900;color:#fff;margin:0 0 10px;line-height:1.25">'+
+      '<h2 style="font-size:20px;font-weight:900;color:var(--text);margin:0 0 10px;line-height:1.25">'+
         (en?'Join the first <span style="color:#00a870">200 users</span> of Statwaves'
            :'Únete a los primeros <span style="color:#00a870">200 usuarios</span> de Statwaves')+
       '</h2>'+
 
       // Description
-      '<p style="font-size:13px;color:rgba(255,255,255,.6);margin:0 0 16px;line-height:1.6">'+
+      '<p style="font-size:13px;color:var(--muted);margin:0 0 16px;line-height:1.6">'+
         (en?'The first 200 registered users get exclusive access to the <strong style="color:#fff">$STW</strong> pre-sale private group and the launch airdrop.'
            :'Los primeros 200 registrados acceden al grupo privado de pre-sale de <strong style="color:#fff">$STW</strong> y al airdrop de lanzamiento.')+
       '</p>'+
@@ -4270,17 +4270,17 @@ function showEarlyAccessPopup(){
       '</div>'+
 
       // Progress counter
-      '<div style="background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08);'+
+      '<div style="background:var(--card2);border:1px solid var(--border);'+
         'border-radius:14px;padding:14px 16px;margin-bottom:20px">'+
         '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'+
-          '<span style="font-size:12px;color:rgba(255,255,255,.5)">'+
+          '<span style="font-size:12px;color:var(--muted)">'+
             (en?totalUsers+" / 200 registered":totalUsers+" / 200 registrados")+
           '</span>'+
           '<span style="font-size:14px;font-weight:800;color:'+(spotsLeft>0?"#00a870":"#ef4444")+'">'+
             spotsLeft+' '+(en?"left":"restantes")+
           '</span>'+
         '</div>'+
-        '<div style="background:rgba(255,255,255,.1);border-radius:20px;height:5px;overflow:hidden">'+
+        '<div style="background:var(--border-strong);border-radius:20px;height:5px;overflow:hidden">'+
           '<div style="height:100%;border-radius:20px;background:linear-gradient(90deg,#00a870,#00c080);width:'+pct200+'%"></div>'+
         '</div>'+
       '</div>'+
@@ -4295,8 +4295,8 @@ function showEarlyAccessPopup(){
           '</button>'+
           '<a href="https://t.me/statwaves" target="_blank" '+
             'style="display:flex;align-items:center;justify-content:center;gap:8px;width:100%;padding:12px;'+
-            'background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.12);border-radius:12px;'+
-            'font-size:13px;font-weight:700;color:rgba(255,255,255,.7);text-decoration:none;box-sizing:border-box">'+
+            'background:var(--card2);border:1px solid var(--border);border-radius:12px;'+
+            'font-size:13px;font-weight:700;color:var(--muted);text-decoration:none;box-sizing:border-box">'+
             '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.894 8.221l-1.97 9.28c-.145.658-.537.818-1.084.508l-3-2.21-1.447 1.394c-.16.16-.295.295-.605.295l.213-3.053 5.56-5.023c.242-.213-.054-.333-.373-.12l-6.871 4.326-2.962-.924c-.643-.204-.657-.643.136-.953l11.57-4.461c.537-.194 1.006.131.833.941z"/></svg>'+
             'Telegram'+
           '</a>'
@@ -4308,8 +4308,8 @@ function showEarlyAccessPopup(){
             (en?"Join the private group →":"Unirme al grupo privado →")+
           '</a>'+
           '<button onclick="document.getElementById(\'early-popup\').remove();sessionStorage.setItem(\'sw_popup_closed\',\'1\')" '+
-            'style="width:100%;padding:11px;border:1px solid rgba(255,255,255,.12);border-radius:12px;'+
-            'background:transparent;color:rgba(255,255,255,.4);font-size:13px;cursor:pointer;font-family:inherit;box-sizing:border-box">'+
+            'style="width:100%;padding:11px;border:1px solid var(--border);border-radius:12px;'+
+            'background:transparent;color:var(--muted);font-size:13px;cursor:pointer;font-family:inherit;box-sizing:border-box">'+
             (en?"Close":"Cerrar")+
           '</button>'
       )+
@@ -4321,7 +4321,7 @@ function showEarlyAccessPopup(){
 function showEarlyAccessModal(position){
   const en = STATE.lang==="en";
   const PRIVATE_LINK = "https://t.me/+-2Jy8WVtzEwzODQ1";
-  const html=`<div id="early-access-modal" style="position:fixed;inset:0;background:rgba(0,0,0,.7);
+  const html=`<div id="early-access-modal" style="position:fixed;inset:0;background:rgba(10,31,46,.5);
     z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px;backdrop-filter:blur(6px)">
     <div style="background:linear-gradient(135deg,#0f1923 0%,#0d2137 100%);
       border-radius:24px;padding:32px;max-width:420px;width:100%;position:relative;
@@ -5724,45 +5724,42 @@ function renderPortfolio(){
   <!-- Banner Early Access — solo para los primeros 200 usuarios por fecha de registro -->
   ${(()=>{
     const en = STATE.lang==="en";
-    // Ordenar todos los usuarios por fecha de registro (más antiguo primero)
     const sorted = STATE.users.slice().sort((a,b)=>new Date(a.createdAt||0)-new Date(b.createdAt||0));
     const userIndex = sorted.findIndex(x=>x.id===u.id);
-    // Solo mostrar si es uno de los primeros 200 exactamente
     const isEarly = userIndex >= 0 && userIndex < 200;
     if(!isEarly) return "";
     const position = userIndex + 1;
     const PRIVATE_LINK = "https://t.me/+-2Jy8WVtzEwzODQ1";
-    return '<div style="background:linear-gradient(135deg,#0f1923 0%,#0d2137 100%);'+
-      'border-radius:16px;padding:18px 20px;margin-bottom:20px;'+
-      'border:1px solid rgba(0,168,112,.25);position:relative;overflow:hidden">'+
-      '<div style="position:absolute;top:-20px;right:-20px;width:120px;height:120px;'+
-        'background:radial-gradient(circle,rgba(0,168,112,.12) 0%,transparent 70%);pointer-events:none"></div>'+
+    return '<div style="background:var(--yes-bg);border:1.5px solid var(--yes);'+
+      'border-radius:16px;padding:18px 20px;margin-bottom:20px;position:relative;overflow:hidden">'+
+      '<div style="position:absolute;top:-24px;right:-24px;width:110px;height:110px;'+
+        'background:radial-gradient(circle,rgba(0,152,168,.1) 0%,transparent 70%);pointer-events:none"></div>'+
       '<div style="position:relative">'+
-        '<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">'+
-          '<div style="display:flex;align-items:center;gap:6px;background:rgba(0,168,112,.15);'+
-            'border:1px solid rgba(0,168,112,.3);border-radius:20px;padding:3px 10px">'+
-            '<div style="width:5px;height:5px;border-radius:50%;background:#00a870;box-shadow:0 0 6px #00a870"></div>'+
-            '<span style="font-size:10px;font-weight:700;color:#00a870;letter-spacing:.5px">EARLY ACCESS</span>'+
+        '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">'+
+          '<div style="display:flex;align-items:center;gap:5px;background:var(--yes);'+
+            'border-radius:20px;padding:3px 10px">'+
+            '<div style="width:5px;height:5px;border-radius:50%;background:#fff;opacity:.9"></div>'+
+            '<span style="font-size:10px;font-weight:700;color:#fff;letter-spacing:.5px">EARLY ACCESS</span>'+
           '</div>'+
-          '<span style="font-size:12px;color:rgba(255,255,255,.4)">'+(en?"Member #"+position+" of 200":"Miembro #"+position+" de 200")+'</span>'+
+          '<span style="font-size:12px;color:var(--yes);font-weight:600">'+
+            (en?"Member #"+position+" of 200":"Miembro #"+position+" de 200")+
+          '</span>'+
         '</div>'+
-        '<div style="font-size:15px;font-weight:800;color:#fff;margin-bottom:6px">'+
+        '<div style="font-size:15px;font-weight:800;color:var(--text);margin-bottom:6px">'+
           (en?"You have exclusive access to the $STW pre-sale 🌊"
              :"Tienes acceso exclusivo a la pre-sale de $STW 🌊")+
         '</div>'+
-        '<div style="font-size:12px;color:rgba(255,255,255,.5);margin-bottom:14px;line-height:1.5">'+
+        '<div style="font-size:12px;color:var(--muted);margin-bottom:14px;line-height:1.5">'+
           (en?"Join the private group to access the $STW token pre-sale, launch airdrop and exclusive updates."
              :"Únete al grupo privado para acceder a la pre-sale del token $STW, el airdrop de lanzamiento y novedades exclusivas.")+
         '</div>'+
-        '<div style="display:flex;gap:10px;flex-wrap:wrap">'+
-          '<a href="'+PRIVATE_LINK+'" target="_blank" '+
-            'style="display:inline-flex;align-items:center;gap:7px;padding:10px 18px;background:#00a870;'+
-            'border-radius:10px;font-size:13px;font-weight:700;color:#fff;text-decoration:none;'+
-            'box-shadow:0 4px 14px rgba(0,168,112,.3)">'+
-            '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.894 8.221l-1.97 9.28c-.145.658-.537.818-1.084.508l-3-2.21-1.447 1.394c-.16.16-.295.295-.605.295l.213-3.053 5.56-5.023c.242-.213-.054-.333-.373-.12l-6.871 4.326-2.962-.924c-.643-.204-.657-.643.136-.953l11.57-4.461c.537-.194 1.006.131.833.941z"/></svg>'+
-            (en?"Join private group":"Unirme al grupo privado")+
-          '</a>'+
-        '</div>'+
+        '<a href="'+PRIVATE_LINK+'" target="_blank" '+
+          'style="display:inline-flex;align-items:center;gap:7px;padding:10px 18px;background:var(--yes);'+
+          'border-radius:10px;font-size:13px;font-weight:700;color:#fff;text-decoration:none;'+
+          'box-shadow:var(--shadow-sm)">'+
+          '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.894 8.221l-1.97 9.28c-.145.658-.537.818-1.084.508l-3-2.21-1.447 1.394c-.16.16-.295.295-.605.295l.213-3.053 5.56-5.023c.242-.213-.054-.333-.373-.12l-6.871 4.326-2.962-.924c-.643-.204-.657-.643.136-.953l11.57-4.461c.537-.194 1.006.131.833.941z"/></svg>'+
+          (en?"Join private group":"Unirme al grupo privado")+
+        '</a>'+
       '</div>'+
     '</div>';
   })()}
