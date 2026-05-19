@@ -1276,7 +1276,7 @@ async function dbSaveAllMarkets(){
 // ── USERS ────────────────────────────────────────────────────────
 async function dbLoadUsers(){
   try{
-    const {data,error} = await db.from("users").select("*");
+    const {data,error} = await db.from("users").select("*").order("created_at",{ascending:true});
     if(error){ console.error("[DB] cargando usuarios:", error.message); return; }
     if(data && data.length > 0){
       const dbUsers = data.map(dbRowToUser);
@@ -4195,14 +4195,22 @@ async function _authConnectFinish(walletType, address, evmAddress=null){
 }
 
 function showEarlyAccessPopup(){
-  // Solo mostrar si ya existe el elemento en el DOM
   if(document.getElementById("early-popup")) return;
   const en = STATE.lang==="en";
   const u = getUser();
-  const totalUsers = STATE.users.length;
-  if(totalUsers >= 200 && u) return; // Ya lleno y está registrado
-  // No mostrar si ya lo cerró esta sesión
-  if(sessionStorage.getItem("sw_popup_closed")) return;
+  // Ordenar por fecha de registro para determinar posición real
+  const sorted = STATE.users.slice().sort((a,b)=>new Date(a.createdAt||0)-new Date(b.createdAt||0));
+  const totalUsers = sorted.length;
+  const userIndex = u ? sorted.findIndex(x=>x.id===u.id) : -1;
+  const isEarlyUser = u && userIndex >= 0 && userIndex < 200;
+  // Si ya está registrado y no es de los primeros 200, no mostrar
+  if(u && !isEarlyUser) return;
+  // Si ya está registrado y es early user pero ya cerró el popup, no mostrar
+  if(u && isEarlyUser && sessionStorage.getItem("sw_popup_closed")) return;
+  // Si no está registrado y ya hay 200+ users, no mostrar
+  if(!u && totalUsers >= 200) return;
+  // Si no está registrado y ya cerró el popup esta sesión, no mostrar
+  if(!u && sessionStorage.getItem("sw_popup_closed")) return;
 
   const spotsLeft = Math.max(0, 200 - totalUsers);
   const pct200 = Math.min(100, Math.round((totalUsers/200)*100));
@@ -5712,6 +5720,52 @@ function renderPortfolio(){
       </div>
     </div>
   </div>
+
+  <!-- Banner Early Access — solo para los primeros 200 usuarios por fecha de registro -->
+  ${(()=>{
+    const en = STATE.lang==="en";
+    // Ordenar todos los usuarios por fecha de registro (más antiguo primero)
+    const sorted = STATE.users.slice().sort((a,b)=>new Date(a.createdAt||0)-new Date(b.createdAt||0));
+    const userIndex = sorted.findIndex(x=>x.id===u.id);
+    // Solo mostrar si es uno de los primeros 200 exactamente
+    const isEarly = userIndex >= 0 && userIndex < 200;
+    if(!isEarly) return "";
+    const position = userIndex + 1;
+    const PRIVATE_LINK = "https://t.me/+-2Jy8WVtzEwzODQ1";
+    return '<div style="background:linear-gradient(135deg,#0f1923 0%,#0d2137 100%);'+
+      'border-radius:16px;padding:18px 20px;margin-bottom:20px;'+
+      'border:1px solid rgba(0,168,112,.25);position:relative;overflow:hidden">'+
+      '<div style="position:absolute;top:-20px;right:-20px;width:120px;height:120px;'+
+        'background:radial-gradient(circle,rgba(0,168,112,.12) 0%,transparent 70%);pointer-events:none"></div>'+
+      '<div style="position:relative">'+
+        '<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">'+
+          '<div style="display:flex;align-items:center;gap:6px;background:rgba(0,168,112,.15);'+
+            'border:1px solid rgba(0,168,112,.3);border-radius:20px;padding:3px 10px">'+
+            '<div style="width:5px;height:5px;border-radius:50%;background:#00a870;box-shadow:0 0 6px #00a870"></div>'+
+            '<span style="font-size:10px;font-weight:700;color:#00a870;letter-spacing:.5px">EARLY ACCESS</span>'+
+          '</div>'+
+          '<span style="font-size:12px;color:rgba(255,255,255,.4)">'+(en?"Member #"+position+" of 200":"Miembro #"+position+" de 200")+'</span>'+
+        '</div>'+
+        '<div style="font-size:15px;font-weight:800;color:#fff;margin-bottom:6px">'+
+          (en?"You have exclusive access to the $STW pre-sale 🌊"
+             :"Tienes acceso exclusivo a la pre-sale de $STW 🌊")+
+        '</div>'+
+        '<div style="font-size:12px;color:rgba(255,255,255,.5);margin-bottom:14px;line-height:1.5">'+
+          (en?"Join the private group to access the $STW token pre-sale, launch airdrop and exclusive updates."
+             :"Únete al grupo privado para acceder a la pre-sale del token $STW, el airdrop de lanzamiento y novedades exclusivas.")+
+        '</div>'+
+        '<div style="display:flex;gap:10px;flex-wrap:wrap">'+
+          '<a href="'+PRIVATE_LINK+'" target="_blank" '+
+            'style="display:inline-flex;align-items:center;gap:7px;padding:10px 18px;background:#00a870;'+
+            'border-radius:10px;font-size:13px;font-weight:700;color:#fff;text-decoration:none;'+
+            'box-shadow:0 4px 14px rgba(0,168,112,.3)">'+
+            '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.894 8.221l-1.97 9.28c-.145.658-.537.818-1.084.508l-3-2.21-1.447 1.394c-.16.16-.295.295-.605.295l.213-3.053 5.56-5.023c.242-.213-.054-.333-.373-.12l-6.871 4.326-2.962-.924c-.643-.204-.657-.643.136-.953l11.57-4.461c.537-.194 1.006.131.833.941z"/></svg>'+
+            (en?"Join private group":"Unirme al grupo privado")+
+          '</a>'+
+        '</div>'+
+      '</div>'+
+    '</div>';
+  })()}
 
   <div style="display:flex;gap:8px;margin-bottom:24px">
     <button class="btn-green" style="padding:10px 20px" onclick="openDeposit()">💳 ${t("wallet_deposit")}</button>
