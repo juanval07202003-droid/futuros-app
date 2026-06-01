@@ -1991,6 +1991,7 @@ const STATE={
   following:[],
   replyTo:null,          // {commentId, author} — comentario al que se responde
   mentions:{},           // {userId:[{marketId,commentId,from,text,ts}]} — menciones recibidas
+  feedTransactions:[],   // transacciones reales de usuarios seguidos
   marketInvested:{},  // {marketId: {yes:$, no:$}} — cargado desde DB al abrir Resolver
   // trade modal
   tradeOpen:false,tradeMarketId:null,tradeSide:"YES",tradeMode:"buy",tradeShares:"",tradeDollars:"",
@@ -2738,7 +2739,7 @@ function render(){
   if(footer){footer.style.display=(STATE.view==="admin"||STATE.view==="market")?"none":"block";}
   switch(STATE.view){
     case"home":     app.innerHTML=renderHome();     break;
-    case"feed":     app.innerHTML=renderFeed();     break;
+    case"feed":     app.innerHTML=renderFeed();     dbLoadFeed(); break;
     case"auth":     app.innerHTML=renderAuth();     bindAuth(); break;
     case"market":   app.innerHTML=renderMarket();   break;
     case"portfolio":app.innerHTML=renderPortfolio();break;
@@ -5316,6 +5317,65 @@ function showCopied(marketId){
 }
 
 // ── COMMENTS DB ──────────────────────────────────────────────────
+async function dbLoadFeed(){
+  const u = getUser();
+  if(!u) return;
+  loadFollowing();
+  if(!STATE.following.length) return;
+
+  const followedUsers = STATE.users.filter(x=>STATE.following.includes(x.id));
+  const followedIds = followedUsers.map(x=>x.id);
+  const followedUsernames = followedUsers.map(x=>x.username);
+  if(!followedUsernames.length) return;
+
+  try{
+    // Cargar comentarios de usuarios seguidos
+    const {data:commentsData, error:commentsErr} = await db.from("comments")
+      .select("*")
+      .in("author", followedUsernames)
+      .order("created_at",{ascending:false})
+      .limit(200);
+
+    if(!commentsErr && commentsData){
+      commentsData.forEach(row=>{
+        const mid = row.market_id;
+        if(!STATE.comments[mid]) STATE.comments[mid]=[];
+        if(!STATE.comments[mid].some(c=>c.id===row.id)){
+          STATE.comments[mid].push({
+            id: row.id, author: row.author,
+            isGuest: row.is_guest||false,
+            text: row.text, ts: row.created_at,
+            replyTo: row.reply_to||null,
+          });
+        }
+      });
+    }
+
+    // Cargar transacciones reales (compras y ventas) de usuarios seguidos
+    const {data:txData, error:txErr} = await db.from("transactions")
+      .select("*")
+      .in("user_id", followedIds)
+      .in("type", ["buy","sell"])
+      .order("created_at",{ascending:false})
+      .limit(300);
+
+    if(!txErr && txData){
+      // Guardar en STATE.feedTransactions para que renderFeed las use
+      STATE.feedTransactions = txData.map(row=>({
+        id: row.id,
+        userId: row.user_id,
+        type: row.type,           // "buy" o "sell"
+        amount: Math.abs(Number(row.amount)||0),
+        description: row.description||"",
+        ts: row.created_at,
+      }));
+    }
+
+    if(STATE.view==="feed") render();
+
+  }catch(e){ console.error("[Feed] excepción:", e?.message||e); }
+}
+
 async function dbLoadComments(marketId){
   try{
     const {data,error} = await db.from("comments")
@@ -5681,22 +5741,33 @@ function renderFeed(){
   // Build feed from following users
   const feedItems = [];
 
-  // 1. Collect positions (trades) from followed users
-  STATE.users.filter(x=>following.includes(x.id)).forEach(trader=>{
-    Object.entries(trader.positions||{}).forEach(([mid,pos])=>{
-      const m = getMarket(mid);
-      if(!m) return;
-      if((pos.YES||0)>0) feedItems.push({
-        type:"trade", side:"YES", trader, market:m, shares:pos.YES,
-        ts: m.createdAt||new Date().toISOString()
-      });
-      if((pos.NO||0)>0) feedItems.push({
-        type:"trade", side:"NO", trader, market:m, shares:pos.NO,
-        ts: m.createdAt||new Date().toISOString()
-      });
+  // 1. Real transactions from DB (compras y ventas reales)
+  const followedIds = STATE.users.filter(x=>following.includes(x.id)).map(x=>x.id);
+  (STATE.feedTransactions||[]).forEach(tx=>{
+    const trader = STATE.users.find(x=>x.id===tx.userId);
+    if(!trader) return;
+    // Parse market and side from description
+    // Format: "Compra YES $10.00 → 5.23 shares · Título del mercado..."
+    const isYes = /YES/i.test(tx.description);
+    const isNo  = /\bNO\b/i.test(tx.description);
+    if(!isYes && !isNo) return;
+    const side = isYes ? "YES" : "NO";
+    // Try to match market by title fragment
+    const market = STATE.markets.find(m=>{
+      const frag = mTitle(m).slice(0,20).toLowerCase();
+      return tx.description.toLowerCase().includes(frag);
     });
+    feedItems.push({
+      type: tx.type==="buy"?"buy":"sell",
+      side, trader, market: market||null,
+      amount: tx.amount,
+      description: tx.description,
+      ts: tx.ts,
+    });
+  });
 
-    // 2. Collect comments from followed users
+  // 2. Comments from followed users (loaded via dbLoadFeed)
+  STATE.users.filter(x=>following.includes(x.id)).forEach(trader=>{
     Object.entries(STATE.comments||{}).forEach(([marketId,comments])=>{
       const m = getMarket(marketId);
       if(!m) return;
@@ -5743,26 +5814,40 @@ function renderFeed(){
              :"Actividad de "+following.length+" traders que sigues"}
         </div>
       </div>
-      <button onclick="STATE.portfolioTab='leaderboard';navigate('portfolio')"
-        style="padding:8px 14px;border-radius:10px;border:1.5px solid var(--border);
-        background:transparent;font-size:12px;font-weight:700;color:var(--muted);
-        cursor:pointer;font-family:inherit;display:flex;align-items:center;gap:6px">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
-        ${en?"Find traders":"Buscar traders"}
-      </button>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button onclick="dbLoadFeed()"
+          style="padding:8px 12px;border-radius:10px;border:1.5px solid var(--border);
+          background:transparent;font-size:12px;font-weight:700;color:var(--muted);
+          cursor:pointer;font-family:inherit;display:flex;align-items:center;gap:5px"
+          title="${en?"Refresh feed":"Actualizar feed"}">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+          ${en?"Refresh":"Actualizar"}
+        </button>
+        <button onclick="STATE.portfolioTab='leaderboard';navigate('portfolio')"
+          style="padding:8px 14px;border-radius:10px;border:1.5px solid var(--border);
+          background:transparent;font-size:12px;font-weight:700;color:var(--muted);
+          cursor:pointer;font-family:inherit;display:flex;align-items:center;gap:6px">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
+          ${en?"Find traders":"Buscar traders"}
+        </button>
+      </div>
     </div>
 
     ${feedItems.length===0 ? emptyState : feedItems.slice(0,50).map(item=>{
-      if(item.type==="trade"){
-        const pYes = getPrice(item.market,"YES");
+
+      // ── COMPRA o VENTA ──────────────────────────────────────────
+      if(item.type==="buy"||item.type==="sell"){
+        const isBuy = item.type==="buy";
         const isYes = item.side==="YES";
-        const val = isYes
-          ? calcSellReturn(item.market,"YES",item.shares)
-          : calcSellReturn(item.market,"NO",item.shares);
-        return`<div class="card fade-up" style="margin-bottom:10px;cursor:pointer"
-          onclick="navigate('market',{marketId:'${item.market.id}'})">
-          <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
-            <div style="cursor:pointer" onclick="event.stopPropagation();STATE.copyTraderView='${item.trader.id}';STATE.profileTab='activity';navigate('portfolio')">
+        const actionLabel = isBuy
+          ? (en?"bought":"compró")
+          : (en?"sold":"vendió");
+        const actionColor = isBuy ? "var(--yes)" : "var(--no)";
+        return`<div class="card fade-up" style="margin-bottom:10px;${item.market?"cursor:pointer":""}"
+          ${item.market?`onclick="navigate('market',{marketId:'${item.market.id}'})"`:""}">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+            <div style="cursor:pointer;flex-shrink:0"
+              onclick="event.stopPropagation();STATE.copyTraderView='${item.trader.id}';STATE.profileTab='activity';navigate('portfolio')">
               ${renderAvatar(item.trader.username,item.trader.avatarUrl||null,38,15)}
             </div>
             <div style="flex:1;min-width:0">
@@ -5771,37 +5856,46 @@ function renderFeed(){
                   onclick="event.stopPropagation();STATE.copyTraderView='${item.trader.id}';STATE.profileTab='activity';navigate('portfolio')">
                   @${escHtml(item.trader.username)}
                 </span>
-                <span style="font-size:12px;color:var(--muted)">${en?"holds":"tiene"}</span>
+                <span style="font-size:12px;color:var(--muted)">${actionLabel}</span>
                 <span style="padding:2px 8px;border-radius:20px;font-size:11px;font-weight:800;
                   background:${isYes?"var(--yes-bg)":"var(--no-bg)"};
                   color:${isYes?"var(--yes)":"var(--no)"}">
                   ${item.side}
                 </span>
+                <span style="font-size:12px;font-weight:700;color:${actionColor}">
+                  ${usd(item.amount)}
+                </span>
               </div>
               <div style="font-size:11px;color:var(--muted);margin-top:2px">${timeAgo(item.ts)}</div>
             </div>
-            <div style="text-align:right;flex-shrink:0">
-              <div style="font-size:13px;font-weight:800;color:${isYes?"var(--yes)":"var(--no)"}">
-                ${item.shares.toFixed(1)} shares
-              </div>
-              <div style="font-size:11px;color:var(--muted)">≈ ${usd(val)}</div>
+            <div style="flex-shrink:0">
+              <span style="font-size:11px;padding:3px 8px;border-radius:8px;font-weight:700;
+                background:${isBuy?"var(--yes-bg)":"var(--no-bg)"};
+                color:${isBuy?"var(--yes)":"var(--no)"}">
+                ${isBuy?(en?"BUY":"COMPRA"):(en?"SELL":"VENTA")}
+              </span>
             </div>
           </div>
+          ${item.market?`
           <div style="background:var(--card2);border-radius:10px;padding:10px 12px;
             border-left:3px solid ${isYes?"var(--yes)":"var(--no)"}">
+            <div style="font-size:11px;color:var(--muted);margin-bottom:4px">
+              ${en?"Market":"Mercado"}
+            </div>
             <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:6px">
               ${escHtml(mTitle(item.market).slice(0,70))}${mTitle(item.market).length>70?"…":""}
             </div>
-            <div style="display:flex;align-items:center;gap:10px">
-              <div style="font-size:12px;color:var(--muted)">${en?"Current probability":"Probabilidad actual"}</div>
-              <div style="font-size:13px;font-weight:700;color:var(--yes)">${pct(pYes)} YES</div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <div style="font-size:12px;font-weight:700;color:var(--yes)">
+                ${pct(getPrice(item.market,"YES"))} YES
+              </div>
               <div style="flex:1;background:var(--border);border-radius:20px;height:4px;overflow:hidden">
-                <div style="height:100%;border-radius:20px;background:var(--yes);width:${pct(pYes)}"></div>
+                <div style="height:100%;border-radius:20px;background:var(--yes);width:${pct(getPrice(item.market,"YES"))}"></div>
               </div>
             </div>
           </div>
           ${!item.market.resolved?`
-          <div style="margin-top:10px;display:flex;gap:8px">
+          <div style="margin-top:8px;display:flex;gap:8px">
             <button onclick="event.stopPropagation();openTrade('${item.market.id}','YES','buy')"
               style="flex:1;padding:7px;border-radius:8px;background:var(--yes-bg);color:var(--yes);
               font-size:12px;font-weight:700;border:1px solid var(--yes);cursor:pointer">
@@ -5813,9 +5907,13 @@ function renderFeed(){
               ${en?"Copy → NO":"Copiar → NO"}
             </button>
           </div>`:""}
+          `:`<div style="font-size:12px;color:var(--muted);font-style:italic;margin-top:6px">
+            ${escHtml(item.description.slice(0,80))}
+          </div>`}
         </div>`;
       }
 
+      // ── COMENTARIO ──────────────────────────────────────────────
       if(item.type==="comment"){
         return`<div class="card fade-up" style="margin-bottom:10px;cursor:pointer"
           onclick="navigate('market',{marketId:'${item.market.id}'})">
@@ -5830,16 +5928,22 @@ function renderFeed(){
                   onclick="event.stopPropagation();STATE.copyTraderView='${item.trader.id}';STATE.profileTab='activity';navigate('portfolio')">
                   @${escHtml(item.trader.username)}
                 </span>
-                <span style="font-size:12px;color:var(--muted)">${en?"commented on":"comentó en"}</span>
-                <span style="font-size:12px;color:var(--accent);font-weight:600">
-                  ${escHtml(mTitle(item.market).slice(0,35))}${mTitle(item.market).length>35?"…":""}
+                <span style="font-size:12px;color:var(--muted)">${en?"commented":"comentó"}</span>
+              </div>
+              <!-- Mercado de origen del comentario -->
+              <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;padding:5px 8px;
+                background:var(--card2);border-radius:8px;border:1px solid var(--border)">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="var(--muted)" stroke-width="2" stroke-linecap="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+                <span style="font-size:11px;color:var(--accent);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+                  ${escHtml(mTitle(item.market).slice(0,55))}${mTitle(item.market).length>55?"…":""}
                 </span>
               </div>
-              <div style="font-size:11px;color:var(--muted);margin-bottom:8px">${timeAgo(item.ts)}</div>
+              <!-- Texto del comentario -->
               <div style="font-size:13px;color:var(--text);line-height:1.5;padding:10px 12px;
                 background:var(--card2);border-radius:10px;border-left:3px solid var(--border)">
                 ${parseMentions(item.comment.text)}
               </div>
+              <div style="font-size:11px;color:var(--muted);margin-top:6px">${timeAgo(item.ts)}</div>
             </div>
           </div>
         </div>`;
