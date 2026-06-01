@@ -2039,7 +2039,7 @@ const getMarket =id=>STATE.markets.find(m=>m.id===id);
 const LANG={
   es:{
     // Nav
-    nav_home:"Inicio", nav_markets:"Mercados", nav_portfolio:"Portfolio",
+    nav_home:"Inicio", nav_markets:"Mercados", nav_portfolio:"Portfolio", nav_feed:"Feed",
     nav_wallet:"Billetera", nav_admin:"Admin", nav_login:"Iniciar sesión",
     nav_logout:"Cerrar sesión",
     // Home
@@ -2294,7 +2294,7 @@ const LANG={
   },
   en:{
     // Nav
-    nav_home:"Home", nav_markets:"Markets", nav_portfolio:"Portfolio",
+    nav_home:"Home", nav_markets:"Markets", nav_portfolio:"Portfolio", nav_feed:"Feed",
     nav_wallet:"Wallet", nav_admin:"Admin", nav_login:"Sign in",
     nav_logout:"Sign out",
     // Home
@@ -2738,6 +2738,7 @@ function render(){
   if(footer){footer.style.display=(STATE.view==="admin"||STATE.view==="market")?"none":"block";}
   switch(STATE.view){
     case"home":     app.innerHTML=renderHome();     break;
+    case"feed":     app.innerHTML=renderFeed();     break;
     case"auth":     app.innerHTML=renderAuth();     bindAuth(); break;
     case"market":   app.innerHTML=renderMarket();   break;
     case"portfolio":app.innerHTML=renderPortfolio();break;
@@ -2810,6 +2811,7 @@ function renderNav(){
   const items=u
     ?[
         {icon:`<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9.5L12 3l9 6.5V20a1 1 0 01-1 1H4a1 1 0 01-1-1V9.5z"/><path d="M9 21V12h6v9"/></svg>`,label:t("nav_home"),     view:"home",     fn:"navigate('home')"},
+        {icon:`<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>`,label:t("nav_feed"),    view:"feed",     fn:"navigate('feed')"},
         {icon:`<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="15" rx="2"/><path d="M16 7V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v2"/><line x1="12" y1="12" x2="12" y2="16"/><line x1="10" y1="14" x2="14" y2="14"/></svg>`,label:t("nav_portfolio"), view:"portfolio",fn:"navigate('portfolio')"},
         {icon:`<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="15" rx="2"/><path d="M2 10h20"/><circle cx="17" cy="15" r="1.5" fill="currentColor" stroke="none"/></svg>`,label:t("nav_wallet"),    view:"wallet",   fn:"navigate('wallet')"},
         {icon:`<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>`,label:usd(u.balance),     view:"__dep__",  fn:"openDeposit()"},
@@ -5659,6 +5661,193 @@ function renderCopyTraderView(){
   </div>`;
 }
 
+
+// ─── SOCIAL FEED ──────────────────────────────────────────────────
+
+function renderFeed(){
+  const u = getUser();
+  const en = STATE.lang==="en";
+
+  if(!u) return`<div class="container-sm" style="padding-top:40px;text-align:center">
+    <div style="font-size:48px;margin-bottom:16px">👥</div>
+    <div style="font-weight:700;font-size:18px;margin-bottom:8px">${en?"Sign in to see your feed":"Inicia sesión para ver tu feed"}</div>
+    <div style="color:var(--muted);font-size:14px;margin-bottom:20px">${en?"Follow traders and see their activity here":"Sigue traders y ve su actividad aquí"}</div>
+    <button class="btn-green" onclick="navigate('auth')">${en?"Sign in":"Iniciar sesión"}</button>
+  </div>`;
+
+  loadFollowing();
+  const following = STATE.following;
+
+  // Build feed from following users
+  const feedItems = [];
+
+  // 1. Collect positions (trades) from followed users
+  STATE.users.filter(x=>following.includes(x.id)).forEach(trader=>{
+    Object.entries(trader.positions||{}).forEach(([mid,pos])=>{
+      const m = getMarket(mid);
+      if(!m) return;
+      if((pos.YES||0)>0) feedItems.push({
+        type:"trade", side:"YES", trader, market:m, shares:pos.YES,
+        ts: m.createdAt||new Date().toISOString()
+      });
+      if((pos.NO||0)>0) feedItems.push({
+        type:"trade", side:"NO", trader, market:m, shares:pos.NO,
+        ts: m.createdAt||new Date().toISOString()
+      });
+    });
+
+    // 2. Collect comments from followed users
+    Object.entries(STATE.comments||{}).forEach(([marketId,comments])=>{
+      const m = getMarket(marketId);
+      if(!m) return;
+      (comments||[]).filter(c=>c.author===trader.username).forEach(c=>{
+        feedItems.push({type:"comment", trader, market:m, comment:c, ts:c.ts});
+      });
+    });
+  });
+
+  // Sort by newest first
+  feedItems.sort((a,b)=>new Date(b.ts)-new Date(a.ts));
+
+  const emptyState = following.length===0
+    ? `<div style="text-align:center;padding:60px 20px">
+        <div style="font-size:48px;margin-bottom:16px">👥</div>
+        <div style="font-weight:700;font-size:18px;color:var(--text);margin-bottom:8px">
+          ${en?"Follow traders to see their activity":"Sigue traders para ver su actividad"}
+        </div>
+        <div style="color:var(--muted);font-size:13px;margin-bottom:24px;line-height:1.6">
+          ${en?"Go to Portfolio → Leaderboard to discover and follow the best traders on the platform."
+             :"Ve a Portfolio → Leaderboard para descubrir y seguir a los mejores traders de la plataforma."}
+        </div>
+        <button class="btn-green" onclick="STATE.portfolioTab='leaderboard';navigate('portfolio')">
+          ${en?"Discover traders":"Descubrir traders"}
+        </button>
+      </div>`
+    : `<div style="text-align:center;padding:60px 20px">
+        <div style="font-size:48px;margin-bottom:16px">🌊</div>
+        <div style="font-weight:700;font-size:18px;color:var(--text);margin-bottom:8px">
+          ${en?"No activity yet":"Sin actividad aún"}
+        </div>
+        <div style="color:var(--muted);font-size:13px">
+          ${en?"The traders you follow haven't made any moves yet.":"Los traders que sigues no han hecho movimientos aún."}
+        </div>
+      </div>`;
+
+  return`<div class="container-sm fade-up" style="padding-top:16px">
+    <!-- Header -->
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
+      <div>
+        <h1 style="font-size:22px;font-weight:900;margin:0 0 4px">${en?"Feed":"Feed"}</h1>
+        <div style="font-size:12px;color:var(--muted)">
+          ${en?"Activity from "+following.length+" traders you follow"
+             :"Actividad de "+following.length+" traders que sigues"}
+        </div>
+      </div>
+      <button onclick="STATE.portfolioTab='leaderboard';navigate('portfolio')"
+        style="padding:8px 14px;border-radius:10px;border:1.5px solid var(--border);
+        background:transparent;font-size:12px;font-weight:700;color:var(--muted);
+        cursor:pointer;font-family:inherit;display:flex;align-items:center;gap:6px">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
+        ${en?"Find traders":"Buscar traders"}
+      </button>
+    </div>
+
+    ${feedItems.length===0 ? emptyState : feedItems.slice(0,50).map(item=>{
+      if(item.type==="trade"){
+        const pYes = getPrice(item.market,"YES");
+        const isYes = item.side==="YES";
+        const val = isYes
+          ? calcSellReturn(item.market,"YES",item.shares)
+          : calcSellReturn(item.market,"NO",item.shares);
+        return`<div class="card fade-up" style="margin-bottom:10px;cursor:pointer"
+          onclick="navigate('market',{marketId:'${item.market.id}'})">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+            <div style="cursor:pointer" onclick="event.stopPropagation();STATE.copyTraderView='${item.trader.id}';STATE.profileTab='activity';navigate('portfolio')">
+              ${renderAvatar(item.trader.username,item.trader.avatarUrl||null,38,15)}
+            </div>
+            <div style="flex:1;min-width:0">
+              <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+                <span style="font-weight:700;font-size:13px;cursor:pointer"
+                  onclick="event.stopPropagation();STATE.copyTraderView='${item.trader.id}';STATE.profileTab='activity';navigate('portfolio')">
+                  @${escHtml(item.trader.username)}
+                </span>
+                <span style="font-size:12px;color:var(--muted)">${en?"holds":"tiene"}</span>
+                <span style="padding:2px 8px;border-radius:20px;font-size:11px;font-weight:800;
+                  background:${isYes?"var(--yes-bg)":"var(--no-bg)"};
+                  color:${isYes?"var(--yes)":"var(--no)"}">
+                  ${item.side}
+                </span>
+              </div>
+              <div style="font-size:11px;color:var(--muted);margin-top:2px">${timeAgo(item.ts)}</div>
+            </div>
+            <div style="text-align:right;flex-shrink:0">
+              <div style="font-size:13px;font-weight:800;color:${isYes?"var(--yes)":"var(--no)"}">
+                ${item.shares.toFixed(1)} shares
+              </div>
+              <div style="font-size:11px;color:var(--muted)">≈ ${usd(val)}</div>
+            </div>
+          </div>
+          <div style="background:var(--card2);border-radius:10px;padding:10px 12px;
+            border-left:3px solid ${isYes?"var(--yes)":"var(--no)"}">
+            <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:6px">
+              ${escHtml(mTitle(item.market).slice(0,70))}${mTitle(item.market).length>70?"…":""}
+            </div>
+            <div style="display:flex;align-items:center;gap:10px">
+              <div style="font-size:12px;color:var(--muted)">${en?"Current probability":"Probabilidad actual"}</div>
+              <div style="font-size:13px;font-weight:700;color:var(--yes)">${pct(pYes)} YES</div>
+              <div style="flex:1;background:var(--border);border-radius:20px;height:4px;overflow:hidden">
+                <div style="height:100%;border-radius:20px;background:var(--yes);width:${pct(pYes)}"></div>
+              </div>
+            </div>
+          </div>
+          ${!item.market.resolved?`
+          <div style="margin-top:10px;display:flex;gap:8px">
+            <button onclick="event.stopPropagation();openTrade('${item.market.id}','YES','buy')"
+              style="flex:1;padding:7px;border-radius:8px;background:var(--yes-bg);color:var(--yes);
+              font-size:12px;font-weight:700;border:1px solid var(--yes);cursor:pointer">
+              ${en?"Copy → YES":"Copiar → YES"}
+            </button>
+            <button onclick="event.stopPropagation();openTrade('${item.market.id}','NO','buy')"
+              style="flex:1;padding:7px;border-radius:8px;background:var(--no-bg);color:var(--no);
+              font-size:12px;font-weight:700;border:1px solid var(--no);cursor:pointer">
+              ${en?"Copy → NO":"Copiar → NO"}
+            </button>
+          </div>`:""}
+        </div>`;
+      }
+
+      if(item.type==="comment"){
+        return`<div class="card fade-up" style="margin-bottom:10px;cursor:pointer"
+          onclick="navigate('market',{marketId:'${item.market.id}'})">
+          <div style="display:flex;gap:10px">
+            <div style="cursor:pointer;flex-shrink:0"
+              onclick="event.stopPropagation();STATE.copyTraderView='${item.trader.id}';STATE.profileTab='activity';navigate('portfolio')">
+              ${renderAvatar(item.trader.username,item.trader.avatarUrl||null,38,15)}
+            </div>
+            <div style="flex:1;min-width:0">
+              <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;flex-wrap:wrap">
+                <span style="font-weight:700;font-size:13px;cursor:pointer"
+                  onclick="event.stopPropagation();STATE.copyTraderView='${item.trader.id}';STATE.profileTab='activity';navigate('portfolio')">
+                  @${escHtml(item.trader.username)}
+                </span>
+                <span style="font-size:12px;color:var(--muted)">${en?"commented on":"comentó en"}</span>
+                <span style="font-size:12px;color:var(--accent);font-weight:600">
+                  ${escHtml(mTitle(item.market).slice(0,35))}${mTitle(item.market).length>35?"…":""}
+                </span>
+              </div>
+              <div style="font-size:11px;color:var(--muted);margin-bottom:8px">${timeAgo(item.ts)}</div>
+              <div style="font-size:13px;color:var(--text);line-height:1.5;padding:10px 12px;
+                background:var(--card2);border-radius:10px;border-left:3px solid var(--border)">
+                ${parseMentions(item.comment.text)}
+              </div>
+            </div>
+          </div>
+        </div>`;
+      }
+      return"";
+    }).join("")}
+  </div>`;
+}
 
 function renderPortfolio(){
   const u=getUser();if(!u)return`<div class="container-sm"><p>${t("sign_in_required")}</p></div>`;
