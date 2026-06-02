@@ -966,6 +966,12 @@ td{padding:12px;vertical-align:middle;color:var(--text-2);}
 @media(max-width:640px){
   .holders-grid{grid-template-columns:1fr!important;}
 }
+/* Likes en comentarios */
+.comment-like-btn{display:inline-flex;align-items:center;gap:4px;border:none;background:none;
+  cursor:pointer;color:var(--muted);font-size:12px;padding:3px 8px;border-radius:8px;
+  font-family:inherit;transition:all .15s;}
+.comment-like-btn:hover{background:var(--no-bg);color:var(--no);}
+.comment-like-btn.liked{color:var(--no);font-weight:700;}
 /* Menciones y respuestas en comentarios */
 .comment-mention{color:var(--yes);font-weight:700;cursor:pointer;}
 .comment-mention:hover{text-decoration:underline;}
@@ -1407,6 +1413,7 @@ function dbRowToMarket(row){
     priceHistory: Array.isArray(row.price_history)?row.price_history:[0.5],
     featured: row.featured||false,
     createdAt: row.created_at,
+    imageUrl: row.image_url||null,
     oracleType: row.oracle_type||"none",
     oracleConfig: row.oracle_config||"",
     oracleLocked: row.oracle_locked||false,
@@ -4569,9 +4576,7 @@ function renderMarket(){
       ${mkCatTag(m.category,cc)}
       <h2 style="font-size:clamp(20px,5vw,26px);margin:10px 0 8px;line-height:1.25">${escHtml(mTitle(m))}</h2>
     </div>
-    ${m.imageUrl
-      ? `<img src="${escHtml(m.imageUrl)}" style="width:72px;height:72px;object-fit:cover;border-radius:14px;flex-shrink:0;border:1px solid var(--border);margin-left:16px" loading="lazy"/>`
-      : `<div style="text-align:right;flex-shrink:0"><div class="mkt-prob-big">${pct(pYes)}</div><div style="color:var(--muted);font-size:12px;margin-top:4px">prob. ${t("detail_yes")}</div></div>`}
+    <div style="text-align:right;flex-shrink:0"><div class="mkt-prob-big">${pct(pYes)}</div><div style="color:var(--muted);font-size:12px;margin-top:4px">prob. ${t("detail_yes")}</div></div>
   </div>
   <div class="stats-grid">
     ${[[t("detail_volume"),fmtVol(m.totalVolume)],[t("detail_closes"),timeLeft(m.closesAt)],[t("detail_liquidity"),b.toFixed(1)],...(u?[[t("detail_positions"),`${t("detail_yes")} ${(pos.YES||0).toFixed(2)} · ${t("detail_no")} ${(pos.NO||0).toFixed(2)}`]]:[])].filter(([l,v])=>l&&v!==undefined).map(([l,v])=>`<div class="card-sm"><div class="lbl">${l}</div><div style="font-size:18px;font-weight:800;color:var(--text)">${v}</div></div>`).join("")}
@@ -4905,7 +4910,59 @@ function timeAgo(isoStr){
   return Math.floor(diff/86400)+t("time_days");
 }
 
-// ── Parsear menciones en texto → HTML con links clickeables
+// ── Sistema de likes en comentarios ─────────────────────────────
+
+function getCommentLikes(commentId){
+  try{
+    const data = JSON.parse(localStorage.getItem("sw_likes")||"{}");
+    return data[commentId]||0;
+  }catch(e){ return 0; }
+}
+
+function hasUserLiked(commentId){
+  const u = getUser();
+  if(!u) return false;
+  try{
+    const data = JSON.parse(localStorage.getItem("sw_liked_"+u.id)||"[]");
+    return data.includes(commentId);
+  }catch(e){ return false; }
+}
+
+function toggleCommentLike(marketId, commentId){
+  const u = getUser();
+  if(!u){ notify("Inicia sesión para dar like","error"); return; }
+
+  const likeKey = "sw_likes";
+  const userKey = "sw_liked_"+u.id;
+
+  try{
+    const likes = JSON.parse(localStorage.getItem(likeKey)||"{}");
+    const userLiked = JSON.parse(localStorage.getItem(userKey)||"[]");
+
+    const alreadyLiked = userLiked.includes(commentId);
+    if(alreadyLiked){
+      likes[commentId] = Math.max(0, (likes[commentId]||0) - 1);
+      const idx = userLiked.indexOf(commentId);
+      userLiked.splice(idx, 1);
+    } else {
+      likes[commentId] = (likes[commentId]||0) + 1;
+      userLiked.push(commentId);
+    }
+
+    localStorage.setItem(likeKey, JSON.stringify(likes));
+    localStorage.setItem(userKey, JSON.stringify(userLiked));
+
+    // Re-renderizar solo la sección de comentarios
+    const section = document.querySelector('.comments-section');
+    if(section){
+      const tmp = document.createElement('div');
+      tmp.innerHTML = renderComments(marketId);
+      section.replaceWith(tmp.firstElementChild);
+    }
+  }catch(e){ console.error("toggleLike:", e); }
+}
+
+// ── Parsear menciones ────────────────────────────────────────────
 function parseMentions(text){
   return escHtml(text).replace(/@([a-zA-Z0-9_]+)/g, (match, username)=>{
     const user = STATE.users.find(u=>u.username.toLowerCase()===username.toLowerCase());
@@ -5015,9 +5072,18 @@ function renderComments(marketId){
 
   const listHtml=count===0
     ?`<div class="comment-empty"><span style="display:flex;justify-content:center"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block;vertical-align:middle;"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span>${t("comment_empty")}</div>`
-    :comments.slice().reverse().map(c=>{
+    :comments.slice()
+      // Ordenar: primero por likes (desc), luego por fecha (desc)
+      .sort((a,b)=>{
+        const likeDiff = getCommentLikes(b.id) - getCommentLikes(a.id);
+        if(likeDiff !== 0) return likeDiff;
+        return new Date(b.ts) - new Date(a.ts);
+      })
+      .map(c=>{
       const replyTarget = c.replyTo ? comments.find(r=>r.id===c.replyTo) : null;
       const cu = STATE.users.find(x=>x.username===c.author);
+      const likes = getCommentLikes(c.id);
+      const liked = hasUserLiked(c.id);
       return`<div class="comment-card" id="comment-${c.id}">
         <div class="comment-header">
           <div class="comment-meta" style="cursor:pointer" onclick="${cu?`STATE.copyTraderView='${cu.id}';STATE.profileTab='activity';navigate('portfolio')`:'void(0)'}">
@@ -5027,7 +5093,7 @@ function renderComments(marketId){
               ${c.isGuest?`<span class="comment-guest-badge" style="margin-left:4px">${t("comment_guest")}</span>`:''}
             </div>
           </div>
-          <div style="display:flex;align-items:center;gap:10px">
+          <div style="display:flex;align-items:center;gap:6px">
             <span class="comment-time">${timeAgo(c.ts)}</span>
             <button onclick="setReply('${marketId}','${c.id}','${c.author.replace(/'/g,"\\'")}')"
               style="border:none;background:none;cursor:pointer;color:var(--muted);font-size:11px;
@@ -5044,6 +5110,18 @@ function renderComments(marketId){
             · ${escHtml(replyTarget.text.slice(0,80))}${replyTarget.text.length>80?"…":""}
           </div>`:""}
         <div class="comment-body">${parseMentions(c.text)}</div>
+        <!-- Like button -->
+        <div style="margin-top:8px;display:flex;align-items:center;gap:4px">
+          <button class="comment-like-btn${liked?" liked":""}"
+            onclick="toggleCommentLike('${marketId}','${c.id}')">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="${liked?"currentColor":"none"}"
+              stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/>
+            </svg>
+            ${likes>0?`<span style="font-weight:${liked?"700":"500"}">${likes}</span>`:""}
+          </button>
+          ${likes>0?`<span style="font-size:10px;color:var(--muted)">${likes===1?"like":"likes"}</span>`:""}
+        </div>
       </div>`;
     }).join('');
 
@@ -5111,18 +5189,20 @@ async function dbLoadFeed(){
   const u = getUser();
   if(!u) return;
   loadFollowing();
-  if(!STATE.following.length) return;
 
   const followedUsers = STATE.users.filter(x=>STATE.following.includes(x.id));
-  const followedIds = followedUsers.map(x=>x.id);
-  const followedUsernames = followedUsers.map(x=>x.username);
-  if(!followedUsernames.length) return;
+  // Incluir al propio usuario para ver su propia actividad en el feed
+  const allRelevantUsers = [u, ...followedUsers.filter(x=>x.id!==u.id)];
+  const allIds = allRelevantUsers.map(x=>x.id);
+  const allUsernames = allRelevantUsers.map(x=>x.username);
+
+  if(!allUsernames.length) return;
 
   try{
-    // Cargar comentarios de usuarios seguidos
+    // Cargar comentarios propios + de usuarios seguidos
     const {data:commentsData, error:commentsErr} = await db.from("comments")
       .select("*")
-      .in("author", followedUsernames)
+      .in("author", allUsernames)
       .order("created_at",{ascending:false})
       .limit(200);
 
@@ -5141,20 +5221,19 @@ async function dbLoadFeed(){
       });
     }
 
-    // Cargar transacciones reales (compras y ventas) de usuarios seguidos
+    // Cargar transacciones propias + de usuarios seguidos
     const {data:txData, error:txErr} = await db.from("transactions")
       .select("*")
-      .in("user_id", followedIds)
+      .in("user_id", allIds)
       .in("type", ["buy","sell"])
       .order("created_at",{ascending:false})
       .limit(300);
 
     if(!txErr && txData){
-      // Guardar en STATE.feedTransactions para que renderFeed las use
       STATE.feedTransactions = txData.map(row=>({
         id: row.id,
         userId: row.user_id,
-        type: row.type,           // "buy" o "sell"
+        type: row.type,
         amount: Math.abs(Number(row.amount)||0),
         description: row.description||"",
         ts: row.created_at,
@@ -5528,21 +5607,18 @@ function renderFeed(){
   loadFollowing();
   const following = STATE.following;
 
-  // Build feed from following users
+  // Build feed — propio usuario + usuarios seguidos
   const feedItems = [];
+  const allFeedUsers = [u, ...STATE.users.filter(x=>following.includes(x.id)&&x.id!==u.id)];
 
   // 1. Real transactions from DB (compras y ventas reales)
-  const followedIds = STATE.users.filter(x=>following.includes(x.id)).map(x=>x.id);
   (STATE.feedTransactions||[]).forEach(tx=>{
     const trader = STATE.users.find(x=>x.id===tx.userId);
     if(!trader) return;
-    // Parse market and side from description
-    // Format: "Compra YES $10.00 → 5.23 shares · Título del mercado..."
     const isYes = /YES/i.test(tx.description);
     const isNo  = /\bNO\b/i.test(tx.description);
     if(!isYes && !isNo) return;
     const side = isYes ? "YES" : "NO";
-    // Try to match market by title fragment
     const market = STATE.markets.find(m=>{
       const frag = mTitle(m).slice(0,20).toLowerCase();
       return tx.description.toLowerCase().includes(frag);
@@ -5553,16 +5629,17 @@ function renderFeed(){
       amount: tx.amount,
       description: tx.description,
       ts: tx.ts,
+      isSelf: trader.id===u.id,
     });
   });
 
-  // 2. Comments from followed users (loaded via dbLoadFeed)
-  STATE.users.filter(x=>following.includes(x.id)).forEach(trader=>{
+  // 2. Comments — propio usuario + seguidos
+  allFeedUsers.forEach(trader=>{
     Object.entries(STATE.comments||{}).forEach(([marketId,comments])=>{
       const m = getMarket(marketId);
       if(!m) return;
       (comments||[]).filter(c=>c.author===trader.username).forEach(c=>{
-        feedItems.push({type:"comment", trader, market:m, comment:c, ts:c.ts});
+        feedItems.push({type:"comment", trader, market:m, comment:c, ts:c.ts, isSelf:trader.id===u.id});
       });
     });
   });
@@ -5574,11 +5651,11 @@ function renderFeed(){
     ? `<div style="text-align:center;padding:60px 20px">
         <div style="font-size:48px;margin-bottom:16px">👥</div>
         <div style="font-weight:700;font-size:18px;color:var(--text);margin-bottom:8px">
-          ${en?"Follow traders to see their activity":"Sigue traders para ver su actividad"}
+          ${en?"Your activity will appear here":"Tu actividad aparecerá aquí"}
         </div>
         <div style="color:var(--muted);font-size:13px;margin-bottom:24px;line-height:1.6">
-          ${en?"Go to Portfolio → Leaderboard to discover and follow the best traders on the platform."
-             :"Ve a Portfolio → Leaderboard para descubrir y seguir a los mejores traders de la plataforma."}
+          ${en?"Follow traders in the Leaderboard to see their moves too."
+             :"Sigue traders en el Leaderboard para ver también sus movimientos."}
         </div>
         <button class="btn-green" onclick="STATE.portfolioTab='leaderboard';navigate('portfolio')">
           ${en?"Discover traders":"Descubrir traders"}
@@ -5590,7 +5667,7 @@ function renderFeed(){
           ${en?"No activity yet":"Sin actividad aún"}
         </div>
         <div style="color:var(--muted);font-size:13px">
-          ${en?"The traders you follow haven't made any moves yet.":"Los traders que sigues no han hecho movimientos aún."}
+          ${en?"Make a prediction or comment on a market to start your feed.":"Haz una predicción o comenta en un mercado para empezar tu feed."}
         </div>
       </div>`;
 
