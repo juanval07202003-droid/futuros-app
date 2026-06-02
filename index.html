@@ -1422,7 +1422,6 @@ function marketToDbRow(m){
     title_en: m.title_en||null,
     category: m.category,
     emoji: m.emoji,
-    imageUrl: row.image_url||null,
     description: m.description||"",
     description_en: m.description_en||null,
     alpha: m.alpha,
@@ -7659,10 +7658,10 @@ async function uploadMarketImage(input){
   const file = input.files[0];
   if(!file) return;
   const status = document.getElementById("mk-img-status");
-  if(status) status.textContent = "⏳ Subiendo imagen...";
+  if(status) status.textContent = "⏳ Procesando imagen...";
 
   try{
-    // Resize to max 400px and convert to webp-like quality
+    // Resize to max 400px
     const img = await new Promise((res,rej)=>{
       const i = new Image();
       i.onload = ()=>res(i);
@@ -7675,22 +7674,36 @@ async function uploadMarketImage(input){
     canvas.width  = Math.round(img.width  * ratio);
     canvas.height = Math.round(img.height * ratio);
     canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
-
     const blob = await new Promise(res=>canvas.toBlob(res,"image/jpeg",0.85));
     const fileName = `markets/${Date.now()}_${Math.random().toString(36).slice(2,8)}.jpg`;
 
-    const {data, error} = await db.storage
-      .from("market-images")
-      .upload(fileName, blob, {contentType:"image/jpeg", upsert:false});
+    // Intentar subir a Supabase Storage
+    try{
+      const {data, error} = await db.storage
+        .from("market-images")
+        .upload(fileName, blob, {contentType:"image/jpeg", upsert:false});
 
-    if(error) throw error;
+      if(error) throw error;
 
-    const {data:{publicUrl}} = db.storage.from("market-images").getPublicUrl(fileName);
-    STATE.mkForm.imageUrl = publicUrl;
-    if(status) status.textContent = "✅ Imagen subida";
+      const {data:{publicUrl}} = db.storage.from("market-images").getPublicUrl(fileName);
+      STATE.mkForm.imageUrl = publicUrl;
+      if(status) status.textContent = "✅ Imagen subida";
+    }catch(storageErr){
+      // Fallback: guardar como base64 directamente
+      console.warn("Storage no disponible, usando base64:", storageErr?.message);
+      const reader = new FileReader();
+      reader.onload = e=>{
+        STATE.mkForm.imageUrl = e.target.result;
+        if(status) status.textContent = "✅ Imagen lista (local)";
+        renderAdmin();
+      };
+      reader.readAsDataURL(blob);
+      return;
+    }
+
     renderAdmin();
   }catch(e){
-    if(status) status.textContent = "❌ Error: "+( e?.message||e);
+    if(status) status.textContent = "❌ Error: "+(e?.message||e);
     console.error("uploadMarketImage:",e);
   }
 }
@@ -8953,7 +8966,7 @@ async function adminCreateMarket(){
     if(error){ console.error("[DB] creando mercado:", error.message); return notify("Error al crear el mercado: "+error.message,"error"); }
   }catch(e){ return notify("Error al crear el mercado: "+(e?.message||e),"error"); }
   STATE.markets.push(m);
-  STATE.mkForm={title:"",title_en:"",category:"Deportes",emoji:"🎯",description:"",description_en:"",alpha:"0.10",seedLiquidity:"1000",closesAt:"",yesWeight:"0.5",oracleType:"none",oracleConfig:""};
+  STATE.mkForm={title:"",title_en:"",category:"Deportes",emoji:"🎯",description:"",description_en:"",alpha:"0.10",seedLiquidity:"1000",closesAt:"",yesWeight:"0.5",oracleType:"none",oracleConfig:"",imageUrl:null};
   notify("Mercado creado ✓");
   render();
 }
