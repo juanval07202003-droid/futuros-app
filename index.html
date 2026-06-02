@@ -838,6 +838,7 @@ td{padding:12px;vertical-align:middle;color:var(--text-2);}
   /* ── Detalle de mercado ── */
   .detail-header{flex-direction:column;gap:10px;}
   .mkt-prob-big{font-size:clamp(36px,12vw,48px);}
+  .hide-mobile{display:none!important;}
   .market-pos{gap:12px;font-size:13px;}
   .market-meta{gap:8px;}
   .big-action-row{flex-direction:column;gap:8px;}
@@ -4576,7 +4577,7 @@ function renderMarket(){
       ${mkCatTag(m.category,cc)}
       <h2 style="font-size:clamp(20px,5vw,26px);margin:10px 0 8px;line-height:1.25">${escHtml(mTitle(m))}</h2>
     </div>
-    <div style="text-align:right;flex-shrink:0"><div class="mkt-prob-big">${pct(pYes)}</div><div style="color:var(--muted);font-size:12px;margin-top:4px">prob. ${t("detail_yes")}</div></div>
+    <div style="text-align:right;flex-shrink:0" class="hide-mobile"><div class="mkt-prob-big">${pct(pYes)}</div><div style="color:var(--muted);font-size:12px;margin-top:4px">prob. ${t("detail_yes")}</div></div>
   </div>
   <div class="stats-grid">
     ${[[t("detail_volume"),fmtVol(m.totalVolume)],[t("detail_closes"),timeLeft(m.closesAt)],[t("detail_liquidity"),b.toFixed(1)],...(u?[[t("detail_positions"),`${t("detail_yes")} ${(pos.YES||0).toFixed(2)} · ${t("detail_no")} ${(pos.NO||0).toFixed(2)}`]]:[])].filter(([l,v])=>l&&v!==undefined).map(([l,v])=>`<div class="card-sm"><div class="lbl">${l}</div><div style="font-size:18px;font-weight:800;color:var(--text)">${v}</div></div>`).join("")}
