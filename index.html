@@ -1402,7 +1402,9 @@ function dbRowToMarket(row){
     description_en: row.description_en||null,
     description: row.description||"",
     alpha: row.alpha||0.1,
-    seedLiquidity: row.seed_liquidity||1000,
+    seedLiquidity: row.seed_liquidity||100,
+    lpYes: row.lp_yes || (row.seed_liquidity||100) * 0.5,
+    lpNo:  row.lp_no  || (row.seed_liquidity||100) * 0.5,
     qYes: row.q_yes||0,
     qNo: row.q_no||0,
     totalVolume: row.total_volume||0,
@@ -1434,6 +1436,8 @@ function marketToDbRow(m){
     description_en: m.description_en||null,
     alpha: m.alpha,
     seed_liquidity: m.seedLiquidity,
+    lp_yes: m.lpYes||m.seedLiquidity/2,
+    lp_no:  m.lpNo ||m.seedLiquidity/2,
     q_yes: m.qYes,
     q_no: m.qNo,
     total_volume: m.totalVolume||0,
@@ -1645,168 +1649,125 @@ function dbStopRealtime(){
 // ═══════════════════════════════════════════════════════════════════
 
 // ── Parámetros de spread dinámico ─────────────────────────────────
-const SPREAD_BASE = 0.02;    // 2.00% — mínimo siempre (contrarian o mercado neutral)
-const SPREAD_MAX  = 0.05;    // 5.00% — máximo al acercarse a 0 o 1
-
-// Spread ASIMÉTRICO por DIRECCIÓN:
-//   · Si compras el lado que YA domina (empujas hacia el extremo) → spread sube
-//   · Si compras el lado contrario (empujas hacia el centro)      → spread mínimo
+// ═══════════════════════════════════════════════════════════════════
+// ORDER BOOK + LIQUIDITY POOL MODEL
+// ═══════════════════════════════════════════════════════════════════
 //
-// p_yes : precio actual de YES en el mercado (0-1)
-// side  : "YES" o "NO" — el lado que se está comprando
+// Modelo: Order Book con LP inicial que absorbe todos los trades
 //
-// Ejemplos con mercado al 90% SI:
-//   comprar SI  → spread 1.27%  (penaliza empujar 90%→91%)
-//   comprar NO  → spread 0.50%  (incentiva volver al centro)
-function dynamicSpread(p_yes, side){
-  const p_side = side === "YES" ? p_yes : (1 - p_yes);
-  // Si el lado comprado cuesta ≤50%, es el contrarian → spread mínimo
-  if(p_side <= 0.5) return SPREAD_BASE;
-  const deviation = 2 * (p_side - 0.5);   // 0 en p=0.5, 1 en p=1.0
-  return SPREAD_BASE + (SPREAD_MAX - SPREAD_BASE) * Math.pow(deviation, 3);
-}
+// Estructura del mercado:
+//   lpYes   = liquidez del LP en el lado YES ($)
+//   lpNo    = liquidez del LP en el lado NO ($)
+//   poolYes = dinero total apostado en YES (usuarios + LP)
+//   poolNo  = dinero total apostado en NO (usuarios + LP)
+//   spreadPool = fees cobrados (ganancia de la plataforma)
+//
+// Precio: proporcional al pool
+//   P(YES) = poolNo / (poolYes + poolNo)  ← cuánto recibe YES si gana NO financia
+//
+// Spread: 3% fijo en cada trade
+//   El LP absorbe el trade completo si no hay contraparte
+//   El fee va al spreadPool
+//
+const OB_SPREAD = 0.03;   // 3% spread fijo en cada trade
+const OB_MAX_IMBALANCE = 0.95; // precio máximo antes de pausar (95%)
 
-// ── Núcleo LS-LMSR ────────────────────────────────────────────────
-function lslmsr_cost(qY, qN, b){
-  const a = qY/b, c = qN/b, m = Math.max(a, c);
-  return b * (m + Math.log(Math.exp(a - m) + Math.exp(c - m)));
-}
-function lslmsr_price(qY, qN, b){
-  return 1 / (1 + Math.exp(-(qY - qN) / b));
-}
-function computeB(alpha, vol, seed){
-  return alpha * Math.max(vol + seed, seed);
-}
-
-// ── Precio de mercado (mid-price del LS-LMSR) ─────────────────────
+// ── Precio del mercado ─────────────────────────────────────────────
+// P(YES) = poolNo / (poolYes + poolNo)
+// Cuanto más dinero hay en YES, más vale NO (y viceversa)
+// Con pools iguales → precio = 50%
 function getPrice(mkt, side){
-  const b = computeB(mkt.alpha, mkt.totalVolume, mkt.seedLiquidity);
-  const p = lslmsr_price(mkt.qYes, mkt.qNo, b);
+  const pYes = mkt.qYes || 1;
+  const pNo  = mkt.qNo  || 1;
+  const total = pYes + pNo;
+  const p = pNo / total;  // precio de YES = fracción del pool NO sobre el total
   return side === "YES" ? p : 1 - p;
 }
 
-// ── MaxBet dinámico: 3% de la liquidez actual, mínimo $1.000 ─────
-function getMaxBet(mkt){
-  const b = computeB(mkt.alpha, mkt.totalVolume, mkt.seedLiquidity);
-  return Math.max(1000, b * 0.03);
-}
-
-// ── Inicialización de qYes/qNo desde probabilidad objetivo ────────
-function initQfromProb(seed, alpha, prob){
-  const b = alpha * seed;
-  const p = Math.min(0.99, Math.max(0.01, prob));
-  const diff = b * Math.log(p / (1 - p));
-  return { qYes: (seed + diff) / 2, qNo: (seed - diff) / 2 };
-}
-
-// ── Shares brutos que entrega el LMSR por un costo dado ───────────
-// USA b_antes (estado actual del mercado) para calcular el costo.
-// Esto garantiza que en un mercado al 50%, $100 → ~200 raw shares (precio $0.50).
-// El precio del mercado SÍ se actualiza con b_después al registrar el trade,
-// pero el COSTO de la operación se calcula con el b del momento de compra.
-function rawSharesFromCost(mkt, side, dollars, iters=52){
-  if(dollars <= 0) return 0;
-  const { qYes:qY, qNo:qN, alpha, totalVolume:v, seedLiquidity:s } = mkt;
-  const b = computeB(alpha, v, s);   // b ANTES — fijo para este trade
-  let lo = 0, hi = dollars / 0.0001;
-  for(let i = 0; i < iters; i++){
-    const mid = (lo + hi) / 2;
-    const cost = lslmsr_cost(side==="YES"?qY+mid:qY, side==="NO"?qN+mid:qN, b)
-               - lslmsr_cost(qY, qN, b);
-    cost < dollars ? lo = mid : hi = mid;
-  }
-  return (lo + hi) / 2;
-}
-
-// Variante que acepta b ya calculado — usada por el preview para igualar al RPC
-function rawSharesFromCostWithB(mkt, side, dollars, b, iters=52){
-  if(dollars <= 0) return 0;
-  const { qYes:qY, qNo:qN } = mkt;
-  let lo = 0, hi = dollars / 0.0001;
-  for(let i = 0; i < iters; i++){
-    const mid = (lo + hi) / 2;
-    const cost = lslmsr_cost(side==="YES"?qY+mid:qY, side==="NO"?qN+mid:qN, b)
-               - lslmsr_cost(qY, qN, b);
-    cost < dollars ? lo = mid : hi = mid;
-  }
-  return (lo + hi) / 2;
-}
-
-// ── Shares NETOS que recibe el usuario (spread = menos shares) ────
-// El usuario paga exactamente `dollars`.
-// El LMSR calcula cuántos shares corresponden a ese dinero (rawShares).
-// El spread se cobra reduciendo los shares entregados:
-//   netShares = rawShares × (1 − s(p))
-// Los rawShares SÍ se registran en qYes/qNo del mercado (el LMSR
-// los recibió todos), pero el usuario solo tiene netShares en su cartera.
-// La diferencia (rawShares - netShares) queda como ganancia de la plataforma.
+// ── Shares que recibe el usuario por su compra ────────────────────
+// En order book: 1 share = derecho a cobrar $1 si ese lado gana
+// El precio del share = precio actual del mercado
+// netShares = dollars × (1 - spread) / precio_actual
 function sharesFromCost(mkt, side, dollars){
-  const raw = rawSharesFromCost(mkt, side, dollars);
-  if(raw <= 0) return 0;
-  const p_yes = getPrice(mkt, "YES");
-  const s = dynamicSpread(p_yes, side);
-  return raw * (1 - s);
+  if(dollars <= 0) return 0;
+  const price = getPrice(mkt, side);
+  if(price <= 0) return 0;
+  const net = dollars * (1 - OB_SPREAD) / price;
+  return net;
 }
 
-function spreadOnBuy(mkt, side, dollars){
-  const raw   = rawSharesFromCost(mkt, side, dollars);
-  const p_yes = getPrice(mkt, "YES");
-  const s     = dynamicSpread(p_yes, side);
-  const p_side = side === "YES" ? p_yes : (1 - p_yes);
-  return raw * s * p_side;
-}
-
-// ── Costo puro de X shares al b_antes actual ─────────────────────
+// ── Cuánto cuesta comprar X shares ───────────────────────────────
 function calcBuyCost(mkt, side, shares){
-  const { qYes:qY, qNo:qN, alpha, totalVolume:v, seedLiquidity:s } = mkt;
-  const b = computeB(alpha, v, s);
-  return lslmsr_cost(side==="YES"?qY+shares:qY, side==="NO"?qN+shares:qN, b)
-       - lslmsr_cost(qY, qN, b);
+  const price = getPrice(mkt, side);
+  return shares * price / (1 - OB_SPREAD);
 }
 
-// ── Retorno de venta con spread dinámico ─────────────────────────
-// CRÍTICO: usar b_antes FIJO para ambos lados de la diferencia de costo.
-// Si se usan b y bA diferentes (b crece con vol), el retorno se infla
-// artificialmente y se puede arbitrar comprando y vendiendo inmediatamente.
-// Con b fijo: retorno_venta_inmediata = dollars - spread_compra - spread_venta (sin ganancia).
+// ── Retorno de venta ──────────────────────────────────────────────
+// Vender shares devuelve: shares × precio_actual × (1 - spread)
 function calcSellReturn(mkt, side, netShares){
-  const { qYes:qY, qNo:qN, alpha, totalVolume:v, seedLiquidity:s } = mkt;
-  const b = computeB(alpha, v, s);   // b_antes FIJO — mismo para ambos lados
-  const rawReturn = lslmsr_cost(qY, qN, b)
-                  - lslmsr_cost(side==="YES"?Math.max(0,qY-netShares):qY,
-                                side==="NO" ?Math.max(0,qN-netShares):qN, b);
-  // Vender YES empuja precio hacia abajo → equivale a comprar NO → spread mínimo si p<0.5
-  const p_yes = getPrice(mkt, "YES");
-  const oppSide = side === "YES" ? "NO" : "YES";
-  const sMid = dynamicSpread(p_yes, oppSide);
-  return rawReturn * (1 - sMid);
+  if(netShares <= 0) return 0;
+  const price = getPrice(mkt, side);
+  return netShares * price * (1 - OB_SPREAD);
 }
 
-// ── Payout al resolver ────────────────────────────────────────────
-// El modelo LS-LMSR con b dinámico NO tiene "pérdida máxima fija".
-// La lógica es simple y honesta:
-//   - Todo el dinero recibido de ambos lados se reparte entre ganadores.
-//   - Plataforma gana el spreadPool acumulado (ya fue cobrado implícitamente).
-//   - En el caso de que todos apostaron un solo lado: break even.
-//   - Pago por share = totalDineroRecibido / sharesGanadores ≤ $1.00
-//     (en mercados balanceados siempre da exactamente $1.00)
+// ── Spread cobrado en una compra ──────────────────────────────────
+function spreadOnBuy(mkt, side, dollars){
+  return dollars * OB_SPREAD;
+}
+
+// ── Payout por share al resolver ─────────────────────────────────
+// Ganadores se reparten el pool total menos el spreadPool
+// payout = availForPayout / sharesGanadores
+// Cap en $1.00 por share
 function calcPayoutPerShare(mkt, winSide){
-  // mkt.totalPaid debe acumularse en executeTrade; si no existe, usamos
-  // una estimación conservadora: costo LMSR total ≈ totalVolume * avgPrice
-  const totalPaid   = mkt.totalPaid || 0;     // suma real de dólares recibidos
-  const spreadPool  = mkt.spreadPool || 0;    // spread ya cobrado, es ganancia de la plataforma
-  // El dinero disponible para pagar es lo recibido MENOS el spread (que ya es nuestro)
-  const availForPayout = totalPaid - spreadPool;
+  const totalPaid  = mkt.totalPaid  || 0;
+  const spreadPool = mkt.spreadPool || 0;
+  const avail = Math.max(0, totalPaid - spreadPool);
 
-  // Shares netos del lado ganador (exceso sobre la posición inicial del seed)
-  const seedHalf   = mkt.seedLiquidity / 2;
-  const winShares  = Math.max(0, (winSide==="YES" ? mkt.qYes : mkt.qNo) - seedHalf);
+  // Shares del lado ganador (excluye LP inicial que actúa como buffer)
+  const lpSide = winSide==="YES" ? (mkt.lpYes||0) : (mkt.lpNo||0);
+  const qWin   = winSide==="YES" ? (mkt.qYes||0)  : (mkt.qNo||0);
+  // Shares netos de usuarios (sin contar el LP inicial)
+  const userShares = Math.max(0, qWin - lpSide);
 
-  if(winShares <= 0) return 1.0; // nadie apostó ese lado, no hay a quién pagar
-  // Pago por share: lo que entró limpio / shares a pagar
-  // Cap en $1.00 por share (nunca se paga más de lo apostado en total)
-  return Math.min(1.0, availForPayout / winShares);
+  if(userShares <= 0) return 1.0;
+  return Math.min(1.0, avail / userShares);
 }
+
+// ── MaxBet: máximo trade permitido ────────────────────────────────
+// Limitado al 20% del pool total para evitar manipulación
+function getMaxBet(mkt){
+  const total = (mkt.qYes||0) + (mkt.qNo||0);
+  return Math.max(500, total * 0.20);
+}
+
+// ── Inicialización del mercado con LP asimétrica ─────────────────
+// lpYes y lpNo son los $ que el creador pone en cada lado
+// Se convierten directamente en pool inicial
+// La probabilidad inicial es: P(YES) = lpNo / (lpYes + lpNo)
+function initQfromProb(seed, alpha, prob){
+  // Compatibilidad con código existente:
+  // seed = liquidez total, alpha = no usado, prob = probabilidad YES objetivo
+  const p = Math.min(0.99, Math.max(0.01, prob));
+  // LP asimétrica para lograr la probabilidad objetivo
+  // P(YES) = lpNo / (lpYes + lpNo) = p
+  // lpNo = p × total, lpYes = (1-p) × total
+  const lpNo  = seed * p;
+  const lpYes = seed * (1 - p);
+  return {
+    qYes: lpYes,  // pool YES inicial
+    qNo:  lpNo,   // pool NO inicial
+    lpYes,        // LP del creador en YES
+    lpNo,         // LP del creador en NO
+  };
+}
+
+// ── Spread dinámico (compatibilidad) ─────────────────────────────
+function dynamicSpread(p_yes, side){ return OB_SPREAD; }
+function computeB(alpha, vol, seed){ return seed; } // compatibilidad
+function rawSharesFromCost(mkt, side, dollars){ return sharesFromCost(mkt, side, dollars); }
+function rawSharesFromCostWithB(mkt, side, dollars, b){ return sharesFromCost(mkt, side, dollars); }
+
 
 // ═══════════════════════════════════════════════════════════════════
 // PAYMENT CONFIGURATION
@@ -2006,7 +1967,7 @@ const STATE={
   authForm:{username:"",email:"",password:"",confirmPassword:""},
   // admin forms
   newAcc:{username:"",email:"",role:"user",balance:"1000"},
-  mkForm:{title:"",title_en:"",category:"Deportes",emoji:"🎯",description:"",description_en:"",alpha:"0.10",seedLiquidity:"1000",closesAt:"",yesWeight:"0.5",oracleType:"none",oracleConfig:"",imageUrl:null},
+  mkForm:{title:"",title_en:"",category:"Deportes",emoji:"🎯",description:"",description_en:"",lpYes:"50",lpNo:"50",closesAt:"",oracleType:"none",oracleConfig:"",imageUrl:null},
   adjustOpen:null,adjustAmt:"",
   // deposit/withdraw modal
   depositOpen:false,
@@ -3274,16 +3235,20 @@ async function refreshMarketPrices(){
       const mi = STATE.markets.findIndex(m => m.id === row.id);
       if(mi < 0) return;
       const m = STATE.markets[mi];
-      if(m.qYes !== row.q_yes || m.qNo !== row.q_no || m.oracleLocked !== row.oracle_locked){
+      if(m.qYes !== row.q_yes || m.qNo !== row.q_no || m.oracleLocked !== row.oracle_locked || m.manualPaused !== row.manual_paused){
         STATE.markets[mi] = {
           ...m,
           qYes:        row.q_yes        ?? m.qYes,
           qNo:         row.q_no         ?? m.qNo,
           totalVolume: row.total_volume  ?? m.totalVolume,
+          spreadPool:  row.spread_pool   ?? m.spreadPool,
+          totalPaid:   row.total_paid    ?? m.totalPaid,
           priceHistory: Array.isArray(row.price_history) ? row.price_history : m.priceHistory,
           oracleLocked:  row.oracle_locked  ?? m.oracleLocked,
           manualPaused:  row.manual_paused  ?? m.manualPaused,
           pauseReason:   row.pause_reason   ?? m.pauseReason,
+          resolved:      row.resolved       ?? m.resolved,
+          resolution:    row.resolution     ?? m.resolution,
         };
         changed = true;
       }
@@ -3291,11 +3256,11 @@ async function refreshMarketPrices(){
     _lastPriceRefresh = Date.now();
     if(_pricesStale){
       _pricesStale = false;
-      // Precios actualizados después de estar vencidos — render obligatorio
       render();
     } else if(changed){
-      // Solo re-renderizar si el usuario está en una vista de mercados
+      // Re-renderizar si el usuario está viendo mercados O el panel de resolución en admin
       if(["home","market","markets"].includes(STATE.view)) render();
+      else if(STATE.view==="admin" && STATE.adminTab==="resolve") render();
     }
   }catch(e){
     console.warn("[PriceRefresh] Error:", e?.message);
@@ -7305,7 +7270,7 @@ function renderAdmin(){
     {k:"stats",    l:`<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block;vertical-align:middle;margin-right:4px"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>Estadísticas`,count:null},
     {k:"markets",  l:`<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block;vertical-align:middle;margin-right:4px"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>${t("admin_create_market")}`},
     {k:"featured", l:`⚡ ${t("admin_featured_tab")}`,   count:featuredCount},
-    {k:"resolve",  l:`🏁 ${t("admin_resolve")}`,        count:STATE.markets.filter(m=>!m.resolved).length},
+    {k:"resolve",  l:`🏁 ${t("admin_resolve")}`,        count:STATE.markets.filter(m=>!m.resolved||m.oracleLocked||m.manualPaused).length},
     {k:"withdrawals",l:`💸 Retiros`,                    count:pendingWd||null},
     {k:"deposits", l:`<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block;vertical-align:middle;margin-right:4px"><path d="M12 2v10m0 0l-3-3m3 3l3-3"/><rect x="2" y="14" width="20" height="8" rx="2"/></svg>Depósitos`,count:pendingDep||null},
     {k:"referrals",l:`<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block;vertical-align:middle;margin-right:4px"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>Referidos`,count:null},
@@ -7700,9 +7665,8 @@ function renderAdminMarkets(){
       </div>
       <div id="mk-img-status" style="font-size:11px;color:var(--muted);margin-top:6px"></div>
     </div>
-    <div><label class="lbl">${t("admin_alpha")}</label><input class="inp" type="number" step="0.01" min="0.01" max="1" value="${f.alpha}" oninput="STATE.mkForm.alpha=this.value;document.getElementById('mk-prev').innerHTML=getMkPreview()"/><div class="hint">${t("admin_alpha_hint")}</div></div>
-    <div><label class="lbl">${t("admin_seed")}</label><input class="inp" type="number" min="100" value="${f.seedLiquidity}" oninput="STATE.mkForm.seedLiquidity=this.value;document.getElementById('mk-prev').innerHTML=getMkPreview()"/></div>
-    <div><label class="lbl">${t("admin_prob")}</label><input class="inp" type="number" step="0.01" min="0.01" max="0.99" value="${f.yesWeight}" oninput="STATE.mkForm.yesWeight=this.value;document.getElementById('mk-prev').innerHTML=getMkPreview()"/><div class="hint">${t("admin_prob_hint")}</div></div>
+    <div><label class="lbl">LP en YES ($) — tu liquidez en el lado SÍ</label><input class="inp" type="number" min="10" value="${f.lpYes||50}" oninput="STATE.mkForm.lpYes=this.value;document.getElementById('mk-prev').innerHTML=getMkPreview()"/><div class="hint">Más LP en YES → precio YES más bajo → incentiva apostar SÍ</div></div>
+    <div><label class="lbl">LP en NO ($) — tu liquidez en el lado NO</label><input class="inp" type="number" min="10" value="${f.lpNo||50}" oninput="STATE.mkForm.lpNo=this.value;document.getElementById('mk-prev').innerHTML=getMkPreview()"/><div class="hint">Más LP en NO → precio YES más alto → incentiva apostar NO</div></div>
     <div><label class="lbl">${t("admin_close_date")}</label><input class="inp" type="datetime-local" value="${f.closesAt}" oninput="STATE.mkForm.closesAt=this.value;document.getElementById('mk-prev').innerHTML=getMkPreview()"/></div>
     <div class="full" style="background:var(--accent-bg);border:1px solid var(--accent);border-radius:10px;padding:14px;margin-top:4px">
       <div style="font-weight:700;font-size:13px;color:var(--accent);margin-bottom:10px">🔮 Oracle — Cierre automático de transacciones</div>
@@ -7814,53 +7778,41 @@ function renderOracleConfigHint(){
 
 function getMkPreview(){
   const f = STATE.mkForm;
-  if(!f.title && !f.alpha && !f.seedLiquidity) return "";
-  const alpha = parseFloat(f.alpha) || 0.10;
-  const seed  = parseFloat(f.seedLiquidity) || 1000;
-  const yw    = parseFloat(f.yesWeight) || 0.5;
+  if(!f.title) return "";
+  const lpYes = parseFloat(f.lpYes) || 50;
+  const lpNo  = parseFloat(f.lpNo)  || 50;
+  const lpTotal = lpYes + lpNo;
+  const pYes0 = lpNo / lpTotal;   // precio YES = lpNo / total
+  const pNo0  = 1 - pYes0;
+  const spreadRate = OB_SPREAD;
 
-  // b = alpha × seed (parámetro de liquidez del LMSR)
-  const b = alpha * seed;
+  // Pérdida máxima: si todos apuestan YES y YES gana
+  // los perdedores de NO aportan $0
+  // la plataforma debe cubrir: shares_YES × payout - 0
+  // Con el order book: la plataforma solo pierde su LP del lado contrario
+  const maxLossIfYes = lpNo;   // pierdes tu LP en NO si YES gana y nadie apostó NO
+  const maxLossIfNo  = lpYes;  // pierdes tu LP en YES si NO gana y nadie apostó YES
 
-  // Pérdida máxima teórica = b × ln(2)
-  // Es el máximo que la plataforma puede perder si TODOS apuestan al mismo lado
-  const maxLoss = b * Math.LN2;
-
-  // Con la prob inicial yw, estimar cuántos shares iniciales hay en cada lado
-  // qYes y qNo vienen de initQfromProb
-  const diff = b * Math.log(yw / (1 - yw));
-  const qYes0 = (seed + diff) / 2;
-  const qNo0  = (seed - diff) / 2;
-  const pYes0 = Math.exp(qYes0/b) / (Math.exp(qYes0/b) + Math.exp(qNo0/b));
-
-  // Precio inicial de cada share
-  const priceYes = pYes0;
-  const priceNo  = 1 - pYes0;
-
-  // Pérdida si gana YES (pagas todos los shares YES al precio 1):
-  // = seed × (1 - pYes0)  aproximadamente
-  // Más exactamente: cost(qYes→∞) - cost(qYes0, qNo0)
-  // Usamos la fórmula exacta: maxLoss = b·ln(2) independiente del lado
-  // pero el escenario más probable de pérdida es el lado menos probable
-
-  // Capital en riesgo neto = seed (lo que pones como liquidez inicial)
-  // Retorno esperado si el mercado se equilibra = spread capturado
-
-  // Spread estimado al 1% sobre el volumen esperado
-  const spreadEst = seed * 0.01;
+  // Con volumen V esperado y split 60/40:
+  // spreadPool = V × 3%
+  // Para cubrir pérdida maxLossIfYes necesitas: V = maxLossIfYes / 3%
+  const volForBreakEven = Math.ceil(Math.max(maxLossIfYes, maxLossIfNo) / spreadRate);
 
   const rows = [
-    ["Parámetro b (liquidez)", `$${b.toFixed(2)}`],
-    ["Precio inicial YES", `${(priceYes*100).toFixed(1)}%`],
-    ["Precio inicial NO",  `${(priceNo*100).toFixed(1)}%`],
-    ["Capital en riesgo (seed)", `$${seed.toFixed(2)}`],
-    ["⚠️ Pérdida máxima teórica", `$${maxLoss.toFixed(2)}`],
-    ["💡 Spread estimado (1%)", `~$${spreadEst.toFixed(2)}`],
+    ["Precio inicial YES", `${(pYes0*100).toFixed(1)}%`],
+    ["Precio inicial NO",  `${(pNo0*100).toFixed(1)}%`],
+    ["Tu LP en YES", `$${lpYes.toFixed(2)}`],
+    ["Tu LP en NO",  `$${lpNo.toFixed(2)}`],
+    ["Capital total en riesgo", `$${lpTotal.toFixed(2)}`],
+    ["⚠️ Pérdida máx si gana YES (sin contraparte)", `$${maxLossIfYes.toFixed(2)}`],
+    ["⚠️ Pérdida máx si gana NO (sin contraparte)", `$${maxLossIfNo.toFixed(2)}`],
+    ["💡 Volumen para punto de equilibrio", `~$${volForBreakEven.toLocaleString()}`],
+    ["💡 Spread ganado (3%) con $1,000 vol", `~$${(1000*spreadRate).toFixed(2)}`],
   ];
 
   return`<div style="background:var(--card2);border-radius:12px;padding:14px 16px;margin-top:4px;border:1px solid var(--border)">
     <div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:10px">
-      📊 Análisis financiero del mercado
+      📊 Análisis financiero — Order Book
     </div>
     ${rows.map(([label,val],i)=>
       `<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;
@@ -7870,13 +7822,13 @@ function getMkPreview(){
         <span style="font-size:13px;font-weight:800;color:${label.includes("⚠️")?"var(--no)":label.includes("💡")?"var(--yes)":"var(--text)"};">${val}</span>
       </div>`
     ).join("")}
-    <div style="margin-top:10px;padding:8px 10px;background:rgba(224,40,74,.06);border-radius:8px;border-left:3px solid var(--no)">
-      <div style="font-size:11px;color:var(--no);font-weight:700;margin-bottom:3px">¿Qué significa la pérdida máxima?</div>
+    <div style="margin-top:10px;padding:8px 10px;background:rgba(0,168,112,.06);border-radius:8px;border-left:3px solid var(--yes)">
+      <div style="font-size:11px;color:var(--yes);font-weight:700;margin-bottom:3px">Cómo funciona tu LP en el order book</div>
       <div style="font-size:11px;color:var(--muted);line-height:1.5">
-        Si <strong>todos</strong> los usuarios apuestan al mismo lado y ese lado gana, la plataforma debe
-        pagar <strong>$${maxLoss.toFixed(2)}</strong> más de lo recaudado. En la práctica el mercado
-        se equilibra y la pérdida real es mucho menor.
-        ${maxLoss > 500 ? `<br><strong style="color:var(--no)">⚠️ Considera bajar el alpha o el seed para reducir el riesgo.</strong>` : ""}
+        Tu LP absorbe todos los trades cuando no hay contraparte.
+        El spread del 3% va al spreadPool en cada trade.
+        La pérdida máxima real ocurre solo si nadie apuesta el lado contrario.
+        En la práctica el spreadPool cubre la diferencia.
       </div>
     </div>
   </div>`;
@@ -8362,12 +8314,17 @@ async function lockMarketForReview(m, reason){
   const idx = STATE.markets.findIndex(x=>x.id===m.id);
   if(idx<0) return;
   console.log(`[Oracle] 🔒 Bloqueando "${m.title.slice(0,40)}" — ${reason}`);
-  await db.from("markets").update({oracle_locked:true}).eq("id",m.id);
-  STATE.markets[idx] = {...STATE.markets[idx], oracleLocked:true};
-  // Log en consola (podrías añadir notificación push aquí en el futuro)
-  console.warn(`[Oracle] ⚠️ Mercado bloqueado para revisión manual: "${m.title}"\nMotivo: ${reason}`);
-  // Si el admin está en el panel resolver, re-renderizar
-  if(STATE.view==="admin" && STATE.adminTab==="resolve") render();
+  await db.from("markets")
+    .update({oracle_locked:true, pause_reason: reason||""})
+    .eq("id",m.id);
+  STATE.markets[idx] = {
+    ...STATE.markets[idx],
+    oracleLocked: true,
+    pauseReason: reason||"",
+  };
+  console.warn(`[Oracle] ⚠️ Mercado bloqueado: "${m.title}"\nMotivo: ${reason}`);
+  // Re-renderizar siempre que el admin esté abierto
+  if(STATE.view==="admin") render();
 }
 
 // Punto de entrada del oracle — corre crypto por ahora
@@ -9022,29 +8979,37 @@ async function adminDelete(id){
   notify("Cuenta eliminada");render();
 }
 async function adminCreateMarket(){
-  const f=STATE.mkForm;if(!f.title||!f.closesAt)return notify("Título y fecha son obligatorios","error");
-  const sl=parseFloat(f.seedLiquidity)||1000;
-  const alpha=parseFloat(f.alpha)||.1;
-  const yw=Math.min(.99,Math.max(.01,parseFloat(f.yesWeight)||.5));
-  const {qYes,qNo}=initQfromProb(sl,alpha,yw);
+  const f=STATE.mkForm;
+  if(!f.title||!f.closesAt) return notify("Título y fecha son obligatorios","error");
+  const lpYes = parseFloat(f.lpYes)||50;
+  const lpNo  = parseFloat(f.lpNo) ||50;
+  if(lpYes < 10 || lpNo < 10) return notify("LP mínimo $10 por lado","error");
+  const lpTotal = lpYes + lpNo;
+  // Precio inicial basado en LP asimétrica
+  const pYes0 = lpNo / lpTotal;
+  const {qYes, qNo, lpYes:ly, lpNo:ln} = initQfromProb(lpTotal, 0.1, pYes0);
   const m={
     id: crypto.randomUUID ? crypto.randomUUID() : "m_"+genId(),
     title:f.title, category:f.category, emoji:f.emoji, description:f.description,
-    alpha, seedLiquidity:sl, qYes, qNo, totalVolume:0, spreadPool:0, totalPaid:0,
+    alpha: 0.1,
+    seedLiquidity: lpTotal,
+    lpYes, lpNo,
+    qYes, qNo,
+    totalVolume:0, spreadPool:0, totalPaid:0,
     closesAt:new Date(f.closesAt).toISOString(), resolved:false, resolution:null,
     oracleType:f.oracleType||"none", oracleConfig:f.oracleConfig||"",
     title_en:f.title_en||null, description_en:f.description_en||null, oracleLocked:false,
     imageUrl:f.imageUrl||null,
-    priceHistory:[yw], createdAt:new Date().toISOString(), featured:false
+    priceHistory:[parseFloat(pYes0.toFixed(4))],
+    createdAt:new Date().toISOString(), featured:false
   };
-  // Guardar en DB primero — si falla no agregar al STATE
   try{
     const row = marketToDbRow(m);
     const {error} = await db.from("markets").insert(row);
     if(error){ console.error("[DB] creando mercado:", error.message); return notify("Error al crear el mercado: "+error.message,"error"); }
   }catch(e){ return notify("Error al crear el mercado: "+(e?.message||e),"error"); }
   STATE.markets.push(m);
-  STATE.mkForm={title:"",title_en:"",category:"Deportes",emoji:"🎯",description:"",description_en:"",alpha:"0.10",seedLiquidity:"1000",closesAt:"",yesWeight:"0.5",oracleType:"none",oracleConfig:"",imageUrl:null};
+  STATE.mkForm={title:"",title_en:"",category:"Deportes",emoji:"🎯",description:"",description_en:"",lpYes:"50",lpNo:"50",closesAt:"",oracleType:"none",oracleConfig:"",imageUrl:null};
   notify("Mercado creado ✓");
   render();
 }
