@@ -7716,24 +7716,27 @@ function renderAdminStats(){
   const totalSpread     = STATE.markets.reduce((s,m)=>s+(m.spreadPool||0),0);
   const totalPaid       = STATE.markets.reduce((s,m)=>s+(m.totalPaid||0),0);
 
-  // ── Market Cap: valor total de todas las posiciones abiertas ─
+  // ── Order Book: Market Cap = valor total de posiciones abiertas ─
+  // = suma de (shares_yes × precio_yes + shares_no × precio_no) por mercado
   const marketCap = activeMarkets.reduce((sum,m)=>{
-    const b=computeB(m.alpha,m.totalVolume,m.seedLiquidity);
-    return sum + b*Math.log(2);
+    const pYes = getPrice(m,"YES");
+    const pNo  = 1 - pYes;
+    // Aproximación: posiciones abiertas = totalPaid - spreadPool
+    return sum + Math.max(0,(m.totalPaid||0)-(m.spreadPool||0));
   },0);
 
   // ── Utilidad de la plataforma ─────────────────────────────────
-  // Spread cobrado en trades activos + liquidez no pagada en mercados resueltos
   const spreadRevenue  = totalSpread;
   const platformProfit = spreadRevenue + (mktData.resolvedProfit||0);
 
-  // ── Liquidez total del sistema ────────────────────────────────
-  const totalLiquidity = STATE.markets.reduce((s,m)=>s+computeB(m.alpha,m.totalVolume,m.seedLiquidity),0);
+  // ── Liquidez total: suma de LP inicial de todos los mercados ──
+  const totalLiquidity = STATE.markets.reduce((s,m)=>s+(m.lpYes||0)+(m.lpNo||0),0);
 
-  // ── Exposición máxima (máx que debe pagar la plataforma) ─────
+  // ── Exposición máxima Order Book ──────────────────────────────
+  // = lo máximo que debe pagar si gana el lado dominante en cada mercado
   const maxExposure = activeMarkets.reduce((s,m)=>{
-    const b=computeB(m.alpha,m.totalVolume,m.seedLiquidity);
-    return s + b*Math.log(2);
+    const avail = Math.max(0,(m.totalPaid||0)-(m.spreadPool||0));
+    return s + avail;
   },0);
 
   // ── Ratio de salud financiera ─────────────────────────────────
@@ -7829,10 +7832,10 @@ function renderAdminStats(){
 
     ${section("Finanzas de la plataforma","var(--yes)")}
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:8px">
-      ${statCard("Utilidad (spread)", usd(spreadRevenue), "Spread cobrado en trades", "var(--yes)", "💵")}
-      ${statCard("Market Cap", usd(marketCap), "Valor total en posiciones", "var(--accent)", "↑")}
-      ${statCard("Exposición máx.", usd(maxExposure), "Máximo a pagar si ganan todos", "var(--no)", "⚠️")}
-      ${statCard("Liquidez total", usd(totalLiquidity), "b acumulado en mercados activos", "var(--gold)", "🏦")}
+      ${statCard("Utilidad (spread)", usd(spreadRevenue), "Fee 3% cobrado en trades", "var(--yes)", "💵")}
+      ${statCard("Dinero en mercados", usd(marketCap), "totalPaid - spreadPool activos", "var(--accent)", "↑")}
+      ${statCard("LP total invertido", usd(totalLiquidity), "Tu liquidez en todos los mercados", "var(--no)", "🏊")}
+      ${statCard("Liquidez pool total", usd(totalLiquidity+totalSpread), "LP + fees acumulados", "var(--gold)", "🏦")}
     </div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px">
       ${statCard("Volumen total", usd(totalVolume), "Shares comprados/vendidos", "var(--text)", "≡")}
