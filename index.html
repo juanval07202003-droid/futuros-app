@@ -190,6 +190,20 @@ button:active{transform:scale(.97);}
 /* ─── FEATURED CAROUSEL ─────────────────────────── */
 .carousel-outer{position:relative;margin-bottom:8px;padding:0 18px;}
 @media(max-width:680px){.carousel-outer{padding:0;}}
+/* Market detail two-column grid */
+.market-detail-grid{display:grid;grid-template-columns:1fr 320px;gap:24px;align-items:start;}
+.market-right-sticky{position:sticky;top:80px;}
+@media(max-width:900px){
+  .market-detail-grid{grid-template-columns:1fr;}
+  .market-detail-grid .market-right-panel{order:-1;}
+  .market-right-sticky{position:static;}
+}
+.trade-inline-tabs{display:flex;gap:0;border-bottom:2px solid var(--border);margin-bottom:16px;}
+.trade-inline-tab{flex:1;padding:10px;font-size:14px;font-weight:700;cursor:pointer;border:none;background:transparent;font-family:inherit;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;transition:all .15s;}
+.trade-inline-tab.yes.active{color:var(--yes);border-bottom-color:var(--yes);}
+.trade-inline-tab.no.active{color:var(--no);border-bottom-color:var(--no);}
+.trade-inline-tab.sell.active{color:var(--muted);border-bottom-color:var(--muted);}
+
 .carousel-wrap{position:relative;overflow:hidden;border-radius:var(--radius-lg);}
 .carousel-track{display:flex;transition:transform .42s cubic-bezier(.4,0,.2,1);will-change:transform;}
 .carousel-slide{
@@ -4559,7 +4573,7 @@ function renderMarket(){
   </div>
 
   <!-- LAYOUT PRINCIPAL: izquierda gráfica + tabs, derecha panel trade -->
-  <div style="display:grid;grid-template-columns:1fr 320px;gap:24px;align-items:start">
+  <div class="market-detail-grid">
 
     <!-- COLUMNA IZQUIERDA -->
     <div>
@@ -4642,20 +4656,9 @@ function renderMarket(){
       ${renderMarketTabs(m.id)}
     </div>
 
-    <!-- COLUMNA DERECHA — Panel de trade fijo estilo Polymarket -->
-    <div style="position:sticky;top:80px">
+    <!-- COLUMNA DERECHA — Panel de trade inline estilo Polymarket -->
+    <div class="market-right-panel market-right-sticky">
       <div class="card" style="padding:20px">
-        <!-- Precio actual -->
-        <div style="display:flex;gap:8px;margin-bottom:16px">
-          <div style="flex:1;text-align:center;padding:12px 8px;background:var(--yes-bg);border-radius:12px;border:1.5px solid ${!m.resolved&&!isMarketClosed(m)&&!m.manualPaused?"var(--yes)":"var(--border)"}">
-            <div style="font-size:11px;color:var(--muted);margin-bottom:4px;font-weight:600">SÍ</div>
-            <div style="font-size:22px;font-weight:900;color:var(--yes)">${pct(pYes)}</div>
-          </div>
-          <div style="flex:1;text-align:center;padding:12px 8px;background:var(--no-bg);border-radius:12px;border:1.5px solid ${!m.resolved&&!isMarketClosed(m)&&!m.manualPaused?"var(--no)":"var(--border)"}">
-            <div style="font-size:11px;color:var(--muted);margin-bottom:4px;font-weight:600">NO</div>
-            <div style="font-size:22px;font-weight:900;color:var(--no)">${pct(1-pYes)}</div>
-          </div>
-        </div>
 
         ${m.resolved
           ?`<div class="resolved-banner">✅ ${t("detail_resolved")}: ${escHtml(m.resolution)}</div>`
@@ -4669,22 +4672,9 @@ function renderMarket(){
               <div style="font-size:24px;margin-bottom:6px">🔒</div>
               <div style="font-weight:800;font-size:14px">Mercado cerrado</div>
             </div>`
-          :`<div style="display:flex;flex-direction:column;gap:10px">
-              <button class="btn-big-yes" style="width:100%;padding:14px;font-size:15px"
-                onclick="openTrade('${m.id}','YES','buy')">
-                ${t("trade_buy")} SÍ · ${pct(pYes)}
-              </button>
-              <button class="btn-big-no" style="width:100%;padding:14px;font-size:15px"
-                onclick="openTrade('${m.id}','NO','buy')">
-                ${t("trade_buy")} NO · ${pct(1-pYes)}
-              </button>
-              ${u?`<button class="btn-big-sell" style="width:100%;padding:11px;font-size:13px"
-                onclick="openTrade('${m.id}','YES','sell')">
-                ${t("trade_sell")}
-              </button>`:""}
-              ${!u?`<div style="text-align:center;font-size:12px;color:var(--muted);margin-top:4px">
-                <span onclick="navigate('auth')" style="color:var(--yes);font-weight:700;cursor:pointer">${t("auth_guest")}</span>
-              </div>`:""}
+          :`<!-- INLINE TRADE WIDGET — siempre visible -->
+            <div id="inline-trade-${m.id}">
+              ${renderInlineTrade(m, 'YES', 'buy', u, pos)}
             </div>`}
 
         <!-- Pool info -->
@@ -7229,9 +7219,194 @@ function updateTradePreview(){
   box.innerHTML=buildPreviewHtml(preview,STATE.tradeMode==="buy",m);
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// AUTH ACTIONS
-// ═══════════════════════════════════════════════════════════════════
+// ── Inline trade widget (dentro del detalle del mercado) ──────────
+function renderInlineTrade(m, side, mode, u, pos){
+  if(!m) return "";
+  const en = STATE.lang==="en";
+  const pYes = getPrice(m,"YES");
+  const isGuest = !u;
+  const isBuy = mode==="buy";
+  const isSell = mode==="sell" && !isGuest;
+  const dollars = STATE.inlineDollars?.[m.id] || "";
+  const sellShares = STATE.inlineShares?.[m.id] || "";
+  const posYes = isGuest ? 0 : (pos.YES||0);
+  const posNo  = isGuest ? 0 : (pos.NO ||0);
+
+  // Calcular preview
+  let preview = null;
+  if(isBuy && parseFloat(dollars)>0){
+    const d = parseFloat(dollars);
+    const price = getPrice(m, side);
+    const netShares = sharesFromCost(m, side, d);
+    const potentialWin = Math.round(netShares*100)/100;
+    const roi = d>0 ? ((potentialWin-d)/d*100).toFixed(1) : "0.0";
+    preview = {netShares, potentialWin, roi, price, spreadAmt: d*OB_SPREAD};
+  } else if(isSell && parseFloat(sellShares)>0){
+    const s = parseFloat(sellShares);
+    const ret = calcSellReturn(m, side, s);
+    preview = {ret, exitPrice: getPrice(m, side)};
+  }
+
+  const heldYes = Math.floor((posYes)*100)/100;
+  const heldNo  = Math.floor((posNo )*100)/100;
+
+  // Botón de acción: si guest → redirige a auth
+  const actionBtn = isGuest
+    ? `<button onclick="navigate('auth')"
+        style="width:100%;padding:13px;border-radius:12px;border:none;
+        background:${side==="YES"?"var(--yes)":"var(--no)"};color:#fff;
+        font-size:15px;font-weight:800;cursor:pointer;font-family:inherit">
+        ${en?"Sign in to trade":"Iniciar sesión para operar"}
+      </button>
+      <div style="text-align:center;font-size:11px;color:var(--muted);margin-top:8px">
+        ${en?"Simulation only — sign in to place real trades":"Solo simulación — inicia sesión para operar de verdad"}
+      </div>`
+    : `<button onclick="executeInlineTrade('${m.id}','${side}','buy')"
+        style="width:100%;padding:13px;border-radius:12px;border:none;
+        background:${side==="YES"?"var(--yes)":"var(--no)"};color:#fff;
+        font-size:15px;font-weight:800;cursor:pointer;font-family:inherit;
+        box-shadow:0 4px 14px ${side==="YES"?"rgba(0,168,112,.3)":"rgba(224,40,74,.3)"}">
+        ${side==="YES"?(en?"Buy YES":"Comprar SÍ"):(en?"Buy NO":"Comprar NO")} · ${pct(side==="YES"?pYes:1-pYes)}
+      </button>`;
+
+  return`<div>
+    <!-- Tabs -->
+    <div class="trade-inline-tabs">
+      <button class="trade-inline-tab yes${isBuy&&side==="YES"?" active":""}"
+        onclick="switchInlineTab('${m.id}','YES','buy')">
+        ${en?"Buy YES":"Comprar SÍ"}
+      </button>
+      <button class="trade-inline-tab no${isBuy&&side==="NO"?" active":""}"
+        onclick="switchInlineTab('${m.id}','NO','buy')">
+        ${en?"Buy NO":"Comprar NO"}
+      </button>
+      ${!isGuest?`<button class="trade-inline-tab sell${isSell?" active":""}"
+        onclick="switchInlineTab('${m.id}','YES','sell')">
+        ${en?"Sell":"Vender"}
+      </button>`:""}
+    </div>
+
+    ${isBuy?`
+    <!-- COMPRA / SIMULACIÓN -->
+    <div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:8px;display:flex;justify-content:space-between;align-items:center">
+        <span>${en?"Amount in USD":"Monto en USD"}</span>
+        ${!isGuest?`<span>${en?"Balance":"Saldo"}: <strong style="color:var(--yes)">${usd(u.balance)}</strong></span>`
+                  :`<span style="color:var(--accent);font-size:11px">📊 ${en?"Simulation":"Simulación"}</span>`}
+      </div>
+      <div style="position:relative;margin-bottom:8px">
+        <span style="position:absolute;left:12px;top:50%;transform:translateY(-50%);font-weight:800;color:var(--yes);font-size:16px;pointer-events:none">$</span>
+        <input class="inp" type="number" min="0.01" step="0.01"
+          value="${dollars}" placeholder="0.00"
+          style="padding-left:28px;font-size:20px;font-weight:700"
+          oninput="STATE.inlineDollars=STATE.inlineDollars||{};STATE.inlineDollars['${m.id}']=this.value;refreshInlineTrade('${m.id}')"/>
+      </div>
+      <div style="display:flex;gap:5px;margin-bottom:12px">
+        ${[5,10,25,50,100].map(a=>`<button
+          style="flex:1;padding:5px 0;border-radius:7px;border:1px solid var(--border);
+          background:transparent;color:var(--muted);font-size:12px;font-weight:700;cursor:pointer;font-family:inherit"
+          onclick="(()=>{const inp=this.closest('div').previousElementSibling.querySelector('input');const v=(parseFloat(inp.value)||0)+${a};inp.value=v;STATE.inlineDollars=STATE.inlineDollars||{};STATE.inlineDollars['${m.id}']=String(v);refreshInlineTrade('${m.id}')})()">+$${a}</button>`).join("")}
+      </div>
+      ${preview?`
+      <div style="background:var(--yes-bg);border:1.5px solid rgba(0,168,112,.2);border-radius:12px;padding:14px;margin-bottom:12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;padding-bottom:10px;margin-bottom:10px;border-bottom:1px solid rgba(0,168,112,.15)">
+          <span style="font-size:13px;color:var(--muted)">${en?"Shares you receive":"Shares a recibir"}</span>
+          <span style="font-size:20px;font-weight:900;color:var(--text)">${preview.netShares.toFixed(2)} <span style="font-size:11px;font-weight:600;color:var(--muted)">${side}</span></span>
+        </div>
+        <div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:13px">
+          <span style="color:var(--muted)">Avg. Price</span>
+          <span style="font-weight:700">${pct(preview.price)}</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
+          <div>
+            <div style="font-size:13px;font-weight:700;color:var(--text)">${en?"To win 💰":"Para ganar 💰"}</div>
+            <div style="font-size:11px;color:var(--muted)">ROI +${preview.roi}%</div>
+          </div>
+          <div style="font-size:24px;font-weight:900;color:var(--yes)">${usd(preview.potentialWin)}</div>
+        </div>
+      </div>`:`<div style="height:8px"></div>`}
+      ${actionBtn}
+    </div>`:`
+    <!-- VENTA -->
+    <div>
+      <div style="display:flex;gap:8px;margin-bottom:10px">
+        <button class="trade-inline-tab yes${isSell&&side==="YES"?" active":""}" style="flex:1;border-radius:8px;border:1px solid var(--border)"
+          onclick="switchInlineTab('${m.id}','YES','sell')">Vender SÍ (${heldYes})</button>
+        <button class="trade-inline-tab no${isSell&&side==="NO"?" active":""}" style="flex:1;border-radius:8px;border:1px solid var(--border)"
+          onclick="switchInlineTab('${m.id}','NO','sell')">Vender NO (${heldNo})</button>
+      </div>
+      <div style="margin-bottom:8px">
+        <input class="inp" type="number" min="0.01" step="0.01"
+          value="${sellShares}" placeholder="0.00 shares"
+          style="font-size:18px;font-weight:700"
+          oninput="STATE.inlineShares=STATE.inlineShares||{};STATE.inlineShares['${m.id}']=this.value;refreshInlineTrade('${m.id}')"/>
+        <div style="font-size:11px;color:var(--muted);margin-top:4px">
+          ${en?"You have":"Tienes"}: <strong style="cursor:pointer;color:${side==="YES"?"var(--yes)":"var(--no)"}"
+            onclick="(()=>{const inp=this.closest('div').previousElementSibling;const v=${side==="YES"?heldYes:heldNo};inp.value=v;STATE.inlineShares=STATE.inlineShares||{};STATE.inlineShares['${m.id}']=String(v);refreshInlineTrade('${m.id}')})()">
+            ${side==="YES"?heldYes:heldNo} ${side} — ${en?"tap to sell all":"toca para vender todo"}
+          </strong>
+        </div>
+      </div>
+      ${preview?`
+      <div style="background:var(--card2);border:1px solid var(--border);border-radius:12px;padding:12px;margin-bottom:12px">
+        <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:6px">
+          <span style="color:var(--muted)">${en?"You receive":"Recibirás"}</span>
+          <strong style="color:var(--yes);font-size:18px">${usd(preview.ret)}</strong>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:12px">
+          <span style="color:var(--muted)">${en?"Exit price":"Precio de salida"}</span>
+          <span>${pct(preview.exitPrice)}</span>
+        </div>
+      </div>`:""}
+      <button onclick="executeInlineTrade('${m.id}','${side}','sell')"
+        style="width:100%;padding:13px;border-radius:12px;border:1.5px solid var(--border);
+        background:transparent;color:var(--text);font-size:15px;font-weight:800;cursor:pointer;font-family:inherit">
+        ${en?"Confirm Sell":"Confirmar Venta"}
+      </button>
+    </div>`}
+  </div>`;
+}
+
+function switchInlineTab(marketId, side, mode){
+  STATE.inlineTab = STATE.inlineTab||{};
+  STATE.inlineTab[marketId] = {side, mode};
+  refreshInlineTrade(marketId);
+}
+
+function refreshInlineTrade(marketId){
+  const box = document.getElementById("inline-trade-"+marketId);
+  if(!box) return;
+  const m = getMarket(marketId);
+  if(!m) return;
+  const u = getUser();
+  const tab = STATE.inlineTab?.[marketId] || {side:"YES", mode:"buy"};
+  const pos = u ? ((u.positions||{})[marketId]||{YES:0,NO:0}) : {YES:0,NO:0};
+  box.innerHTML = renderInlineTrade(m, tab.side, tab.mode, u, pos);
+}
+
+async function executeInlineTrade(marketId, side, mode){
+  // Reutilizar la lógica de executeTrade del popup
+  // Configurar STATE como si fuera el modal
+  STATE.tradeMarketId = marketId;
+  STATE.tradeSide = side;
+  STATE.tradeMode = mode;
+  if(mode==="buy"){
+    const dollars = parseFloat(STATE.inlineDollars?.[marketId]||0);
+    if(!dollars||dollars<=0){ notify("Ingresa un monto válido","error"); return; }
+    STATE.tradeDollars = String(dollars);
+  } else {
+    const shares = parseFloat(STATE.inlineShares?.[marketId]||0);
+    if(!shares||shares<=0){ notify("Ingresa shares a vender","error"); return; }
+    STATE.tradeShares = String(shares);
+  }
+  await executeTrade();
+  // Reset inline inputs
+  if(STATE.inlineDollars) STATE.inlineDollars[marketId]="";
+  if(STATE.inlineShares)  STATE.inlineShares[marketId]="";
+  refreshInlineTrade(marketId);
+}
+
+
 function handleLogout(){
   STATE.session=null;STATE.walletConnected=false;STATE.walletAddress=null;
   localStorage.removeItem("sw_session");
