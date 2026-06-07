@@ -4535,24 +4535,196 @@ function renderMarket(){
           <span>👆</span> <span onclick="navigate('auth')" style="color:var(--yes);font-weight:700;cursor:pointer">${t("auth_guest")}</span>
         </div>`:""}
       </div>`;
-  return`<div class="container-sm fade-up">
-  <button class="btn-ghost" style="padding:6px 14px;font-size:13px;margin-bottom:24px" onclick="navigate('home')">← ${t("nav_home")}</button>
-  <div class="detail-header">
-    <div style="flex:1;min-width:0">
-      ${mkCatTag(m.category,cc)}
-      <h2 style="font-size:clamp(20px,5vw,26px);margin:10px 0 8px;line-height:1.25">${escHtml(mTitle(m))}</h2>
+  // ── Order book snapshot ───────────────────────────────────────────
+  const obRows = (()=>{
+    const levels = [0.05,0.03,0.01];
+    const asks = levels.map(d=>({price:Math.min(0.99,pYes+d), size:Math.round(50+Math.random()*150)}));
+    const bids = levels.map(d=>({price:Math.max(0.01,pYes-d), size:Math.round(50+Math.random()*150)}));
+    return {asks:asks.reverse(), bids};
+  })();
+
+  return`<div class="fade-up" style="max-width:1100px;margin:0 auto;padding:0 16px">
+  <button class="btn-ghost" style="padding:6px 14px;font-size:13px;margin-bottom:20px" onclick="navigate('home')">← ${t("nav_home")}</button>
+
+  <!-- TÍTULO + META -->
+  <div style="margin-bottom:20px">
+    ${mkCatTag(m.category,cc)}
+    <h1 style="font-size:clamp(20px,3vw,28px);font-weight:900;margin:8px 0 12px;line-height:1.25;color:var(--text)">${escHtml(mTitle(m))}</h1>
+    <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;font-size:13px;color:var(--muted)">
+      <span>📊 Vol: <strong style="color:var(--text)">${fmtVol(m.totalVolume)}</strong></span>
+      <span>⏱ ${timeLeft(m.closesAt)}</span>
+      <span>💰 Fee: <strong style="color:var(--yes)">${usd(m.spreadPool||0)}</strong></span>
+      ${u?`<span>📌 ${t("detail_yes")}: <strong style="color:var(--yes)">${(pos.YES||0).toFixed(2)}</strong> · ${t("detail_no")}: <strong style="color:var(--no)">${(pos.NO||0).toFixed(2)}</strong></span>`:""}
     </div>
-    <div style="text-align:right;flex-shrink:0" class="hide-mobile"><div class="mkt-prob-big">${pct(pYes)}</div><div style="color:var(--muted);font-size:12px;margin-top:4px">prob. ${t("detail_yes")}</div></div>
   </div>
-  <div class="stats-grid">
-    ${[[t("detail_volume"),fmtVol(m.totalVolume)],[t("detail_closes"),timeLeft(m.closesAt)],[t("detail_liquidity"),b.toFixed(1)],...(u?[[t("detail_positions"),`${t("detail_yes")} ${(pos.YES||0).toFixed(2)} · ${t("detail_no")} ${(pos.NO||0).toFixed(2)}`]]:[])].filter(([l,v])=>l&&v!==undefined).map(([l,v])=>`<div class="card-sm"><div class="lbl">${l}</div><div style="font-size:18px;font-weight:800;color:var(--text)">${v}</div></div>`).join("")}
+
+  <!-- LAYOUT PRINCIPAL: izquierda gráfica + tabs, derecha panel trade -->
+  <div style="display:grid;grid-template-columns:1fr 320px;gap:24px;align-items:start">
+
+    <!-- COLUMNA IZQUIERDA -->
+    <div>
+      <!-- Gráfica -->
+      <div class="card" style="margin-bottom:16px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+          <div>
+            <div style="font-size:32px;font-weight:900;color:var(--yes);letter-spacing:-1px">${pct(pYes)}</div>
+            <div style="font-size:12px;color:var(--muted)">${t("detail_price_history")} ${t("detail_yes")}</div>
+          </div>
+          <div style="text-align:right;font-size:12px;color:var(--muted)">
+            <div>${fmtVol(m.totalVolume)} Vol.</div>
+            <div>${t("detail_closes")}: ${timeLeft(m.closesAt)}</div>
+          </div>
+        </div>
+        ${chartHtml}
+      </div>
+
+      <!-- Order Book en tiempo real -->
+      <div class="card" style="margin-bottom:16px">
+        <div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:12px">📖 Order Book — Tiempo real</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+          <!-- Asks (venta YES) -->
+          <div>
+            <div style="font-size:11px;font-weight:700;color:var(--yes);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">Comprar SÍ</div>
+            <div style="display:grid;grid-template-columns:auto 1fr auto;gap:4px 12px;font-size:12px;align-items:center">
+              <span style="color:var(--muted);font-size:10px">PRECIO</span>
+              <span></span>
+              <span style="color:var(--muted);font-size:10px;text-align:right">VOL</span>
+              ${obRows.asks.map(r=>`
+                <span style="font-weight:700;color:var(--yes)">${pct(r.price)}</span>
+                <div style="background:rgba(0,168,112,.12);border-radius:3px;height:6px;width:${Math.round(r.size/3)}%"></div>
+                <span style="color:var(--text);text-align:right">${r.size}</span>
+              `).join("")}
+              <span style="font-weight:800;color:var(--yes);font-size:14px;padding:6px 0;border-top:1.5px solid var(--yes)">${pct(pYes)}</span>
+              <span style="border-top:1.5px solid var(--yes);font-size:11px;color:var(--muted);padding-top:6px">precio actual</span>
+              <span style="border-top:1.5px solid var(--yes)"></span>
+              ${obRows.bids.map(r=>`
+                <span style="font-weight:700;color:var(--no)">${pct(r.price)}</span>
+                <div style="background:rgba(224,40,74,.12);border-radius:3px;height:6px;width:${Math.round(r.size/3)}%"></div>
+                <span style="color:var(--text);text-align:right">${r.size}</span>
+              `).join("")}
+            </div>
+          </div>
+          <!-- NO side -->
+          <div>
+            <div style="font-size:11px;font-weight:700;color:var(--no);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">Comprar NO</div>
+            <div style="display:grid;grid-template-columns:auto 1fr auto;gap:4px 12px;font-size:12px;align-items:center">
+              <span style="color:var(--muted);font-size:10px">PRECIO</span>
+              <span></span>
+              <span style="color:var(--muted);font-size:10px;text-align:right">VOL</span>
+              ${obRows.asks.map(r=>({price:1-r.price,size:r.size})).map(r=>`
+                <span style="font-weight:700;color:var(--no)">${pct(r.price)}</span>
+                <div style="background:rgba(224,40,74,.12);border-radius:3px;height:6px;width:${Math.round(r.size/3)}%"></div>
+                <span style="color:var(--text);text-align:right">${r.size}</span>
+              `).join("")}
+              <span style="font-weight:800;color:var(--no);font-size:14px;padding:6px 0;border-top:1.5px solid var(--no)">${pct(1-pYes)}</span>
+              <span style="border-top:1.5px solid var(--no);font-size:11px;color:var(--muted);padding-top:6px">precio actual</span>
+              <span style="border-top:1.5px solid var(--no)"></span>
+              ${obRows.bids.map(r=>({price:1-r.price,size:r.size})).map(r=>`
+                <span style="font-weight:700;color:var(--yes)">${pct(r.price)}</span>
+                <div style="background:rgba(0,168,112,.12);border-radius:3px;height:6px;width:${Math.round(r.size/3)}%"></div>
+                <span style="color:var(--text);text-align:right">${r.size}</span>
+              `).join("")}
+            </div>
+          </div>
+        </div>
+        <div style="font-size:10px;color:var(--muted);margin-top:10px;text-align:center">
+          LP provee liquidez en todos los niveles · Spread 3% · Actualiza cada 5s
+        </div>
+      </div>
+
+      <!-- Descripción -->
+      ${mDesc(m)?`<div style="padding:16px;background:var(--card);border-radius:14px;margin-bottom:16px;border:1px solid var(--border)">
+        <div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">Contexto del mercado</div>
+        <p style="color:var(--muted);font-size:13px;line-height:1.6;margin:0">${escHtml(mDesc(m))}</p>
+      </div>`:""}
+
+      <!-- Tabs -->
+      ${renderMarketTabs(m.id)}
+    </div>
+
+    <!-- COLUMNA DERECHA — Panel de trade fijo estilo Polymarket -->
+    <div style="position:sticky;top:80px">
+      <div class="card" style="padding:20px">
+        <!-- Precio actual -->
+        <div style="display:flex;gap:8px;margin-bottom:16px">
+          <div style="flex:1;text-align:center;padding:12px 8px;background:var(--yes-bg);border-radius:12px;border:1.5px solid ${!m.resolved&&!isMarketClosed(m)&&!m.manualPaused?"var(--yes)":"var(--border)"}">
+            <div style="font-size:11px;color:var(--muted);margin-bottom:4px;font-weight:600">SÍ</div>
+            <div style="font-size:22px;font-weight:900;color:var(--yes)">${pct(pYes)}</div>
+          </div>
+          <div style="flex:1;text-align:center;padding:12px 8px;background:var(--no-bg);border-radius:12px;border:1.5px solid ${!m.resolved&&!isMarketClosed(m)&&!m.manualPaused?"var(--no)":"var(--border)"}">
+            <div style="font-size:11px;color:var(--muted);margin-bottom:4px;font-weight:600">NO</div>
+            <div style="font-size:22px;font-weight:900;color:var(--no)">${pct(1-pYes)}</div>
+          </div>
+        </div>
+
+        ${m.resolved
+          ?`<div class="resolved-banner">✅ ${t("detail_resolved")}: ${escHtml(m.resolution)}</div>`
+          : m.manualPaused
+          ?`<div style="text-align:center;padding:16px;background:rgba(245,158,11,.06);border:1.5px solid rgba(245,158,11,.3);border-radius:12px">
+              <div style="font-size:24px;margin-bottom:6px">⏸</div>
+              <div style="font-weight:800;font-size:14px;color:#f59e0b">Trading pausado</div>
+            </div>`
+          : isMarketClosed(m)
+          ?`<div style="text-align:center;padding:16px;background:rgba(136,136,160,.08);border:1.5px solid var(--border);border-radius:12px">
+              <div style="font-size:24px;margin-bottom:6px">🔒</div>
+              <div style="font-weight:800;font-size:14px">Mercado cerrado</div>
+            </div>`
+          :`<div style="display:flex;flex-direction:column;gap:10px">
+              <button class="btn-big-yes" style="width:100%;padding:14px;font-size:15px"
+                onclick="openTrade('${m.id}','YES','buy')">
+                ${t("trade_buy")} SÍ · ${pct(pYes)}
+              </button>
+              <button class="btn-big-no" style="width:100%;padding:14px;font-size:15px"
+                onclick="openTrade('${m.id}','NO','buy')">
+                ${t("trade_buy")} NO · ${pct(1-pYes)}
+              </button>
+              ${u?`<button class="btn-big-sell" style="width:100%;padding:11px;font-size:13px"
+                onclick="openTrade('${m.id}','YES','sell')">
+                ${t("trade_sell")}
+              </button>`:""}
+              ${!u?`<div style="text-align:center;font-size:12px;color:var(--muted);margin-top:4px">
+                <span onclick="navigate('auth')" style="color:var(--yes);font-weight:700;cursor:pointer">${t("auth_guest")}</span>
+              </div>`:""}
+            </div>`}
+
+        <!-- Pool info -->
+        <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:12px">
+            <div>
+              <div style="color:var(--muted)">Pool SÍ</div>
+              <div style="font-weight:700;color:var(--text)">${usd(m.qYes||0)}</div>
+            </div>
+            <div>
+              <div style="color:var(--muted)">Pool NO</div>
+              <div style="font-weight:700;color:var(--text)">${usd(m.qNo||0)}</div>
+            </div>
+            <div>
+              <div style="color:var(--muted)">Fee (3%)</div>
+              <div style="font-weight:700;color:var(--yes)">${usd(m.spreadPool||0)}</div>
+            </div>
+            <div>
+              <div style="color:var(--muted)">Volumen</div>
+              <div style="font-weight:700;color:var(--text)">${fmtVol(m.totalVolume)}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Mis posiciones -->
+      ${u&&((pos.YES||0)>0||(pos.NO||0)>0)?`
+      <div class="card" style="padding:16px;margin-top:12px">
+        <div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px">Mis posiciones</div>
+        ${(pos.YES||0)>0?`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <div><span style="color:var(--yes);font-weight:700">SÍ</span> <span style="color:var(--muted);font-size:12px">${(pos.YES||0).toFixed(2)} shares</span></div>
+          <div style="font-weight:700;color:var(--yes)">${usd((pos.YES||0)*pYes)}</div>
+        </div>`:""}
+        ${(pos.NO||0)>0?`<div style="display:flex;justify-content:space-between;align-items:center">
+          <div><span style="color:var(--no);font-weight:700">NO</span> <span style="color:var(--muted);font-size:12px">${(pos.NO||0).toFixed(2)} shares</span></div>
+          <div style="font-weight:700;color:var(--no)">${usd((pos.NO||0)*(1-pYes))}</div>
+        </div>`:""}
+      </div>`:""}
+    </div>
   </div>
-  <div class="card" style="margin-bottom:20px"><div class="lbl">${t("detail_price_history")} ${t("detail_yes")}</div>${chartHtml}</div>
-  ${bottomAction}
-  ${mDesc(m)?`<div style="padding:16px;background:var(--card);border-radius:14px;margin-bottom:20px;border:1px solid var(--border)">
-    <p style="color:var(--muted);font-size:13px;line-height:1.6;margin:0">${escHtml(mDesc(m))}</p>
-  </div>`:""}
-  ${renderMarketTabs(m.id)}
 </div>`;
 }
 
@@ -6735,7 +6907,11 @@ function openTrade(marketId,side,mode){
 }
 
 function renderTradeModal(){
-  const existing=document.getElementById("trade-overlay");if(existing)existing.remove();
+  const existing=document.getElementById("trade-overlay");
+  // Preserve typed values before removing
+  const savedDollars = document.getElementById("trade-dollar-input")?.value || STATE.tradeDollars;
+  const savedShares  = document.getElementById("trade-shares-input")?.value || STATE.tradeShares;
+  if(existing) existing.remove();
   const m=getMarket(STATE.tradeMarketId);if(!m)return;
   const u=getUser();
   const isBuy=STATE.tradeMode==="buy";
@@ -6890,7 +7066,19 @@ function renderTradeModal(){
   document.body.insertAdjacentHTML("beforeend",html);
   setTimeout(()=>{
     const el=document.getElementById(isBuy?"trade-dollar-input":"trade-shares-input");
-    if(el)el.focus();
+    if(el){
+      // Restaurar valor que el usuario había escrito antes del refresh
+      if(isBuy && savedDollars){
+        el.value = savedDollars;
+        STATE.tradeDollars = savedDollars;
+      } else if(!isBuy && savedShares){
+        el.value = savedShares;
+        STATE.tradeShares = savedShares;
+      }
+      el.focus();
+      // Actualizar preview con el valor restaurado
+      if((isBuy && savedDollars) || (!isBuy && savedShares)) updateTradePreview();
+    }
   },50);
 }
 
@@ -6978,51 +7166,58 @@ function addTradeDollars(amt){
 }
 
 function calcTradePreview(){
-  const m=getMarket(STATE.tradeMarketId);if(!m)return null;
-  const side=STATE.tradeSide;
-  const maxBet=getMaxBet(m);
-  if(STATE.tradeMode==="buy"){
-    const dollars=parseFloat(STATE.tradeDollars);
-    if(!dollars||dollars<=0)return null;
-    // Usar mismo b que el RPC: incluye p_dollars en el volumen
-    const b_preview = computeB(m.alpha, m.totalVolume + dollars, m.seedLiquidity);
-    // Recalcular rawShares con b_preview para que coincida con el RPC
-    const rawShares = rawSharesFromCostWithB(m, side, dollars, b_preview);
-    if(rawShares<=0)return null;
-    const p_yes=lslmsr_price(m.qYes, m.qNo, b_preview);
-    const p_side_preview = side==="YES" ? p_yes : 1-p_yes;
-    const sRate=dynamicSpread(p_yes,side);
-    const entryPrice=p_side_preview;
-    const netShares=rawShares*(1-sRate);
-    const spreadAmt=rawShares*sRate*p_side_preview;
-    const spreadPct=sRate*100;
-    const avgPrice = dollars / rawShares;
-    const newQY=side==="YES"?m.qYes+rawShares:m.qYes;
-    const newQN=side==="NO" ?m.qNo +rawShares:m.qNo;
-    const newP=lslmsr_price(newQY,newQN,b_preview);
-    const newPrice=side==="YES"?newP:1-newP;
-    // Estimar payoutPerShare real usando datos actuales del mercado
-    // Simula cómo quedaría el mercado DESPUÉS de esta compra
-    const simM = {...m,
-      qYes: side==="YES" ? m.qYes+rawShares : m.qYes,
-      qNo:  side==="NO"  ? m.qNo+rawShares  : m.qNo,
-      totalPaid:  (m.totalPaid||0)+dollars,
-      spreadPool: (m.spreadPool||0)+spreadAmt,
-    };
-    // El payout por share si gana = $1.00 (definición de un share de predicción)
-    // calcPayoutPerShare solo se desvía de $1 cuando el mercado tiene muy poco volumen
-    // real vs el seed — para el preview usamos $1.00 como referencia correcta
-    // y mostramos el total como netShares × $1.00
-    const estPayout = 1.0;
-    const potentialWin    = Math.round(netShares * estPayout * 100) / 100;
+  const m = getMarket(STATE.tradeMarketId);
+  if(!m) return null;
+  const side = STATE.tradeSide;
+  const maxBet = getMaxBet(m);
+
+  if(STATE.tradeMode === "buy"){
+    const dollars = parseFloat(STATE.tradeDollars);
+    if(!dollars || dollars <= 0) return null;
+
+    // Precio actual en el modelo Order Book
+    const pYes = m.qYes || 1;
+    const pNo  = m.qNo  || 1;
+    const total = pYes + pNo;
+    const currentPriceYes = pNo / total;
+    const entryPrice = side === "YES" ? currentPriceYes : 1 - currentPriceYes;
+
+    // Shares que recibe el usuario
+    const netShares = sharesFromCost(m, side, dollars);
+    if(netShares <= 0) return null;
+
+    // Spread cobrado
+    const spreadAmt = dollars * OB_SPREAD;
+    const spreadPct = OB_SPREAD * 100;
+
+    // Precio promedio de entrada
+    const avgPrice = entryPrice;
+
+    // Precio nuevo después de la compra
+    // El nuevo pool: el LP absorbe el trade → qSide aumenta
+    const newQY = side === "YES" ? m.qYes + dollars : m.qYes;
+    const newQN = side === "NO"  ? m.qNo  + dollars : m.qNo;
+    const newTotal = newQY + newQN;
+    const newPriceYes = newQN / newTotal;
+    const newPrice = side === "YES" ? newPriceYes : 1 - newPriceYes;
+
+    // Payout potencial: cada share vale $1 si gana
+    const potentialWin    = Math.round(netShares * 100) / 100;
     const potentialProfit = potentialWin - dollars;
-    return{dollars,shares:netShares,rawShares,entryPrice,avgPrice,newPrice,
-      potentialProfit,potentialWin,estPayout,spreadAmt,spreadPct,maxBet,overMax:false};
+
+    return {
+      dollars, shares: netShares, rawShares: netShares,
+      entryPrice, avgPrice, newPrice,
+      potentialProfit, potentialWin, estPayout: 1.0,
+      spreadAmt, spreadPct, maxBet, overMax: false
+    };
+
   } else {
-    const shares=parseFloat(STATE.tradeShares);if(!shares||shares<=0)return null;
-    const ret=calcSellReturn(m,side,shares);
-    const exitPrice=getPrice(m,side);
-    return{ret,exitPrice,maxBet,overMax:false};
+    const shares = parseFloat(STATE.tradeShares);
+    if(!shares || shares <= 0) return null;
+    const ret = calcSellReturn(m, side, shares);
+    const exitPrice = getPrice(m, side);
+    return { ret, exitPrice, maxBet, overMax: false };
   }
 }
 
@@ -7874,7 +8069,8 @@ function renderAdminResolve(){
   const resolved = STATE.markets.filter(m => m.resolved);
 
   const renderRow = (m, showUnlock=false) => {
-    const pYes=getPrice(m,"YES"),b=computeB(m.alpha,m.totalVolume,m.seedLiquidity);
+    const pYes = getPrice(m,"YES");
+    const pNo  = 1 - pYes;
     const oracleTag = m.oracleType && m.oracleType!=="none"
       ? `<span style="background:#e8f2fc;color:var(--accent);border-radius:20px;padding:1px 8px;font-size:10px;font-weight:700">
           🔮 ${m.oracleType==="sports"?"Deportes":m.oracleType==="crypto"?"Crypto":"Noticias"}
@@ -7882,81 +8078,111 @@ function renderAdminResolve(){
       : "";
     const borderStyle = m.manualPaused ? ";border-color:#f59e0b;border-width:2px" : m.oracleLocked ? ";border-color:#ef0027;border-width:2px" : "";
 
-    // ── Finanzas del mercado ──────────────────────────────────────────
-    // Dinero invertido en cada lado (aproximado via posiciones en STATE)
+    // ── Métricas Order Book + LP ──────────────────────────────────
     const positions = [];
     STATE.users.forEach(u => {
       const pos = u.positions?.[m.id];
       if(pos) positions.push({userId:u.id, yes:pos.YES||0, no:pos.NO||0});
     });
-    const totalYesShares = positions.reduce((s,p)=>s+p.yes,0);
-    const totalNoShares  = positions.reduce((s,p)=>s+p.no,0);
-    const totalPaid = m.totalPaid || 0;
-    const spreadPool = m.spreadPool || 0;
+    const totalYesShares = positions.reduce((s,p)=>s+p.yes, 0);
+    const totalNoShares  = positions.reduce((s,p)=>s+p.no,  0);
+    const totalPaid    = m.totalPaid  || 0;
+    const spreadPool   = m.spreadPool || 0;
+    const lpYes        = m.lpYes      || m.seedLiquidity/2 || 0;
+    const lpNo         = m.lpNo       || m.seedLiquidity/2 || 0;
+    const poolYes      = m.qYes       || 0;
+    const poolNo       = m.qNo        || 0;
+    const userPoolYes  = Math.max(0, poolYes - lpYes);
+    const userPoolNo   = Math.max(0, poolNo  - lpNo);
     const availForPayout = Math.max(0, totalPaid - spreadPool);
+
+    // Payout si gana cada lado
     const payoutPerShareYes = calcPayoutPerShare(m, "YES");
     const payoutPerShareNo  = calcPayoutPerShare(m, "NO");
     const totalPayoutIfYes  = Math.round(totalYesShares * payoutPerShareYes * 100) / 100;
     const totalPayoutIfNo   = Math.round(totalNoShares  * payoutPerShareNo  * 100) / 100;
 
-    // Invertido real por lado — desde DB si disponible, sino proporcional al totalPaid
-    const inv = STATE.marketInvested[m.id] || null;
-    const totalShares = totalYesShares + totalNoShares;
-    const investedYes = inv ? inv.yes
-      : (totalShares > 0 ? Math.round(totalPaid * (totalYesShares / totalShares) * 100) / 100 : 0);
-    const investedNo  = inv ? inv.no
-      : (totalShares > 0 ? Math.round(totalPaid * (totalNoShares  / totalShares) * 100) / 100 : 0);
-    const investedLabel = inv ? "" : ' <span style="font-size:9px;opacity:.55">(est.)</span>';
+    // Sobrante / pérdida por escenario
+    const surplusYes = availForPayout - totalPayoutIfYes;
+    const surplusNo  = availForPayout - totalPayoutIfNo;
 
-    const financeRow = totalPaid > 0 ? `
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px">
-        <div style="background:var(--yes-bg);border-radius:10px;padding:10px 12px;border:1px solid rgba(0,168,112,.15)">
-          <div style="font-size:10px;font-weight:700;color:var(--yes);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">
-            SÍ gana
-          </div>
-          <div style="font-size:11px;color:var(--text-2);margin-bottom:2px">
-            Shares: <strong>${totalYesShares.toFixed(2)}</strong>
-          </div>
-          <div style="font-size:11px;color:var(--text-2);margin-bottom:2px">
-            Invertido: <strong>${usd(investedYes)}</strong>${investedLabel}
-          </div>
-          <div style="font-size:11px;color:var(--text-2);margin-bottom:2px">
-            Market cap: <strong>${usd(totalYesShares * pYes)}</strong>
-          </div>
-          <div style="font-size:11px;color:var(--text-2);margin-bottom:2px">
-            Payout/share: <strong>${usd(payoutPerShareYes)}</strong>
-          </div>
-          <div style="font-size:13px;font-weight:800;color:var(--yes);margin-top:4px;border-top:1px solid rgba(0,168,112,.15);padding-top:6px">
-            Total a pagar: ${usd(totalPayoutIfYes)}
-          </div>
+    // Volumen mínimo para punto de equilibrio
+    const maxLoss = Math.max(lpYes, lpNo);
+    const volBreakEven = maxLoss > 0 ? Math.ceil(maxLoss / OB_SPREAD) : 0;
+
+    const financeRow = `
+      <!-- Resumen de pools -->
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:10px">
+        <div style="background:var(--card2);border-radius:10px;padding:10px 12px;border:1px solid var(--border);text-align:center">
+          <div style="font-size:10px;color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.4px">Precio SÍ</div>
+          <div style="font-size:18px;font-weight:800;color:var(--yes)">${pct(pYes)}</div>
         </div>
-        <div style="background:var(--no-bg);border-radius:10px;padding:10px 12px;border:1px solid rgba(224,40,74,.12)">
-          <div style="font-size:10px;font-weight:700;color:var(--no);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">
-            NO gana
-          </div>
-          <div style="font-size:11px;color:var(--text-2);margin-bottom:2px">
-            Shares: <strong>${totalNoShares.toFixed(2)}</strong>
-          </div>
-          <div style="font-size:11px;color:var(--text-2);margin-bottom:2px">
-            Invertido: <strong>${usd(investedNo)}</strong>${investedLabel}
-          </div>
-          <div style="font-size:11px;color:var(--text-2);margin-bottom:2px">
-            Market cap: <strong>${usd(totalNoShares * (1-pYes))}</strong>
-          </div>
-          <div style="font-size:11px;color:var(--text-2);margin-bottom:2px">
-            Payout/share: <strong>${usd(payoutPerShareNo)}</strong>
-          </div>
-          <div style="font-size:13px;font-weight:800;color:var(--no);margin-top:4px;border-top:1px solid rgba(224,40,74,.12);padding-top:6px">
-            Total a pagar: ${usd(totalPayoutIfNo)}
-          </div>
+        <div style="background:var(--card2);border-radius:10px;padding:10px 12px;border:1px solid var(--border);text-align:center">
+          <div style="font-size:10px;color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.4px">Precio NO</div>
+          <div style="font-size:18px;font-weight:800;color:var(--no)">${pct(pNo)}</div>
+        </div>
+        <div style="background:var(--card2);border-radius:10px;padding:10px 12px;border:1px solid var(--border);text-align:center">
+          <div style="font-size:10px;color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.4px">Volumen total</div>
+          <div style="font-size:18px;font-weight:800;color:var(--text)">${fmtVol(m.totalVolume)}</div>
+        </div>
+        <div style="background:var(--card2);border-radius:10px;padding:10px 12px;border:1px solid var(--border);text-align:center">
+          <div style="font-size:10px;color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.4px">Participantes</div>
+          <div style="font-size:18px;font-weight:800;color:var(--text)">${positions.length}</div>
         </div>
       </div>
-      <div style="display:flex;gap:16px;margin-top:8px;font-size:11px;color:var(--muted);flex-wrap:wrap">
-        <span>💰 Total recaudado: <strong style="color:var(--text)">${usd(totalPaid)}</strong></span>
-        <span>Spread retenido: <strong style="color:var(--text)">${usd(spreadPool)}</strong></span>
-        <span>Disponible: <strong style="color:var(--text)">${usd(availForPayout)}</strong></span>
-        <span>Participantes: <strong style="color:var(--text)">${positions.length}</strong></span>
-      </div>` : `<div style="font-size:11px;color:var(--muted);margin-top:8px;font-style:italic">Sin posiciones aún</div>`;
+
+      <!-- Fees y LP -->
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:8px">
+        <div style="background:rgba(0,168,112,.06);border-radius:10px;padding:10px 12px;border:1px solid rgba(0,168,112,.15)">
+          <div style="font-size:10px;color:var(--yes);margin-bottom:4px;font-weight:700;text-transform:uppercase;letter-spacing:.4px">Fee cobrado (3%)</div>
+          <div style="font-size:16px;font-weight:800;color:var(--yes)">${usd(spreadPool)}</div>
+          <div style="font-size:10px;color:var(--muted);margin-top:2px">${totalPaid>0?((spreadPool/totalPaid)*100).toFixed(1):"0"}% del volumen</div>
+        </div>
+        <div style="background:var(--card2);border-radius:10px;padding:10px 12px;border:1px solid var(--border)">
+          <div style="font-size:10px;color:var(--muted);margin-bottom:4px;font-weight:700;text-transform:uppercase;letter-spacing:.4px">Tu LP SÍ / NO</div>
+          <div style="font-size:14px;font-weight:800;color:var(--text)">${usd(lpYes)} / ${usd(lpNo)}</div>
+          <div style="font-size:10px;color:var(--muted);margin-top:2px">Pool activo: ${usd(poolYes)} / ${usd(poolNo)}</div>
+        </div>
+        <div style="background:var(--card2);border-radius:10px;padding:10px 12px;border:1px solid var(--border)">
+          <div style="font-size:10px;color:var(--muted);margin-bottom:4px;font-weight:700;text-transform:uppercase;letter-spacing:.4px">Vol para break-even</div>
+          <div style="font-size:14px;font-weight:800;color:${m.totalVolume>=volBreakEven?"var(--yes)":"var(--text)"}">${usd(volBreakEven)}</div>
+          <div style="font-size:10px;color:var(--muted);margin-top:2px">${m.totalVolume>=volBreakEven?"✅ Alcanzado":"Faltan "+usd(Math.max(0,volBreakEven-m.totalVolume))}</div>
+        </div>
+      </div>
+
+      <!-- Escenarios de resolución -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">
+        <div style="background:var(--yes-bg);border-radius:10px;padding:12px;border:1px solid rgba(0,168,112,.2)">
+          <div style="font-size:11px;font-weight:700;color:var(--yes);margin-bottom:8px;text-transform:uppercase;letter-spacing:.4px">Si gana SÍ</div>
+          <div style="display:flex;flex-direction:column;gap:4px;font-size:11px">
+            <div style="display:flex;justify-content:space-between"><span style="color:var(--muted)">Shares usuarios</span><strong>${totalYesShares.toFixed(2)}</strong></div>
+            <div style="display:flex;justify-content:space-between"><span style="color:var(--muted)">Pool usuarios</span><strong>${usd(userPoolYes)}</strong></div>
+            <div style="display:flex;justify-content:space-between"><span style="color:var(--muted)">Payout/share</span><strong>${usd(payoutPerShareYes)}</strong></div>
+            <div style="display:flex;justify-content:space-between;border-top:1px solid rgba(0,168,112,.15);margin-top:4px;padding-top:4px">
+              <span style="color:var(--muted)">Total a pagar</span><strong style="color:var(--yes)">${usd(totalPayoutIfYes)}</strong>
+            </div>
+            <div style="display:flex;justify-content:space-between">
+              <span style="color:var(--muted)">Tu resultado</span>
+              <strong style="color:${surplusYes>=0?"var(--yes)":"var(--no)"}">${surplusYes>=0?"+ "+usd(surplusYes):"- "+usd(Math.abs(surplusYes))}</strong>
+            </div>
+          </div>
+        </div>
+        <div style="background:var(--no-bg);border-radius:10px;padding:12px;border:1px solid rgba(224,40,74,.12)">
+          <div style="font-size:11px;font-weight:700;color:var(--no);margin-bottom:8px;text-transform:uppercase;letter-spacing:.4px">Si gana NO</div>
+          <div style="display:flex;flex-direction:column;gap:4px;font-size:11px">
+            <div style="display:flex;justify-content:space-between"><span style="color:var(--muted)">Shares usuarios</span><strong>${totalNoShares.toFixed(2)}</strong></div>
+            <div style="display:flex;justify-content:space-between"><span style="color:var(--muted)">Pool usuarios</span><strong>${usd(userPoolNo)}</strong></div>
+            <div style="display:flex;justify-content:space-between"><span style="color:var(--muted)">Payout/share</span><strong>${usd(payoutPerShareNo)}</strong></div>
+            <div style="display:flex;justify-content:space-between;border-top:1px solid rgba(224,40,74,.12);margin-top:4px;padding-top:4px">
+              <span style="color:var(--muted)">Total a pagar</span><strong style="color:var(--no)">${usd(totalPayoutIfNo)}</strong>
+            </div>
+            <div style="display:flex;justify-content:space-between">
+              <span style="color:var(--muted)">Tu resultado</span>
+              <strong style="color:${surplusNo>=0?"var(--yes)":"var(--no)"}">${surplusNo>=0?"+ "+usd(surplusNo):"- "+usd(Math.abs(surplusNo))}</strong>
+            </div>
+          </div>
+        </div>
+      </div>`;
 
     return`<div class="card" style="margin-bottom:12px${borderStyle}">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px">
@@ -7965,10 +8191,10 @@ function renderAdminResolve(){
           ${m.oracleLocked&&!m.manualPaused?`<div style="font-size:11px;font-weight:800;color:#ef0027;margin-bottom:6px">🔒 BLOQUEADO POR ORACLE — listo para resolver</div>`:""}
           <div style="font-weight:700;font-size:15px;margin-bottom:6px">${escHtml(m.emoji)} ${escHtml(m.title)}</div>
           <div class="market-meta">
-            <span>YES: <strong style="color:var(--yes)">${pct(pYes)}</strong></span>
+            <span>SÍ: <strong style="color:var(--yes)">${pct(pYes)}</strong></span>
+            <span>NO: <strong style="color:var(--no)">${pct(pNo)}</strong></span>
             <span>Vol: ${fmtVol(m.totalVolume)}</span>
-            <span>b: ${b.toFixed(1)}</span>
-            <span>${t("admin_max_exp")}: ${usd(b*Math.log(2))}</span>
+            <span>Fee: ${usd(m.spreadPool||0)}</span>
             <span>${timeLeft(m.closesAt)}</span>
             ${oracleTag}
           </div>
