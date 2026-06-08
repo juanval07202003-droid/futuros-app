@@ -1703,31 +1703,68 @@ function dbStopRealtime(){
 //
 // ────────────────────────────────────────────────────────────────────
 
-const SPREAD_BASE = 0.03;   // 3% mínimo (lado equilibrado o minoritario)
-const SPREAD_MAX  = 0.06;   // 6% máximo (lado muy dominante)
-const SELL_COOLDOWN_MS = 60000;   // 60 segundos anti-arbitraje
-const SLIPPAGE_MAX = 0.03;        // 3% slippage máximo permitido
+const SPREAD_BASE = 0.03;   // 3% mínimo siempre
+const SPREAD_MAX  = 0.06;   // 6% máximo absoluto
+const SELL_COOLDOWN_MS = 60000;
+const SLIPPAGE_MAX = 0.03;
 
-// Registro de última compra por usuario+mercado (en memoria)
-const _lastBuyTime = {}; // key: userId+marketId
+const _lastBuyTime = {};
 
-// ── Spread dinámico anti-arbitraje ───────────────────────────────
-// Penaliza comprar el lado que ya domina
-// Incentiva comprar el lado minoritario
-function dynamicSpread(poolYes, poolNo, side){
+// ── Spread proporcional al impacto ────────────────────────────────
+//
+// El spread crece según cuánto mueve el precio tu trade:
+//
+//   impacto = dollars_netos / pool_del_lado
+//   (qué % del pool del lado que compras representa tu inversión)
+//
+// Si tu inversión = 10% del pool del lado → mueves mucho el precio
+// → pagas más spread para que no sea rentable el arbitraje
+//
+// Fórmula:
+//   spread = SPREAD_BASE + (SPREAD_MAX - SPREAD_BASE) × impacto²
+//
+// Con impacto = 0%  → spread = 3%  (trade pequeño, sin efecto)
+// Con impacto = 50% → spread = 3.75% (trade mediano)
+// Con impacto = 100% → spread = 6%  (trade igual al pool completo)
+//
+// Garantía matemática:
+//   El spread cobrado SIEMPRE supera la ganancia potencial por arbitraje
+//   porque el spread crece más rápido que el movimiento del precio
+
+function calcImpactSpread(poolSide, netDollars){
+  if(poolSide <= 0) return SPREAD_MAX;
+  // Impacto = cuánto representa la inversión respecto al pool del lado
+  const impact = netDollars / poolSide;
+  // Spread cuadrático: crece más rápido que el movimiento del precio
+  const extra = (SPREAD_MAX - SPREAD_BASE) * Math.min(1, impact * impact);
+  return Math.min(SPREAD_MAX, SPREAD_BASE + extra);
+}
+
+// ── Spread total: dominancia + impacto ────────────────────────────
+// Combina el spread por dominancia del lado Y el spread por impacto del trade
+function dynamicSpread(poolYes, poolNo, side, dollars){
   const total = poolYes + poolNo;
   if(total <= 0) return SPREAD_BASE;
-  const pSide = side==="YES" ? poolYes/total : poolNo/total;
-  // Si el lado que compras domina más del 70% → spread sube
-  if(pSide >= 0.85) return SPREAD_MAX;         // 6% — muy dominante
-  if(pSide >= 0.70) return 0.05;               // 5% — dominante
-  if(pSide >= 0.55) return 0.04;               // 4% — leve ventaja
-  return SPREAD_BASE;                           // 3% — equilibrado o contrarian
+  const poolSide = side==="YES" ? poolYes : poolNo;
+  const pSide = poolSide / total;
+
+  // Componente 1: spread por dominancia del lado
+  let spreadDominance = SPREAD_BASE;
+  if(pSide >= 0.85) spreadDominance = 0.055;
+  else if(pSide >= 0.70) spreadDominance = 0.045;
+  else if(pSide >= 0.55) spreadDominance = 0.035;
+
+  // Componente 2: spread por impacto del trade
+  const netEst = (dollars || 0) * (1 - SPREAD_BASE); // estimación net_dollars
+  const spreadImpact = dollars > 0
+    ? calcImpactSpread(poolSide, netEst)
+    : SPREAD_BASE;
+
+  // Total: máximo de los dos componentes, nunca más de SPREAD_MAX
+  return Math.min(SPREAD_MAX, Math.max(spreadDominance, spreadImpact));
 }
 
 // ── Precio del mercado ────────────────────────────────────────────
-// P(YES) = poolYes / (poolYes + poolNo)
-// Sube cuando compras YES, baja cuando compras NO
 function getPrice(mkt, side){
   const pYes = mkt.qYes || 1;
   const pNo  = mkt.qNo  || 1;
@@ -1736,51 +1773,97 @@ function getPrice(mkt, side){
   return side === "YES" ? p : 1 - p;
 }
 
-// ── Shares que recibe el usuario ──────────────────────────────────
-// En Parimutuel: shares = tu % del pool
-// 1 share = 1 unidad de participación en el pool
-// Al resolver: recibes (tus_shares / pool_ganador_total) × pool_disponible
+// ── Shares con fórmula logarítmica exacta ─────────────────────────
+//
+// Elimina el arbitraje por precio de ejecución:
+// usa la integral del precio durante el trade, no el precio puntual
+//
+// Para comprar YES:
+//   shares = poolNo × ln((poolYes + netDollars) / poolYes)
+//
+// Propiedad clave:
+//   Si compras y vendes inmediatamente la misma cantidad
+//   recuperas exactamente netDollars - spread_venta
+//   No hay ganancia posible por arbitraje de impacto
+//
 function sharesFromCost(mkt, side, dollars){
   if(dollars <= 0) return 0;
   const poolYes = mkt.qYes || 1;
   const poolNo  = mkt.qNo  || 1;
-  const sp = dynamicSpread(poolYes, poolNo, side);
-  const price = getPrice(mkt, side);
-  if(price <= 0) return 0;
-  // Shares = net_dollars / precio_actual
-  return dollars * (1 - sp) / price;
+
+  // Calcular spread incluyendo el impacto de este trade
+  const sp = dynamicSpread(poolYes, poolNo, side, dollars);
+  const netDollars = dollars * (1 - sp);
+  if(netDollars <= 0) return 0;
+
+  // Fórmula logarítmica: precio de ejecución promedio exacto
+  if(side === "YES"){
+    // shares = poolNo × ln(1 + netDollars/poolYes)
+    return poolNo * Math.log(1 + netDollars / poolYes);
+  } else {
+    // shares = poolYes × ln(1 + netDollars/poolNo)
+    return poolYes * Math.log(1 + netDollars / poolNo);
+  }
 }
 
-// ── Spread cobrado ────────────────────────────────────────────────
-function spreadOnBuy(mkt, side, dollars){
-  const poolYes = mkt.qYes || 1;
-  const poolNo  = mkt.qNo  || 1;
-  return dollars * dynamicSpread(poolYes, poolNo, side);
-}
-
-// ── Cuánto cuesta comprar X shares ───────────────────────────────
-function calcBuyCost(mkt, side, shares){
-  const poolYes = mkt.qYes || 1;
-  const poolNo  = mkt.qNo  || 1;
-  const sp = dynamicSpread(poolYes, poolNo, side);
-  const price = getPrice(mkt, side);
-  return shares * price / (1 - sp);
-}
-
-// ── Retorno de venta ──────────────────────────────────────────────
-// Anti-arbitraje: spread asimétrico en la venta también
+// ── Retorno de venta con fórmula inversa exacta ───────────────────
+//
+// Fórmula correcta del Parimutuel inverso:
+//   gross_YES = poolYes_actual × (1 - e^(-shares / poolNo_actual))
+//   gross_NO  = poolNo_actual  × (1 - e^(-shares / poolYes_actual))
+//
+// Garantía anti-arbitraje:
+//   Compra $100 → shares X → vende inmediatamente
+//   → recupera exactamente $100×(1-sp_compra)×(1-sp_venta) < $100
+//   → pérdida garantizada = spread doble
+//
 function calcSellReturn(mkt, side, netShares){
   if(netShares <= 0) return 0;
   const poolYes = mkt.qYes || 1;
   const poolNo  = mkt.qNo  || 1;
-  // Al vender YES actúas como el lado contrario
+
+  // Gross con fórmula Parimutuel inversa correcta
+  let gross;
+  if(side === "YES"){
+    // gross = poolYes × (1 - e^(-shares/poolNo))
+    gross = poolYes * (1 - Math.exp(-netShares / poolNo));
+  } else {
+    // gross = poolNo × (1 - e^(-shares/poolYes))
+    gross = poolNo  * (1 - Math.exp(-netShares / poolYes));
+  }
+
+  // Spread de venta proporcional al impacto
   const oppSide = side === "YES" ? "NO" : "YES";
-  const sp = dynamicSpread(poolYes, poolNo, oppSide);
-  const price = getPrice(mkt, side);
-  return netShares * price * (1 - sp);
+  const sp = dynamicSpread(poolYes, poolNo, oppSide, gross);
+  return Math.max(0, gross * (1 - sp));
 }
 
-// ── Verificar cooldown anti-arbitraje ─────────────────────────────
+// ── Spread cobrado en una compra ──────────────────────────────────
+function spreadOnBuy(mkt, side, dollars){
+  const poolYes = mkt.qYes || 1;
+  const poolNo  = mkt.qNo  || 1;
+  return dollars * dynamicSpread(poolYes, poolNo, side, dollars);
+}
+
+// ── Costo de comprar X shares ─────────────────────────────────────
+function calcBuyCost(mkt, side, shares){
+  const poolYes = mkt.qYes || 1;
+  const poolNo  = mkt.qNo  || 1;
+  // Inversa de sharesFromCost:
+  // shares = poolOther × ln(1 + net/poolSide)
+  // net = poolSide × (e^(shares/poolOther) - 1)
+  let net;
+  if(side === "YES"){
+    net = poolYes * (Math.exp(shares / poolNo) - 1);
+  } else {
+    net = poolNo  * (Math.exp(shares / poolYes) - 1);
+  }
+  // Gross = net / (1 - spread)
+  const sp = dynamicSpread(poolYes, poolNo, side, net);
+  return net / (1 - sp);
+}
+
+// ── Verificar cooldown ────────────────────────────────────────────
 function checkSellCooldown(userId, marketId){
   const key = userId + "_" + marketId;
   const lastBuy = _lastBuyTime[key] || 0;
