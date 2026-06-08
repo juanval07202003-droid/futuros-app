@@ -1729,98 +1729,75 @@ function dynamicSpread(poolYes, poolNo, side, dollars){
 }
 
 // ── Precio del mercado ────────────────────────────────────────────
+const PRICE_MIN = 0.01;
+const PRICE_MAX = 0.99;
+
 function getPrice(mkt, side){
-  const pYes = mkt.qYes || 1;
-  const pNo  = mkt.qNo  || 1;
+  const lpYes = mkt.lpYes || mkt.seedLiquidity/2 || 1;
+  const lpNo  = mkt.lpNo  || mkt.seedLiquidity/2 || 1;
+  const pYes = Math.max(lpYes, mkt.qYes || lpYes);
+  const pNo  = Math.max(lpNo,  mkt.qNo  || lpNo);
   const total = pYes + pNo;
-  const p = pYes / total;
+  const p = Math.min(PRICE_MAX, Math.max(PRICE_MIN, pYes / total));
   return side === "YES" ? p : 1 - p;
 }
 
-// ── Shares que recibe el usuario ──────────────────────────────────
-//
-// 1 share = derecho a cobrar $1 si gana ese lado
-//
-// Usamos precio PROMEDIO de ejecución para eliminar arbitraje:
-//   priceBefore = poolSide / total
-//   priceAfter  = (poolSide + net) / (total + net)
-//   avgPrice    = (priceBefore + priceAfter) / 2
-//   shares      = net / avgPrice
-//
-// Con precio promedio: comprar y vender inmediatamente
-// siempre genera pérdida = spread doble
-//
 function sharesFromCost(mkt, side, dollars){
   if(dollars <= 0) return 0;
-  const poolYes = mkt.qYes || 1;
-  const poolNo  = mkt.qNo  || 1;
+  const lpYes = mkt.lpYes || mkt.seedLiquidity/2 || 1;
+  const lpNo  = mkt.lpNo  || mkt.seedLiquidity/2 || 1;
+  const poolYes = Math.max(lpYes, mkt.qYes || lpYes);
+  const poolNo  = Math.max(lpNo,  mkt.qNo  || lpNo);
   const total   = poolYes + poolNo;
-
   const sp = dynamicSpread(poolYes, poolNo, side, dollars);
   const net = dollars * (1 - sp);
   if(net <= 0) return 0;
-
   const poolSide = side==="YES" ? poolYes : poolNo;
-
-  // Precio antes del trade
-  const priceBefore = poolSide / total;
-  // Precio después del trade (pool del lado crece con net)
-  const priceAfter  = (poolSide + net) / (total + net);
-  // Precio promedio de ejecución
+  const priceBefore = Math.min(PRICE_MAX, Math.max(PRICE_MIN, poolSide / total));
+  const priceAfter  = Math.min(PRICE_MAX, Math.max(PRICE_MIN, (poolSide + net) / (total + net)));
   const avgPrice = (priceBefore + priceAfter) / 2;
-
   return net / avgPrice;
 }
 
-// ── Spread cobrado ────────────────────────────────────────────────
 function spreadOnBuy(mkt, side, dollars){
-  const poolYes = mkt.qYes || 1;
-  const poolNo  = mkt.qNo  || 1;
+  const poolYes = Math.max(mkt.lpYes||1, mkt.qYes||1);
+  const poolNo  = Math.max(mkt.lpNo||1,  mkt.qNo||1);
   return dollars * dynamicSpread(poolYes, poolNo, side, dollars);
 }
 
-// ── Costo de comprar X shares ─────────────────────────────────────
 function calcBuyCost(mkt, side, shares){
-  const poolYes = mkt.qYes || 1;
-  const poolNo  = mkt.qNo  || 1;
+  const poolYes = Math.max(mkt.lpYes||1, mkt.qYes||1);
+  const poolNo  = Math.max(mkt.lpNo||1,  mkt.qNo||1);
   const total   = poolYes + poolNo;
   const poolSide = side==="YES" ? poolYes : poolNo;
   const sp = dynamicSpread(poolYes, poolNo, side, shares * (poolSide/total));
-  const avgPrice = poolSide / total;
+  const avgPrice = Math.max(PRICE_MIN, poolSide / total);
   return (shares * avgPrice) / (1 - sp);
 }
 
-// ── Retorno de venta ──────────────────────────────────────────────
-//
-// Inversa del precio promedio:
-//   gross = shares × avgPrice_venta
-//   avgPrice_venta = precio promedio mientras el pool baja
-//   priceBefore = poolSide / total  (antes de quitar)
-//   priceAfter  = (poolSide - gross) / (total - gross)
-//
-// Para anti-arbitraje: el spread de venta también se aplica
-//
 function calcSellReturn(mkt, side, netShares){
   if(netShares <= 0) return 0;
-  const poolYes = mkt.qYes || 1;
-  const poolNo  = mkt.qNo  || 1;
+  const lpYes = mkt.lpYes || mkt.seedLiquidity/2 || 1;
+  const lpNo  = mkt.lpNo  || mkt.seedLiquidity/2 || 1;
+  const poolYes = Math.max(lpYes, mkt.qYes || lpYes);
+  const poolNo  = Math.max(lpNo,  mkt.qNo  || lpNo);
   const total   = poolYes + poolNo;
   const poolSide = side==="YES" ? poolYes : poolNo;
-
-  // Estimación del gross con precio actual (iteración simple)
-  const priceNow = poolSide / total;
+  const lpSide   = side==="YES" ? lpYes   : lpNo;
+  const priceNow = Math.max(PRICE_MIN, poolSide / total);
   const grossEst = netShares * priceNow;
-
-  // Precio promedio durante la venta
-  const priceAfter = Math.max(0.001, (poolSide - grossEst) / (total - grossEst));
+  // Pool no puede bajar del LP inicial del creador
+  const maxGross = Math.max(0, poolSide - lpSide);
+  const grossCapped = Math.min(grossEst, maxGross);
+  if(grossCapped <= 0) return 0;
+  const priceAfter = Math.max(PRICE_MIN, (poolSide - grossCapped) / (total - grossCapped));
   const avgPrice = (priceNow + priceAfter) / 2;
-  const gross = netShares * avgPrice;
-
-  // Spread de venta proporcional al impacto
+  const grossFinal = Math.min(netShares * avgPrice, maxGross);
   const oppSide = side==="YES" ? "NO" : "YES";
-  const sp = dynamicSpread(poolYes, poolNo, oppSide, gross);
-  return Math.max(0, gross * (1 - sp));
+  const sp = dynamicSpread(poolYes, poolNo, oppSide, grossFinal);
+  return Math.max(0, grossFinal * (1 - sp));
 }
+
 
 // ── Verificar cooldown ────────────────────────────────────────────
 function checkSellCooldown(userId, marketId){
@@ -4475,11 +4452,11 @@ function renderMarket(){
   let chartHtml=`
   <div style="margin-top:4px">
 
-    <!-- Header -->
+    <!-- Header — se actualiza al hacer hover -->
     <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;flex-wrap:wrap;gap:6px">
       <div>
-        <div style="font-size:28px;font-weight:900;color:var(--yes);line-height:1">${Math.round(curYes*100)}%</div>
-        <div style="font-size:11px;color:var(--muted);margin-top:2px">probabilidad SÍ</div>
+        <div id="${chartId}_hdr_price" style="font-size:28px;font-weight:900;color:var(--yes);line-height:1">${Math.round(curYes*100)}%</div>
+        <div id="${chartId}_hdr_label" style="font-size:11px;color:var(--muted);margin-top:2px">probabilidad SÍ</div>
       </div>
       <div style="text-align:right;font-size:12px;color:var(--muted)">
         <div><strong style="color:var(--text)">${fmtVol(m.totalVolume)}</strong> Vol.</div>
@@ -4505,12 +4482,18 @@ function renderMarket(){
     <!-- SVG Chart -->
     <div style="position:relative;overflow:hidden" id="${chartId}_wrap">
 
-      <!-- Floating tooltip -->
-      <div id="${chartId}_tip" style="display:none;position:absolute;background:var(--card);
-        border:1px solid var(--border);border-radius:10px;padding:7px 12px;font-size:11px;
-        pointer-events:none;z-index:10;white-space:nowrap;box-shadow:0 4px 16px rgba(0,0,0,.12)">
-        <div id="${chartId}_tip_date" style="color:var(--muted);margin-bottom:3px;font-size:10px"></div>
-        <div id="${chartId}_tip_val" style="font-weight:800;color:var(--yes);font-size:13px"></div>
+      <!-- Fecha flotante en la parte superior (estilo Polymarket) -->
+      <div id="${chartId}_tip_top" style="display:none;position:absolute;top:0;left:50%;
+        transform:translateX(-50%);font-size:11px;color:var(--muted);
+        pointer-events:none;z-index:10;white-space:nowrap;text-align:center">
+      </div>
+
+      <!-- Etiqueta pegada al punto (estilo Polymarket) -->
+      <div id="${chartId}_tip" style="display:none;position:absolute;
+        background:var(--text);color:var(--card);
+        border-radius:6px;padding:4px 8px;font-size:12px;font-weight:700;
+        pointer-events:none;z-index:10;white-space:nowrap;
+        transform:translateY(-50%)">
       </div>
 
       <svg id="${chartId}_svg"
@@ -10123,26 +10106,24 @@ function setChartRange(marketId, range){
 }
 
 function chartMouseMove(e, svgEl, chartId){
-  // Safely parse tooltip data (may contain HTML entities)
   let pts = [];
-  try{
-    pts = JSON.parse(svgEl.dataset.pts || "[]");
-  }catch(err){ return; }
+  try{ pts = JSON.parse(svgEl.dataset.pts || "[]"); }catch(err){ return; }
   if(!pts.length) return;
 
   const rect = svgEl.getBoundingClientRect();
   if(!rect.width) return;
   const scaleX = svgEl.viewBox.baseVal.width / rect.width;
-  const mx     = (e.clientX - rect.left) * scaleX;
+  const scaleY = svgEl.viewBox.baseVal.height / rect.height;
+  const mx = (e.clientX - rect.left) * scaleX;
 
-  // Find nearest data point
+  // Find nearest point
   let nearest = pts[0], minDist = Infinity;
   for(const p of pts){
     const d = Math.abs(p.x - mx);
     if(d < minDist){ minDist = d; nearest = p; }
   }
 
-  // Move crosshair
+  // Move crosshair vertical line
   const cross = document.getElementById(chartId+"_cross");
   if(cross){
     cross.setAttribute("x1", nearest.x);
@@ -10150,7 +10131,7 @@ function chartMouseMove(e, svgEl, chartId){
     cross.removeAttribute("display");
   }
 
-  // Move dot onto the line
+  // Move dot
   const dot = document.getElementById(chartId+"_dot");
   if(dot){
     dot.setAttribute("cx", nearest.x);
@@ -10158,41 +10139,82 @@ function chartMouseMove(e, svgEl, chartId){
     dot.removeAttribute("display");
   }
 
-  // Update tooltip
-  const tip     = document.getElementById(chartId+"_tip");
-  const tipDate = document.getElementById(chartId+"_tip_date");
-  const tipVal  = document.getElementById(chartId+"_tip_val");
-  if(!tip) return;
-
+  // Format date
   const months = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
   const d = new Date(nearest.ms);
-  const dateStr = months[d.getMonth()]+" "+d.getDate()+", "+
-    String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0");
+  const dateStr = months[d.getMonth()]+" "+d.getDate()+
+    ", "+String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0");
+  const pctYes = Math.round(nearest.v * 100);
 
-  if(tipDate) tipDate.textContent = dateStr;
-  if(tipVal)  tipVal.textContent  = "SÍ "+Math.round(nearest.v*100)+"% · NO "+Math.round((1-nearest.v)*100)+"%";
+  // Update header price live (like Polymarket)
+  const hdrPrice = document.getElementById(chartId+"_hdr_price");
+  const hdrLabel = document.getElementById(chartId+"_hdr_label");
+  if(hdrPrice) hdrPrice.textContent = pctYes + "%";
+  if(hdrLabel) hdrLabel.textContent = dateStr;
 
-  // Position tooltip — flip if near right edge
-  const wrap = document.getElementById(chartId+"_wrap");
-  if(wrap){
-    const wRect = wrap.getBoundingClientRect();
-    const tipW  = 175;
-    let left    = e.clientX - wRect.left + 14;
-    if(left + tipW > wRect.width) left = e.clientX - wRect.left - tipW - 14;
-    const top   = Math.max(2, e.clientY - wRect.top - 56);
-    tip.style.left    = Math.max(0, left) + "px";
-    tip.style.top     = top + "px";
+  // Date at top of chart
+  const tipTop = document.getElementById(chartId+"_tip_top");
+  if(tipTop){
+    tipTop.textContent = dateStr;
+    // Position above the crosshair
+    const wrap = document.getElementById(chartId+"_wrap");
+    if(wrap){
+      const wRect = wrap.getBoundingClientRect();
+      const xPx = (nearest.x / svgEl.viewBox.baseVal.width) * wRect.width;
+      let left = xPx - 60;
+      left = Math.max(0, Math.min(left, wRect.width - 120));
+      tipTop.style.left = left + "px";
+      tipTop.style.transform = "none";
+    }
+    tipTop.style.display = "block";
+  }
+
+  // Label pinned to dot (Polymarket style)
+  const tip = document.getElementById(chartId+"_tip");
+  if(tip){
+    tip.textContent = "SÍ " + pctYes + "%";
+    const wrap = document.getElementById(chartId+"_wrap");
+    if(wrap){
+      const wRect = wrap.getBoundingClientRect();
+      const xPx = (nearest.x / svgEl.viewBox.baseVal.width) * wRect.width;
+      const yPx = (nearest.y / svgEl.viewBox.baseVal.height) * wRect.height;
+      // Pin label to the right of the dot, flip left if near right edge
+      const labelW = 70;
+      let left = xPx + 10;
+      if(left + labelW > wRect.width) left = xPx - labelW - 10;
+      tip.style.left = left + "px";
+      tip.style.top  = yPx + "px";
+    }
     tip.style.display = "block";
   }
 }
 
 function chartMouseLeave(chartId){
-  const cross = document.getElementById(chartId+"_cross");
-  const dot   = document.getElementById(chartId+"_dot");
-  const tip   = document.getElementById(chartId+"_tip");
-  if(cross) cross.setAttribute("display","none");
-  if(dot)   dot.setAttribute("display","none");
-  if(tip)   tip.style.display = "none";
+  const cross  = document.getElementById(chartId+"_cross");
+  const dot    = document.getElementById(chartId+"_dot");
+  const tip    = document.getElementById(chartId+"_tip");
+  const tipTop = document.getElementById(chartId+"_tip_top");
+  const hdrLabel = document.getElementById(chartId+"_hdr_label");
+  if(cross)    cross.setAttribute("display","none");
+  if(dot)      dot.setAttribute("display","none");
+  if(tip)      tip.style.display    = "none";
+  if(tipTop)   tipTop.style.display = "none";
+  // Restore header label
+  if(hdrLabel) hdrLabel.textContent = "probabilidad SÍ";
+  // Restore header price to current
+  const hdrPrice = document.getElementById(chartId+"_hdr_price");
+  if(hdrPrice){
+    const svgEl = document.getElementById(chartId+"_svg");
+    if(svgEl){
+      try{
+        const pts = JSON.parse(svgEl.dataset.pts||"[]");
+        if(pts.length){
+          const last = pts[pts.length-1];
+          hdrPrice.textContent = Math.round(last.v*100)+"%";
+        }
+      }catch(err){}
+    }
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════
