@@ -8226,7 +8226,7 @@ function getMkPreview(){
   const lpYes = parseFloat(f.lpYes) || 50;
   const lpNo  = parseFloat(f.lpNo)  || 50;
   const lpTotal = lpYes + lpNo;
-  const pYes0 = lpNo / lpTotal;   // precio YES = lpNo / total
+  const pYes0 = lpYes / lpTotal;   // P(SÍ) = lpYes / total ✅
   const pNo0  = 1 - pYes0;
   const spreadRate = OB_SPREAD;
 
@@ -9460,16 +9460,20 @@ async function adminCreateMarket(){
   const lpNo  = parseFloat(f.lpNo) ||50;
   if(lpYes < 10 || lpNo < 10) return notify("LP mínimo $10 por lado","error");
   const lpTotal = lpYes + lpNo;
-  // Precio inicial basado en LP asimétrica
-  const pYes0 = lpNo / lpTotal;
-  const {qYes, qNo, lpYes:ly, lpNo:ln} = initQfromProb(lpTotal, 0.1, pYes0);
+
+  // Precio inicial = lpYes / (lpYes + lpNo)
+  // P(SÍ = 19%) → lpYes=$190, lpNo=$810 → 190/1000 = 19% ✅
+  const pYes0 = lpYes / lpTotal;
+
+  // qYes y qNo son exactamente la LP del creador — sin recalcular
   const m={
     id: crypto.randomUUID ? crypto.randomUUID() : "m_"+genId(),
     title:f.title, category:f.category, emoji:f.emoji, description:f.description,
     alpha: 0.1,
     seedLiquidity: lpTotal,
     lpYes, lpNo,
-    qYes, qNo,
+    qYes: lpYes,   // pool SÍ inicial = LP SÍ del creador
+    qNo:  lpNo,    // pool NO inicial = LP NO del creador
     totalVolume:0, spreadPool:0, totalPaid:0,
     closesAt:new Date(f.closesAt).toISOString(), resolved:false, resolution:null,
     oracleType:f.oracleType||"none", oracleConfig:f.oracleConfig||"",
