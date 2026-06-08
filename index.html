@@ -4643,12 +4643,6 @@ function renderMarket(){
         </div>`:""}
       </div>`;
   // ── Order book snapshot ───────────────────────────────────────────
-  const obRows = (()=>{
-    const levels = [0.05,0.03,0.01];
-    const asks = levels.map(d=>({price:Math.min(0.99,pYes+d), size:Math.round(50+Math.random()*150)}));
-    const bids = levels.map(d=>({price:Math.max(0.01,pYes-d), size:Math.round(50+Math.random()*150)}));
-    return {asks:asks.reverse(), bids};
-  })();
 
   return`<div class="fade-up" style="max-width:1100px;margin:0 auto;padding:0 16px">
   <button class="btn-ghost" style="padding:6px 14px;font-size:13px;margin-bottom:20px" onclick="navigate('home')">← ${t("nav_home")}</button>
@@ -4672,71 +4666,81 @@ function renderMarket(){
     <div>
       <!-- Gráfica -->
       <div class="card" style="margin-bottom:16px">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
-          <div>
-            <div style="font-size:32px;font-weight:900;color:var(--yes);letter-spacing:-1px">${pct(pYes)}</div>
-            <div style="font-size:12px;color:var(--muted)">${t("detail_price_history")} ${t("detail_yes")}</div>
-          </div>
-          <div style="text-align:right;font-size:12px;color:var(--muted)">
-            <div>${fmtVol(m.totalVolume)} Vol.</div>
-            <div>${t("detail_closes")}: ${timeLeft(m.closesAt)}</div>
-          </div>
-        </div>
         ${chartHtml}
       </div>
 
-      <!-- Order Book en tiempo real -->
+      <!-- Order Book — Trades reales por precio -->
       <div class="card" style="margin-bottom:16px">
-        <div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:12px">📖 Order Book — Tiempo real</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
-          <!-- Asks (venta YES) -->
-          <div>
-            <div style="font-size:11px;font-weight:700;color:var(--yes);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">Comprar SÍ</div>
-            <div style="display:grid;grid-template-columns:auto 1fr auto;gap:4px 12px;font-size:12px;align-items:center">
-              <span style="color:var(--muted);font-size:10px">PRECIO</span>
-              <span></span>
-              <span style="color:var(--muted);font-size:10px;text-align:right">VOL</span>
-              ${obRows.asks.map(r=>`
-                <span style="font-weight:700;color:var(--yes)">${pct(r.price)}</span>
-                <div style="background:rgba(0,168,112,.12);border-radius:3px;height:6px;width:${Math.round(r.size/3)}%"></div>
-                <span style="color:var(--text);text-align:right">${r.size}</span>
-              `).join("")}
-              <span style="font-weight:800;color:var(--yes);font-size:14px;padding:6px 0;border-top:1.5px solid var(--yes)">${pct(pYes)}</span>
-              <span style="border-top:1.5px solid var(--yes);font-size:11px;color:var(--muted);padding-top:6px">precio actual</span>
-              <span style="border-top:1.5px solid var(--yes)"></span>
-              ${obRows.bids.map(r=>`
-                <span style="font-weight:700;color:var(--no)">${pct(r.price)}</span>
-                <div style="background:rgba(224,40,74,.12);border-radius:3px;height:6px;width:${Math.round(r.size/3)}%"></div>
-                <span style="color:var(--text);text-align:right">${r.size}</span>
-              `).join("")}
+        <div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:12px">📖 Order Book — Trades reales</div>
+        ${(()=>{
+          // Agrupar posiciones reales por precio de entrada estimado
+          const positions = STATE.users.flatMap(u=>{
+            const pos = (u.positions||{})[m.id];
+            if(!pos) return [];
+            const entries = [];
+            if((pos.YES||0)>0) entries.push({side:"YES", shares:pos.YES, user:u.username});
+            if((pos.NO||0)>0)  entries.push({side:"NO",  shares:pos.NO,  user:u.username});
+            return entries;
+          });
+
+          const yesPositions = positions.filter(p=>p.side==="YES").sort((a,b)=>b.shares-a.shares);
+          const noPositions  = positions.filter(p=>p.side==="NO" ).sort((a,b)=>b.shares-a.shares);
+          const totalYes = yesPositions.reduce((s,p)=>s+p.shares,0)||1;
+          const totalNo  = noPositions.reduce((s,p)=>s+p.shares,0)||1;
+          const maxShares = Math.max(...[...yesPositions,...noPositions].map(p=>p.shares),1);
+
+          const renderSide = (positions, side, total, color, bg) => {
+            if(!positions.length) return `<div style="color:var(--muted);font-size:12px;text-align:center;padding:20px 0">Sin posiciones</div>`;
+            return positions.slice(0,8).map(p=>{
+              const pct_bar = Math.round((p.shares/maxShares)*100);
+              const pct_total = ((p.shares/total)*100).toFixed(1);
+              return `<div style="display:grid;grid-template-columns:80px 1fr 70px;gap:6px;align-items:center;margin-bottom:5px">
+                <div style="font-size:11px;font-weight:700;color:${color}">${p.shares.toFixed(2)}</div>
+                <div style="position:relative;height:16px;background:var(--card2);border-radius:3px;overflow:hidden">
+                  <div style="position:absolute;top:0;left:0;height:100%;width:${pct_bar}%;background:${bg};opacity:.5;border-radius:3px"></div>
+                  <div style="position:absolute;top:0;left:4px;line-height:16px;font-size:10px;color:var(--muted)">@${escHtml(p.user)}</div>
+                </div>
+                <div style="font-size:11px;color:var(--muted);text-align:right">${pct_total}%</div>
+              </div>`;
+            }).join("");
+          };
+
+          return `<div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
+            <div>
+              <div style="display:flex;justify-content:space-between;margin-bottom:8px">
+                <span style="font-size:11px;font-weight:700;color:var(--yes);text-transform:uppercase;letter-spacing:.5px">SÍ — ${pct(pYes)}</span>
+                <span style="font-size:10px;color:var(--muted)">${yesPositions.length} traders · ${totalYes.toFixed(0)} shares</span>
+              </div>
+              <div style="display:grid;grid-template-columns:80px 1fr 70px;gap:6px;margin-bottom:6px">
+                <span style="font-size:9px;color:var(--muted);text-transform:uppercase">SHARES</span>
+                <span style="font-size:9px;color:var(--muted);text-transform:uppercase">TRADER</span>
+                <span style="font-size:9px;color:var(--muted);text-transform:uppercase;text-align:right">% POOL</span>
+              </div>
+              <div style="border-top:2px solid var(--yes);padding-top:8px">
+                ${renderSide(yesPositions,"YES",totalYes,"var(--yes)","rgba(0,168,112,.3)")}
+              </div>
+            </div>
+            <div>
+              <div style="display:flex;justify-content:space-between;margin-bottom:8px">
+                <span style="font-size:11px;font-weight:700;color:var(--no);text-transform:uppercase;letter-spacing:.5px">NO — ${pct(1-pYes)}</span>
+                <span style="font-size:10px;color:var(--muted)">${noPositions.length} traders · ${totalNo.toFixed(0)} shares</span>
+              </div>
+              <div style="display:grid;grid-template-columns:80px 1fr 70px;gap:6px;margin-bottom:6px">
+                <span style="font-size:9px;color:var(--muted);text-transform:uppercase">SHARES</span>
+                <span style="font-size:9px;color:var(--muted);text-transform:uppercase">TRADER</span>
+                <span style="font-size:9px;color:var(--muted);text-transform:uppercase;text-align:right">% POOL</span>
+              </div>
+              <div style="border-top:2px solid var(--no);padding-top:8px">
+                ${renderSide(noPositions,"NO",totalNo,"var(--no)","rgba(224,40,74,.3)")}
+              </div>
             </div>
           </div>
-          <!-- NO side -->
-          <div>
-            <div style="font-size:11px;font-weight:700;color:var(--no);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">Comprar NO</div>
-            <div style="display:grid;grid-template-columns:auto 1fr auto;gap:4px 12px;font-size:12px;align-items:center">
-              <span style="color:var(--muted);font-size:10px">PRECIO</span>
-              <span></span>
-              <span style="color:var(--muted);font-size:10px;text-align:right">VOL</span>
-              ${obRows.asks.map(r=>({price:1-r.price,size:r.size})).map(r=>`
-                <span style="font-weight:700;color:var(--no)">${pct(r.price)}</span>
-                <div style="background:rgba(224,40,74,.12);border-radius:3px;height:6px;width:${Math.round(r.size/3)}%"></div>
-                <span style="color:var(--text);text-align:right">${r.size}</span>
-              `).join("")}
-              <span style="font-weight:800;color:var(--no);font-size:14px;padding:6px 0;border-top:1.5px solid var(--no)">${pct(1-pYes)}</span>
-              <span style="border-top:1.5px solid var(--no);font-size:11px;color:var(--muted);padding-top:6px">precio actual</span>
-              <span style="border-top:1.5px solid var(--no)"></span>
-              ${obRows.bids.map(r=>({price:1-r.price,size:r.size})).map(r=>`
-                <span style="font-weight:700;color:var(--yes)">${pct(r.price)}</span>
-                <div style="background:rgba(0,168,112,.12);border-radius:3px;height:6px;width:${Math.round(r.size/3)}%"></div>
-                <span style="color:var(--text);text-align:right">${r.size}</span>
-              `).join("")}
-            </div>
-          </div>
-        </div>
-        <div style="font-size:10px;color:var(--muted);margin-top:10px;text-align:center">
-          LP provee liquidez en todos los niveles · Spread 3% · Actualiza cada 5s
-        </div>
+          <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);display:flex;justify-content:space-between;font-size:11px;color:var(--muted)">
+            <span>Spread: ${(dynamicSpread(m.qYes||1,m.qNo||1,"YES",0)*100).toFixed(1)}%–${(dynamicSpread(m.qYes||1,m.qNo||1,"YES",m.qYes)*100).toFixed(1)}%</span>
+            <span>Pool total: ${usd((m.qYes||0)+(m.qNo||0))}</span>
+            <span>Fee acumulado: ${usd(m.spreadPool||0)}</span>
+          </div>`;
+        })()}
       </div>
 
       <!-- Descripción -->
@@ -7246,41 +7250,36 @@ function calcTradePreview(){
     const dollars = parseFloat(STATE.tradeDollars);
     if(!dollars || dollars <= 0) return null;
 
-    // Precio actual en el modelo Order Book
-    const pYes = m.qYes || 1;
-    const pNo  = m.qNo  || 1;
-    const total = pYes + pNo;
-    const currentPriceYes = pYes / total;  // P(YES) = qYes/total ✅
-    const entryPrice = side === "YES" ? currentPriceYes : 1 - currentPriceYes;
+    const poolYes = m.qYes || 1;
+    const poolNo  = m.qNo  || 1;
+    const total   = poolYes + poolNo;
+    const poolSide = side==="YES" ? poolYes : poolNo;
 
-    // Shares que recibe el usuario
-    const netShares = sharesFromCost(m, side, dollars);
-    if(netShares <= 0) return null;
+    // Spread proporcional al impacto
+    const sp = dynamicSpread(poolYes, poolNo, side, dollars);
+    const net = dollars * (1 - sp);
 
-    // Spread cobrado
-    const spreadAmt = dollars * OB_SPREAD;
-    const spreadPct = OB_SPREAD * 100;
+    // Precio promedio de ejecución (precio real que paga incluyendo impacto)
+    const priceBefore = poolSide / total;
+    const priceAfter  = (poolSide + net) / (total + net);
+    const avgPrice    = (priceBefore + priceAfter) / 2;
 
-    // Precio promedio de entrada
-    const avgPrice = entryPrice;
+    // Precio efectivo total incluyendo spread
+    // avgPrice ya incluye el impacto, pero el spread reduce los shares
+    const effectivePrice = dollars / (net / avgPrice); // = avgPrice / (1-sp)
 
-    // Precio nuevo después de la compra
-    // El nuevo pool: el LP absorbe el trade → qSide aumenta
-    const newQY = side === "YES" ? m.qYes + dollars : m.qYes;
-    const newQN = side === "NO"  ? m.qNo  + dollars : m.qNo;
-    const newTotal = newQY + newQN;
-    const newPriceYes = newQN / newTotal;
-    const newPrice = side === "YES" ? newPriceYes : 1 - newPriceYes;
-
-    // Payout potencial: cada share vale $1 si gana
+    const netShares = net / avgPrice;
     const potentialWin    = Math.round(netShares * 100) / 100;
     const potentialProfit = potentialWin - dollars;
+    const roi = dollars > 0 ? ((potentialWin - dollars) / dollars * 100).toFixed(1) : "0.0";
 
     return {
       dollars, shares: netShares, rawShares: netShares,
-      entryPrice, avgPrice, newPrice,
+      entryPrice: priceBefore, avgPrice: effectivePrice,
+      newPrice: priceAfter,
       potentialProfit, potentialWin, estPayout: 1.0,
-      spreadAmt, spreadPct, maxBet, overMax: false
+      spreadAmt: dollars * sp, spreadPct: sp * 100,
+      maxBet: getMaxBet(m), overMax: false
     };
 
   } else {
@@ -7395,8 +7394,8 @@ function renderInlineTrade(m, side, mode, u, pos){
           <span style="font-size:20px;font-weight:900;color:var(--text)">${preview.netShares.toFixed(2)} <span style="font-size:11px;font-weight:600;color:var(--muted)">${side}</span></span>
         </div>
         <div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:13px">
-          <span style="color:var(--muted)">Avg. Price</span>
-          <span style="font-weight:700">${pct(preview.price)}</span>
+          <span style="color:var(--muted)">Avg. Price (con comisión)</span>
+          <span style="font-weight:700">${pct(preview.avgPrice)}</span>
         </div>
         <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
           <div>
