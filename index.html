@@ -8287,6 +8287,8 @@ function renderAdminResolve(){
             onclick="adminResolve('${m.id}','YES')">✅ SÍ</button>
           <button class="btn-red" style="font-size:12px;padding:5px 14px"
             onclick="adminResolve('${m.id}','NO')">❌ NO</button>
+          <button class="btn-ghost" style="font-size:11px;padding:4px 10px;color:var(--muted)"
+            onclick="adminShowPositions('${m.id}')">👥 Posiciones</button>
         </div>
       </div>
     </div>`;
@@ -8311,12 +8313,14 @@ function renderAdminResolve(){
       Resueltos (${resolved.length})
     </div>
     ${resolved.map(m=>`
-      <div class="card" style="margin-bottom:8px;opacity:.7">
+      <div class="card" style="margin-bottom:8px;opacity:.8">
         <div style="display:flex;align-items:center;gap:10px">
-          <div style="flex:1;font-size:13px">${escHtml(m.title)}</div>
+          <div style="flex:1;font-size:13px;font-weight:600">${escHtml(m.title)}</div>
           <div class="resolved-banner" style="font-size:12px;padding:3px 10px">
             ${m.resolution==="YES"?"✅ SÍ":"❌ NO"}
           </div>
+          <button class="btn-ghost" style="font-size:11px;padding:4px 10px;color:var(--no);border-color:var(--no)"
+            onclick="adminDeleteMarket('${m.id}')">🗑 Eliminar</button>
         </div>
       </div>`).join("")}`:""}
   </div>`;
@@ -8329,6 +8333,40 @@ async function adminUnlockMarket(id){
   await db.from("markets").update({oracle_locked:false}).eq("id",id);
   STATE.markets[i] = {...STATE.markets[i], oracleLocked:false};
   notify("Mercado desbloqueado — las transacciones están activas de nuevo","info");
+  render();
+}
+
+
+
+async function adminShowPositions(marketId){
+  if(!isAdmin()) return;
+  const {data:positions} = await db.from("positions").select("user_id,yes_shares,no_shares").eq("market_id",marketId);
+  if(!positions || positions.length===0){
+    return notify("No hay posiciones registradas en DB para este mercado","info");
+  }
+  const m = STATE.markets.find(x=>x.id===marketId);
+  let msg = `Posiciones en "${m?.title?.slice(0,30)||marketId}":\n`;
+  for(const p of positions){
+    const u = STATE.users.find(x=>String(x.id)===String(p.user_id));
+    const name = u?.username || p.user_id.slice(0,8)+"...";
+    msg += `\n@${name}: SÍ=${p.yes_shares?.toFixed(2)||0} · NO=${p.no_shares?.toFixed(2)||0}`;
+  }
+  alert(msg);
+}
+
+async function adminDeleteMarket(id){
+  if(!isAdmin()) return notify("Sin permisos","error");
+  const {data:adminDb} = await db.from("users").select("role").eq("id",STATE.session).maybeSingle();
+  if(adminDb?.role !== "admin") return notify("Sin permisos (DB)","error");
+  const m = STATE.markets.find(x=>x.id===id);
+  if(!m) return notify("Mercado no encontrado","error");
+  if(!m.resolved) return notify("Solo se pueden eliminar mercados ya resueltos","error");
+  if(!confirm(`¿Eliminar permanentemente "${m.title}"? Esta acción no se puede deshacer.`)) return;
+  await db.from("positions").delete().eq("market_id",id);
+  await db.from("orders").delete().eq("market_id",id);
+  await db.from("markets").delete().eq("id",id);
+  STATE.markets = STATE.markets.filter(x=>x.id!==id);
+  notify("🗑 Mercado eliminado correctamente","info");
   render();
 }
 
@@ -9270,7 +9308,8 @@ async function adminResolve(id,result){
   await dbSaveMarket(STATE.markets[i]);
 
   // Pay winners & record resolution tx for all participants
-  const {data:positions} = await db.from("positions").select("*").eq("market_id",id);
+  const {data:positions, error:posErr} = await db.from("positions").select("*").eq("market_id",id);
+  console.log("[Resolve] Positions found:", positions?.length, posErr);
   // Normalize user_id to string to avoid UUID vs string type mismatch
   const userIds = [...new Set((positions||[]).map(p=>String(p.user_id)))];
   const loseSide = result==="YES" ? "NO" : "YES";
@@ -9290,6 +9329,7 @@ async function adminResolve(id,result){
     if(winShares > 0){
       // ── GANADOR: acreditar payout ──────────────────────────────
       const payout = Math.round(winShares*payoutPerShare*100)/100;
+      console.log(`[Resolve] Paying uid=${uid} winShares=${winShares} payout=${payout}`);
       const newBal = Math.round(((uw.balance||0)+payout)*100)/100;
       await db.from("users").update({balance:newBal}).eq("id",uid);
       const tx={id:"tx_"+genId(),type:"deposit",amount:payout,network:"internal",
@@ -9310,8 +9350,14 @@ async function adminResolve(id,result){
       await db.from("transactions").insert({user_id:uid,...txLoss,created_at:txLoss.date});
     }
   }
+  const totalWinners = userIds.filter(uid=>{
+    const pos = positions.find(p=>String(p.user_id)===uid);
+    const ws = result==="YES"?(pos?.yes_shares||0):(pos?.no_shares||0);
+    return ws > 0;
+  }).length;
   const payStr=payoutPerShare>=0.999?"$1.00/share":`${usd(payoutPerShare)}/share`;
-  notify(`✓ Resuelto ${result} · Pagando ${payStr} a ganadores`);render();
+  notify(`✓ Resuelto ${result} · ${payStr} · ${totalWinners} ganador${totalWinners!==1?"es":""} pagado${totalWinners!==1?"s":""} de ${userIds.length} participante${userIds.length!==1?"s":""}`);
+  render();
 }
 
 // ── Admin Market Maker Panel ──────────────────────────────────────
