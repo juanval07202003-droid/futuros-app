@@ -9418,6 +9418,9 @@ async function adminResolve(id,result){
   const loseSide = result==="YES" ? "NO" : "YES";
   const titleShort = m.title.slice(0,25)+(m.title.length>25?"…":"");
   const resolvedAt = new Date().toISOString();
+  // Admin id para acreditar spreads de salida
+  const adminUser = STATE.users.find(u=>u.role==="admin");
+  const adminId   = adminUser ? String(adminUser.id) : STATE.session;
 
   for(const uid of userIds){
     const pos = positions.find(p=>String(p.user_id)===uid);
@@ -9430,27 +9433,49 @@ async function adminResolve(id,result){
     if(!uw) continue;
 
     if(winShares > 0){
-      // ── GANADOR: acreditar payout ──────────────────────────────
-      const payout = Math.round(winShares*payoutPerShare*100)/100;
-      console.log(`[Resolve] Paying uid=${uid} winShares=${winShares} payout=${payout}`);
-      const newBal = Math.round(((uw.balance||0)+payout)*100)/100;
-      await db.from("users").update({balance:newBal}).eq("id",uid);
-      const tx={id:"tx_"+genId(),type:"deposit",amount:payout,network:"internal",
-        description:`✅ Ganaste · "${titleShort}" · ${winShares.toFixed(4)} shares ${result} × ${usd(payoutPerShare)}`,
-        date:resolvedAt,status:"confirmed"};
-      await db.from("transactions").insert({user_id:uid,...tx,created_at:tx.date});
-      // Update STATE
-      const ui=STATE.users.findIndex(u=>String(u.id)===uid);
-      if(ui>=0) STATE.users[ui]={...STATE.users[ui],balance:newBal};
+      // ── GANADOR: pago neto (shares × $1) menos 2% exit spread ──
+      const grossPayout = Math.round(winShares * 100) / 100;          // shares × $1
+      const exitFee     = Math.round(grossPayout * EXIT_SPREAD * 100) / 100; // 2%
+      const payout      = Math.round((grossPayout - exitFee) * 100) / 100;   // neto al usuario
+      console.log(`[Resolve] uid=${uid} winShares=${winShares} gross=${grossPayout} exitFee=${exitFee} payout=${payout}`);
+
+      // Acreditar neto al ganador
+      const newBal = Math.round(((uw.balance||0) + payout) * 100) / 100;
+      await db.from("users").update({balance: newBal}).eq("id", uid);
+      await db.from("transactions").insert({
+        user_id: uid, id: "tx_"+genId(), type: "deposit", amount: payout,
+        network: "internal", status: "confirmed", created_at: resolvedAt,
+        description: `✅ Ganaste · "${titleShort}" · ${winShares.toFixed(4)} shares × $0.98`
+      });
+
+      // Acreditar exit spread (2%) al admin en USD
+      if(exitFee > 0.001 && adminId){
+        const {data:adm} = await db.from("users").select("balance").eq("id", adminId).maybeSingle();
+        if(adm){
+          const admBal = Math.round(((adm.balance||0) + exitFee) * 100) / 100;
+          await db.from("users").update({balance: admBal}).eq("id", adminId);
+          await db.from("transactions").insert({
+            user_id: adminId, id: "tx_"+genId(), type: "deposit", amount: exitFee,
+            network: "internal", status: "confirmed", created_at: resolvedAt,
+            description: `💰 Spread salida (2%) · "${titleShort}" · ${winShares.toFixed(4)} shares ganadores`
+          });
+          const ai = STATE.users.findIndex(u=>String(u.id)===String(adminId));
+          if(ai>=0) STATE.users[ai]={...STATE.users[ai], balance: admBal};
+        }
+      }
+
+      const ui = STATE.users.findIndex(u=>String(u.id)===uid);
+      if(ui>=0) STATE.users[ui]={...STATE.users[ui], balance: newBal};
     }
 
     if(loseShares > 0){
-      // ── PERDEDOR: registrar pérdida (sin cambio de balance, ya descontado en la compra) ──
-      const lostAmount = Math.round(loseShares*(result==="YES"?(1-payoutPerShare):payoutPerShare)*100)/100;
-      const txLoss={id:"tx_"+genId(),type:"loss",amount:lostAmount,network:"internal",
-        description:`❌ Perdiste · "${titleShort}" · ${loseShares.toFixed(4)} shares ${loseSide} · Resultado: ${result}`,
-        date:resolvedAt,status:"confirmed"};
-      await db.from("transactions").insert({user_id:uid,...txLoss,created_at:txLoss.date});
+      // ── PERDEDOR: registrar pérdida (balance ya descontado al comprar) ──
+      await db.from("transactions").insert({
+        user_id: uid, id: "tx_"+genId(), type: "loss",
+        amount: Math.round(loseShares * (1 - (getPrice({qYes:1,qNo:1},"YES"))) * 100)/100,
+        network: "internal", status: "confirmed", created_at: resolvedAt,
+        description: `❌ Perdiste · "${titleShort}" · ${loseShares.toFixed(4)} shares ${loseSide}`
+      });
     }
   }
   const totalWinners = userIds.filter(uid=>{
@@ -9458,8 +9483,89 @@ async function adminResolve(id,result){
     const ws = result==="YES"?(pos?.yes_shares||0):(pos?.no_shares||0);
     return ws > 0;
   }).length;
+
+  // ── Devolver capital de órdenes MM no ejecutadas + pagar shares ganadores MM ──
+  // Las órdenes MM que quedaron sin ejecutar (unfilled) tienen capital bloqueado que hay que devolver.
+  // Los shares MM ganadores ya se pagaron en el loop de positions arriba.
+  // Los shares MM del lado perdedor no se pagan ($0).
+  const {data:openMmOrders} = await db.from("orders")
+    .select("*")
+    .eq("market_id", id)
+    .eq("is_mm", true)
+    .in("status", ["open","partial"]);
+
+  let mmRefundTotal = 0;
+  if(openMmOrders && openMmOrders.length > 0){
+    // Agrupar refunds por user para hacer un solo UPDATE por usuario
+    const refundByUser = {};
+    for(const order of openMmOrders){
+      // Solo devolver la parte NO ejecutada (la ejecutada ya generó posición y se pagó arriba)
+      const unfilledShares = Math.max(0, (order.shares||0) - (order.filled||0));
+      const refund = Math.round(unfilledShares * (order.price||0) * 100) / 100;
+      console.log(`[Resolve MM] order ${order.id} side=${order.side} shares=${order.shares} filled=${order.filled} unfilled=${unfilledShares} refund=${refund}`);
+      if(refund > 0.001){
+        const uid = String(order.user_id);
+        refundByUser[uid] = (refundByUser[uid]||0) + refund;
+        mmRefundTotal += refund;
+      }
+      await db.from("orders").update({status:"cancelled"}).eq("id", order.id);
+    }
+    // Acreditar refunds agrupados
+    for(const [uid, refund] of Object.entries(refundByUser)){
+      const {data:uw} = await db.from("users").select("balance").eq("id", uid).maybeSingle();
+      if(!uw) continue;
+      const newBal = Math.round(((uw.balance||0) + refund) * 100) / 100;
+      await db.from("users").update({balance: newBal}).eq("id", uid);
+      // Registrar transacción de devolución MM
+      await db.from("transactions").insert({
+        user_id: uid,
+        id: "tx_"+genId(),
+        type: "deposit",
+        amount: refund,
+        network: "internal",
+        description: `♻️ Devolución MM · "${titleShort}" · capital no ejecutado`,
+        created_at: resolvedAt,
+        status: "confirmed"
+      });
+      const oi = STATE.users.findIndex(u=>String(u.id)===uid);
+      if(oi>=0) STATE.users[oi]={...STATE.users[oi], balance: newBal};
+      console.log(`[Resolve MM] Refund ${usd(refund)} → uid=${uid} newBal=${newBal}`);
+    }
+    console.log(`[Resolve] MM capital devuelto: ${usd(mmRefundTotal)} de ${openMmOrders.length} órdenes`);
+  }
+
+  // Cancelar órdenes espejo y órdenes pendientes de usuarios sin ejecutar
+  const {data:pendingOrders} = await db.from("orders")
+    .select("id,user_id,shares,filled,price,is_mirror")
+    .eq("market_id", id)
+    .in("status", ["open","partial"])
+    .eq("is_mm", false);
+
+  if(pendingOrders && pendingOrders.length > 0){
+    for(const order of pendingOrders){
+      // Órdenes espejo no son dinero real del usuario — no devolver
+      // Órdenes reales sin ejecutar sí devolver
+      if(!order.is_mirror){
+        const unfilledShares = (order.shares||0) - (order.filled||0);
+        const refund = Math.round(unfilledShares * (order.price||0) * 100) / 100;
+        if(refund > 0.001){
+          const {data:orderOwner} = await db.from("users")
+            .select("balance").eq("id", order.user_id).maybeSingle();
+          if(orderOwner){
+            const newBal = Math.round(((orderOwner.balance||0) + refund) * 100) / 100;
+            await db.from("users").update({balance: newBal}).eq("id", order.user_id);
+            const oi = STATE.users.findIndex(u=>String(u.id)===String(order.user_id));
+            if(oi>=0) STATE.users[oi]={...STATE.users[oi], balance: newBal};
+          }
+        }
+      }
+      await db.from("orders").update({status:"cancelled"}).eq("id", order.id);
+    }
+  }
+
   const payStr=payoutPerShare>=0.999?"$1.00/share":`${usd(payoutPerShare)}/share`;
-  notify(`✓ Resuelto ${result} · ${payStr} · ${totalWinners} ganador${totalWinners!==1?"es":""} pagado${totalWinners!==1?"s":""} de ${userIds.length} participante${userIds.length!==1?"s":""}`);
+  const refundStr = mmRefundTotal>0 ? ` · MM devuelto: ${usd(mmRefundTotal)}` : "";
+  notify(`✓ Resuelto ${result} · ${payStr} · ${totalWinners} ganador${totalWinners!==1?"es":""} pagado${totalWinners!==1?"s":""} de ${userIds.length} participante${userIds.length!==1?"s":""}${refundStr}`);
   render();
 }
 
