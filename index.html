@@ -196,12 +196,13 @@ button:active{transform:scale(.97);}
 .market-detail-grid{display:grid;grid-template-columns:1fr 320px;gap:24px;align-items:start;width:100%;}
 .market-right-sticky{position:sticky;top:80px;}
 @media(max-width:900px){
-  .market-detail-grid{grid-template-columns:1fr;gap:16px;}
-  .market-detail-grid .market-right-panel{order:-1;}
+  .market-detail-grid{grid-template-columns:1fr;gap:16px;width:100%;}
+  .market-detail-grid .market-right-panel{order:-1;width:100%;max-width:100%;}
   .market-right-sticky{position:static;}
 }
 @media(max-width:680px){
-  .market-detail-grid{gap:12px;}
+  .market-detail-grid{gap:8px;}
+  .market-detail-grid>*{min-width:0;max-width:100%;}
 }
 .trade-inline-tabs{display:flex;gap:0;border-bottom:2px solid var(--border);margin-bottom:16px;}
 .trade-inline-tab{flex:1;padding:10px;font-size:14px;font-weight:700;cursor:pointer;border:none;background:transparent;font-family:inherit;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;transition:all .15s;}
@@ -4628,7 +4629,7 @@ function renderMarket(){
 
     <!-- COLUMNA DERECHA — Panel de trade inline estilo Polymarket -->
     <div class="market-right-panel market-right-sticky">
-      <div class="card" style="padding:20px;overflow:hidden;box-sizing:border-box">
+      <div class="card" style="padding:clamp(12px,4vw,20px);overflow:hidden;box-sizing:border-box;width:100%">
 
         ${m.resolved
           ?`<div class="resolved-banner">✅ ${t("detail_resolved")}: ${escHtml(m.resolution)}</div>`
@@ -7253,10 +7254,10 @@ function renderInlineTrade(m, side, mode, u, pos){
           style="padding-left:28px;font-size:clamp(16px,4vw,20px);font-weight:700"
           oninput="STATE.inlineDollars=STATE.inlineDollars||{};STATE.inlineDollars['${m.id}']=this.value;refreshInlineTrade('${m.id}')"/>
       </div>
-      <div style="display:flex;gap:4px;margin-bottom:12px;flex-wrap:nowrap;overflow:hidden">
+      <div style="display:flex;gap:4px;margin-bottom:12px;overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch;padding-bottom:2px">
         ${[5,10,25,50,100].map(a=>`<button
-          style="flex:1;padding:5px 2px;border-radius:7px;border:1px solid var(--border);min-width:0;
-          background:transparent;color:var(--muted);font-size:11px;font-weight:700;cursor:pointer;font-family:inherit"
+          style="flex-shrink:0;padding:5px 10px;border-radius:7px;border:1px solid var(--border);
+          background:transparent;color:var(--muted);font-size:12px;font-weight:700;cursor:pointer;font-family:inherit"
           onclick="(()=>{const inp=this.closest('div').previousElementSibling.querySelector('input');const v=(parseFloat(inp.value)||0)+${a};inp.value=v;STATE.inlineDollars=STATE.inlineDollars||{};STATE.inlineDollars['${m.id}']=String(v);refreshInlineTrade('${m.id}')})()">+$${a}</button>`).join("")}
       </div>
       ${preview?`
