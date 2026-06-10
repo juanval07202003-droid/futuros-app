@@ -1829,11 +1829,10 @@ function sharesFromCost(mkt, side, dollars){
   const spread  = getDynamicSpread(mkt, side);
   const net     = dollars * (1 - spread);
   if(net <= 0) return 0;
-  const poolSide   = side==="YES" ? poolYes : poolNo;
-  const priceBefore = Math.min(PRICE_MAX, Math.max(PRICE_MIN, poolSide / total));
-  const priceAfter  = Math.min(PRICE_MAX, Math.max(PRICE_MIN, (poolSide + net) / (total + net)));
-  const avgPrice    = (priceBefore + priceAfter) / 2;
-  return net / avgPrice;
+  // CLOB puro: precio fijo, sin price impact
+  const poolSide    = side==="YES" ? poolYes : poolNo;
+  const currentPrice = Math.min(PRICE_MAX, Math.max(PRICE_MIN, poolSide / total));
+  return net / currentPrice;
 }
 
 // ── Retorno de venta anticipada (3% spread) ───────────────────────
@@ -1842,11 +1841,10 @@ function calcSellReturn(mkt, side, netShares){
   const poolYes = Math.max(0.01, mkt.qYes || 1);
   const poolNo  = Math.max(0.01, mkt.qNo  || 1);
   const total   = poolYes + poolNo;
-  const poolSide = side==="YES" ? poolYes : poolNo;
-  const priceNow  = Math.max(PRICE_MIN, poolSide / total);
-  const grossEst  = netShares * priceNow;
-  const priceAfter = Math.max(PRICE_MIN, (poolSide - grossEst) / Math.max(0.01, total - grossEst));
-  const gross = Math.max(0, netShares * ((priceNow + priceAfter) / 2));
+  // CLOB puro: precio fijo al momento de venta, sin price impact
+  const poolSide    = side==="YES" ? poolYes : poolNo;
+  const currentPrice = Math.min(PRICE_MAX, Math.max(PRICE_MIN, poolSide / total));
+  const gross = netShares * currentPrice;
   return gross * (1 - EARLY_SELL_SPREAD);
 }
 
@@ -7113,40 +7111,29 @@ function calcTradePreview(){
     // Spread dinámico: 2% normal, 3% si precio ≥ 75%
     const entrySpread    = getDynamicSpread(m, side);
     const entrySpreadAmt = dollars * entrySpread;
-    const net = dollars * (1 - entrySpread);
+    const net            = dollars * (1 - entrySpread);
 
-    // Precio promedio de ejecución
-    const priceBefore = Math.min(PRICE_MAX, Math.max(PRICE_MIN, poolSide / total));
-    const priceAfter  = Math.min(PRICE_MAX, Math.max(PRICE_MIN, (poolSide + net) / (total + net)));
-    const avgPrice    = (priceBefore + priceAfter) / 2;
-
-    const netShares = net / avgPrice;
+    // CLOB puro: precio fijo al momento de compra, sin price impact AMM
+    const currentPrice = Math.min(PRICE_MAX, Math.max(PRICE_MIN, poolSide / total));
+    const netShares    = net / currentPrice;
 
     // Ganancia potencial: shares × $1 - 2% exit spread al resolver
-    const grossWin        = netShares;
-    const exitSpreadAmt   = grossWin * EXIT_SPREAD;
-    const potentialWin    = Math.round((grossWin - exitSpreadAmt) * 100) / 100;
+    const exitSpreadAmt   = netShares * EXIT_SPREAD;
+    const potentialWin    = Math.round((netShares - exitSpreadAmt) * 100) / 100;
     const potentialProfit = potentialWin - dollars;
-    const totalSpreadAmt  = entrySpreadAmt + exitSpreadAmt;
-    const totalSpreadPct  = ((totalSpreadAmt / dollars) * 100);
     const roi = dollars > 0 ? ((potentialProfit / dollars) * 100).toFixed(1) : "0.0";
 
     return {
       dollars,
-      shares: netShares,
-      rawShares: netShares,
-      entryPrice: priceBefore,
-      avgPrice: avgPrice / (1 - entrySpread),
-      newPrice: priceAfter,
+      shares:        netShares,
+      rawShares:     netShares,
+      entryPrice:    currentPrice,
+      avgPrice:      currentPrice,
       potentialProfit,
       potentialWin,
       entrySpreadAmt,
       exitSpreadAmt,
-      totalSpreadAmt,
-      totalSpreadPct,
-      spreadAmt: totalSpreadAmt,
-      spreadPct: totalSpreadPct,
-      entrySpread,  // para mostrar en UI
+      entrySpread,
       maxBet,
       overMax: false
     };
@@ -7433,32 +7420,36 @@ async function executeTrade(){
       };
       if(idx>=0) STATE.markets[idx]=nm;
 
-      const pos={...(u.positions[marketId]||{YES:0,NO:0})};
-      pos[side]=(pos[side]||0)+netShares;
+      // ── Sincronizar desde DB (evitar doble descuento) ─────────────
       const tx={id:"tx_"+genId(),type:"trade",amount:dollars,network:"internal",
         description:`Compra ${side} ${usd(dollars)} → ${netShares.toFixed(2)} shares · ${localM.title.slice(0,28)}…`,
         date:new Date().toISOString(),status:"confirmed"};
+      await dbSaveTransaction(u.id, tx);
 
-      const uiNow=STATE.users.findIndex(x=>x.id===u.id);
+      // Leer balance y posición real desde DB
+      const [freshUserRes, freshPosRes, freshMktRes] = await Promise.all([
+        db.from("users").select("balance").eq("id", u.id).maybeSingle(),
+        db.from("positions").select("yes_shares,no_shares").eq("user_id", u.id).eq("market_id", marketId).maybeSingle(),
+        db.from("markets").select("*").eq("id", marketId).maybeSingle()
+      ]);
+
+      const uiNow = STATE.users.findIndex(x=>x.id===u.id);
       if(uiNow>=0){
+        const freshPos = freshPosRes.data;
+        const updPos   = {...(STATE.users[uiNow].positions||{})};
+        if(freshPos) updPos[marketId] = {YES: freshPos.yes_shares||0, NO: freshPos.no_shares||0};
         STATE.users[uiNow]={...STATE.users[uiNow],
-          balance:   (STATE.users[uiNow].balance||0)-dollars,
-          positions: {...(STATE.users[uiNow].positions||{}),[marketId]:pos},
-          transactions:[tx,...(STATE.users[uiNow].transactions||[])],
+          balance:      freshUserRes.data?.balance ?? (STATE.users[uiNow].balance||0)-dollars,
+          positions:    updPos,
+          transactions: [tx,...(STATE.users[uiNow].transactions||[])],
         };
+      }
+      if(freshMktRes.data && idx>=0){
+        STATE.markets[idx]={...STATE.markets[idx], ...dbRowToMarket(freshMktRes.data)};
       }
 
       recordBuyTime(u.id, marketId);
       closeTradeModal(); render();
-
-      await dbSavePositions(u.id, STATE.users[uiNow]?.positions||{});
-      await dbSaveTransaction(u.id, tx);
-
-      const {data:confirmedMarket} = await db.from("markets").select("*").eq("id",marketId).maybeSingle();
-      if(confirmedMarket && idx>=0){
-        STATE.markets[idx]={...STATE.markets[idx], ...dbRowToMarket(confirmedMarket)};
-        render();
-      }
 
       const msg = netShares > 0
         ? `✅ ${netShares.toFixed(2)} shares ${side} · pagaste ${usd(dollars)}`
@@ -7518,24 +7509,35 @@ async function executeTrade(){
         priceHistory:newHistory};
       if(idx>=0) STATE.markets[idx]=nm;
 
-      const newPos={...(u.positions[marketId]||{YES:0,NO:0})};
-      newPos[side]=Math.max(0,(newPos[side]||0)-shares);
       const txSell={id:"tx_"+genId(),type:"withdrawal",amount:netReturn,network:"internal",
         description:`Venta ${side} ${shares.toFixed(2)} shares → ${usd(netReturn)} (spread 3%)`,
         date:new Date().toISOString(),status:"confirmed"};
+      await dbSaveTransaction(u.id, txSell);
+
+      // ── Sincronizar desde DB (evitar doble acreditación) ────────
+      const [freshUserSell, freshPosSell, freshMktSell] = await Promise.all([
+        db.from("users").select("balance").eq("id", u.id).maybeSingle(),
+        db.from("positions").select("yes_shares,no_shares").eq("user_id", u.id).eq("market_id", marketId).maybeSingle(),
+        db.from("markets").select("*").eq("id", marketId).maybeSingle()
+      ]);
 
       const uiNow=STATE.users.findIndex(x=>x.id===u.id);
       if(uiNow>=0){
+        const freshPos = freshPosSell.data;
+        const updPos   = {...(STATE.users[uiNow].positions||{})};
+        if(freshPos) updPos[marketId] = {YES: freshPos.yes_shares||0, NO: freshPos.no_shares||0};
+        else { const p={...(updPos[marketId]||{YES:0,NO:0})}; p[side]=Math.max(0,(p[side]||0)-shares); updPos[marketId]=p; }
         STATE.users[uiNow]={...STATE.users[uiNow],
-          balance:   (STATE.users[uiNow].balance||0)+netReturn,
-          positions: {...(STATE.users[uiNow].positions||{}),[marketId]:newPos},
-          transactions:[txSell,...(STATE.users[uiNow].transactions||[])],
+          balance:      freshUserSell.data?.balance ?? (STATE.users[uiNow].balance||0)+netReturn,
+          positions:    updPos,
+          transactions: [txSell,...(STATE.users[uiNow].transactions||[])],
         };
+      }
+      if(freshMktSell.data && idx>=0){
+        STATE.markets[idx]={...STATE.markets[idx], ...dbRowToMarket(freshMktSell.data)};
       }
 
       closeTradeModal(); render();
-      await dbSavePositions(u.id, STATE.users[uiNow]?.positions||{});
-      await dbSaveTransaction(u.id, txSell);
       notify(`✅ Vendiste ${shares.toFixed(2)} shares ${side} · recibiste ${usd(netReturn)}`);
 
     }catch(err){
@@ -9351,7 +9353,10 @@ async function adminCreateMarket(){
     p_price:     mmPrice,
     p_shares:    sharesYes,
   });
-  if(errYes || mmYes?.error) mmErrors.push("SÍ: "+(errYes?.message||mmYes?.error));
+  if(errYes || mmYes?.error){
+    mmErrors.push("SÍ: "+(errYes?.message||mmYes?.error));
+    console.error("[MM SÍ Error]", errYes, mmYes);
+  }
 
   const {data:mmNo, error:errNo} = await db.rpc("place_mm_order",{
     p_market_id: String(m.id),
@@ -9360,11 +9365,32 @@ async function adminCreateMarket(){
     p_price:     1 - mmPrice,
     p_shares:    sharesNo,
   });
-  if(errNo || mmNo?.error) mmErrors.push("NO: "+(errNo?.message||mmNo?.error));
+  if(errNo || mmNo?.error){
+    mmErrors.push("NO: "+(errNo?.message||mmNo?.error));
+    console.error("[MM NO Error]", errNo, mmNo);
+  }
 
-  // 3. Actualizar balance local (ya place_mm_order descuenta en DB, sincronizamos STATE)
-  const ui = STATE.users.findIndex(x=>x.id===u.id);
-  if(ui>=0) STATE.users[ui] = {...STATE.users[ui], balance: Math.max(0,(STATE.users[ui].balance||0)-totalCost)};
+  // 3. Sincronizar STATE desde DB (balance real + posiciones reales)
+  const {data:freshUser} = await db.from("users").select("balance").eq("id", adminUid).maybeSingle();
+  const {data:freshPos}  = await db.from("positions")
+    .select("yes_shares,no_shares").eq("user_id", adminUid).eq("market_id", String(m.id)).maybeSingle();
+
+  const ui = STATE.users.findIndex(x=>String(x.id)===adminUid);
+  if(ui>=0){
+    const updatedPositions = {...(STATE.users[ui].positions||{})};
+    if(freshPos){
+      updatedPositions[m.id] = {
+        YES: freshPos.yes_shares||0,
+        NO:  freshPos.no_shares||0
+      };
+    }
+    STATE.users[ui] = {
+      ...STATE.users[ui],
+      balance: freshUser?.balance ?? STATE.users[ui].balance,
+      positions: updatedPositions
+    };
+  }
+  console.log("[MM Create] freshUser:", freshUser, "freshPos:", freshPos);
 
   // Reset form
   STATE.mkForm={title:"",title_en:"",category:"Deportes",emoji:"🎯",description:"",
