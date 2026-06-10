@@ -25,12 +25,14 @@
 /* ─── RESET ─────────────────────────────────── */
 *{margin:0;padding:0;box-sizing:border-box;}
 html{scroll-behavior:smooth;-webkit-text-size-adjust:100%;}
+*,*::before,*::after{box-sizing:border-box;}
 body{
   background:#F5F8FA;color:#1a1a2e;
   font-family:'DM Sans','Segoe UI',sans-serif;
   min-height:100vh;min-height:100dvh;
   -webkit-font-smoothing:antialiased;
   overflow-x:hidden;
+  max-width:100vw;
 }
 ::-webkit-scrollbar{width:5px;height:5px;}
 ::-webkit-scrollbar-track{background:transparent;}
@@ -191,7 +193,7 @@ button:active{transform:scale(.97);}
 .carousel-outer{position:relative;margin-bottom:8px;padding:0 18px;}
 @media(max-width:680px){.carousel-outer{padding:0;}}
 /* Market detail two-column grid */
-.market-detail-grid{display:grid;grid-template-columns:1fr 320px;gap:24px;align-items:start;}
+.market-detail-grid{display:grid;grid-template-columns:1fr 320px;gap:24px;align-items:start;width:100%;}
 .market-right-sticky{position:sticky;top:80px;}
 @media(max-width:900px){
   .market-detail-grid{grid-template-columns:1fr;gap:16px;}
@@ -4626,7 +4628,7 @@ function renderMarket(){
 
     <!-- COLUMNA DERECHA — Panel de trade inline estilo Polymarket -->
     <div class="market-right-panel market-right-sticky">
-      <div class="card" style="padding:20px">
+      <div class="card" style="padding:20px;overflow:hidden;box-sizing:border-box">
 
         ${m.resolved
           ?`<div class="resolved-banner">✅ ${t("detail_resolved")}: ${escHtml(m.resolution)}</div>`
@@ -7248,42 +7250,27 @@ function renderInlineTrade(m, side, mode, u, pos){
         <span style="position:absolute;left:12px;top:50%;transform:translateY(-50%);font-weight:800;color:var(--yes);font-size:16px;pointer-events:none">$</span>
         <input class="inp" type="number" min="0.01" step="0.01"
           value="${dollars}" placeholder="0.00"
-          style="padding-left:28px;font-size:20px;font-weight:700"
+          style="padding-left:28px;font-size:clamp(16px,4vw,20px);font-weight:700"
           oninput="STATE.inlineDollars=STATE.inlineDollars||{};STATE.inlineDollars['${m.id}']=this.value;refreshInlineTrade('${m.id}')"/>
       </div>
-      <div style="display:flex;gap:5px;margin-bottom:12px">
+      <div style="display:flex;gap:4px;margin-bottom:12px;flex-wrap:nowrap;overflow:hidden">
         ${[5,10,25,50,100].map(a=>`<button
-          style="flex:1;padding:5px 0;border-radius:7px;border:1px solid var(--border);
-          background:transparent;color:var(--muted);font-size:12px;font-weight:700;cursor:pointer;font-family:inherit"
+          style="flex:1;padding:5px 2px;border-radius:7px;border:1px solid var(--border);min-width:0;
+          background:transparent;color:var(--muted);font-size:11px;font-weight:700;cursor:pointer;font-family:inherit"
           onclick="(()=>{const inp=this.closest('div').previousElementSibling.querySelector('input');const v=(parseFloat(inp.value)||0)+${a};inp.value=v;STATE.inlineDollars=STATE.inlineDollars||{};STATE.inlineDollars['${m.id}']=String(v);refreshInlineTrade('${m.id}')})()">+$${a}</button>`).join("")}
       </div>
       ${preview?`
       <div style="background:var(--yes-bg);border:1.5px solid rgba(0,168,112,.2);border-radius:12px;padding:14px;margin-bottom:12px">
-        <div style="display:flex;justify-content:space-between;align-items:center;padding-bottom:10px;margin-bottom:8px;border-bottom:1px solid rgba(0,168,112,.15)">
-          <span style="font-size:13px;color:var(--muted)">${en?"Shares you receive":"Shares a recibir"}</span>
-          <span style="font-size:20px;font-weight:900;color:var(--text)">${preview.netShares.toFixed(2)} <span style="font-size:11px;font-weight:600;color:var(--muted)">${side}</span></span>
+        <div style="display:flex;justify-content:space-between;align-items:center;padding-bottom:10px;margin-bottom:10px;border-bottom:1px solid rgba(0,168,112,.15)">
+          <span style="font-size:12px;color:var(--muted)">${en?"Shares to receive":"Shares a recibir"}</span>
+          <span style="font-size:24px;font-weight:900;color:var(--text);letter-spacing:-.5px">${preview.netShares.toFixed(2)} <span style="font-size:11px;font-weight:600;color:var(--muted)">${side}</span></span>
         </div>
-        <div style="display:flex;flex-direction:column;gap:5px;font-size:12px">
-          <div style="display:flex;justify-content:space-between">
-            <span style="color:var(--muted)">Avg. Price</span>
-            <span style="font-weight:700">${pct(preview.price)}</span>
+        <div style="display:flex;justify-content:space-between;align-items:center;background:rgba(0,229,160,.06);border-radius:8px;padding:10px 12px;border:1px solid rgba(0,229,160,.2)">
+          <div>
+            <div style="font-size:12px;font-weight:700;color:var(--text)">${en?"If "+side+" wins":"Si "+side+" gana"} 💰</div>
+            <div style="font-size:11px;color:var(--muted)">ROI ${parseFloat(preview.roi)>=0?"+":""}${preview.roi}%</div>
           </div>
-          <div style="display:flex;justify-content:space-between">
-            <span style="color:var(--muted)">${en?"Entry fee (2%)":"Fee entrada (2%)"}</span>
-            <span style="color:var(--no)">−${usd(preview.entryFee||0)}</span>
-          </div>
-          <div style="display:flex;justify-content:space-between">
-            <span style="color:var(--muted)">${en?"Exit fee if win (2%)":"Fee salida si ganas (2%)"}</span>
-            <span style="color:var(--no)">−${usd(preview.exitFee||0)}</span>
-          </div>
-          <div style="height:1px;background:rgba(0,168,112,.15);margin:2px 0"></div>
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:2px">
-            <div>
-              <div style="font-size:13px;font-weight:700;color:var(--text)">${en?"To win if "+side+" wins":"Si "+side+" gana recibirías"} 💰</div>
-              <div style="font-size:11px;color:var(--muted)">ROI ${parseFloat(preview.roi)>=0?"+":""}${preview.roi}% · total fees 4%</div>
-            </div>
-            <div style="font-size:22px;font-weight:900;color:var(--yes)">${usd(preview.potentialWin)}</div>
-          </div>
+          <div style="font-size:20px;font-weight:900;color:var(--yes)">${usd(preview.potentialWin)}</div>
         </div>
       </div>`:`<div style="height:8px"></div>`}
       ${actionBtn}
