@@ -8129,48 +8129,125 @@ function renderOracleConfigHint(){
 
 function getMkPreview(){
   const f = STATE.mkForm;
-  if(!f.title) return "";
-  const sharesYes = parseFloat(f.mmSharesYes)||500;
-  const sharesNo  = parseFloat(f.mmSharesNo)||500;
-  const price     = Math.min(0.99, Math.max(0.01, parseFloat(f.mmPrice)||0.50));
-  const priceNo   = 1 - price;
-  const costYes   = sharesYes * price;
-  const costNo    = sharesNo  * priceNo;
-  const total     = costYes + costNo;
-  const spreadGain= total * ENTRY_SPREAD;
-  const u         = getUser();
-  const balance   = u?.balance||0;
+  const sharesYes  = parseFloat(f.mmSharesYes)||500;
+  const sharesNo   = parseFloat(f.mmSharesNo)||500;
+  const price      = Math.min(0.99, Math.max(0.01, parseFloat(f.mmPrice)||0.50));
+  const priceNo    = 1 - price;
+  const costYes    = Math.round(sharesYes * price    * 100) / 100;
+  const costNo     = Math.round(sharesNo  * priceNo  * 100) / 100;
+  const total      = Math.round((costYes + costNo)   * 100) / 100;
+  const u          = getUser();
+  const balance    = u?.balance||0;
+  const canAfford  = balance >= total;
 
+  // Retorno si gana cada lado (shares × $0.98)
+  const retIfYes   = Math.round(sharesYes * 0.98 * 100) / 100;
+  const retIfNo    = Math.round(sharesNo  * 0.98 * 100) / 100;
+
+  // Pérdida máxima REAL (considerando cruce entre lados):
+  // Si gana SÍ: cobro retIfYes, pierdo costNo → neto = retIfYes - total
+  // Si gana NO: cobro retIfNo,  pierdo costYes → neto = retIfNo  - total
+  const netIfYes   = Math.round((retIfYes - total) * 100) / 100;
+  const netIfNo    = Math.round((retIfNo  - total) * 100) / 100;
+  const maxLoss    = Math.round(Math.min(netIfYes, netIfNo) * 100) / 100; // negativo = pérdida
+  const maxLossAbs = Math.abs(Math.min(0, maxLoss));
+
+  // Spread promedio aprox 2% sobre volumen de compras
+  // Para cubrir maxLoss con spreads: volumen = maxLoss / 0.02
+  const avgSpread     = 0.02;
+  const breakEvenVol  = maxLossAbs > 0 ? Math.round(maxLossAbs / avgSpread) : 0;
+  // Spreads necesarios = maxLossAbs
+  const spreadsNeeded = maxLossAbs;
+
+  // Update reactive costs div inside the form
+  const costsDiv = document.getElementById("mm-costs-preview");
+  if(costsDiv){
+    costsDiv.innerHTML = `
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;font-size:12px">
+        <div style="background:var(--yes-bg);border-radius:8px;padding:8px 10px;text-align:center">
+          <div style="color:var(--muted);margin-bottom:2px">Costo MM SÍ</div>
+          <div style="font-weight:800;color:var(--yes);font-size:14px">${usd(costYes)}</div>
+          <div style="color:var(--muted);font-size:10px;margin-top:2px">${sharesYes} shares × ${pct(price)}</div>
+        </div>
+        <div style="background:var(--no-bg);border-radius:8px;padding:8px 10px;text-align:center">
+          <div style="color:var(--muted);margin-bottom:2px">Costo MM NO</div>
+          <div style="font-weight:800;color:var(--no);font-size:14px">${usd(costNo)}</div>
+          <div style="color:var(--muted);font-size:10px;margin-top:2px">${sharesNo} shares × ${pct(priceNo)}</div>
+        </div>
+        <div style="background:var(--card);border:1.5px solid ${canAfford?"var(--yes)":"var(--no)"};border-radius:8px;padding:8px 10px;text-align:center">
+          <div style="color:var(--muted);margin-bottom:2px">Total · tu balance</div>
+          <div style="font-weight:800;color:${canAfford?"var(--yes)":"var(--no)"};font-size:14px">${usd(total)}</div>
+          <div style="color:var(--muted);font-size:10px;margin-top:2px">${usd(balance)} disponible</div>
+        </div>
+      </div>
+      ${!canAfford?`<div style="color:var(--no);font-size:11px;margin-top:6px;font-weight:600">⚠️ Saldo insuficiente — reduce los shares o recarga tu balance</div>`:""}
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px;font-size:11px">
+        <div style="background:rgba(0,168,112,.05);border-radius:6px;padding:7px 10px;border:1px solid rgba(0,168,112,.2)">
+          <div style="color:var(--muted);margin-bottom:2px">Si gana SÍ → ${sharesYes} shares × $0.98</div>
+          <div style="font-weight:800;color:${netIfYes>=0?"var(--yes)":"var(--no)"}">
+            ${usd(retIfYes)} neto <span style="font-size:10px">(${netIfYes>=0?"+":""}${usd(netIfYes)})</span>
+          </div>
+        </div>
+        <div style="background:rgba(224,40,74,.05);border-radius:6px;padding:7px 10px;border:1px solid rgba(224,40,74,.2)">
+          <div style="color:var(--muted);margin-bottom:2px">Si gana NO → ${sharesNo} shares × $0.98</div>
+          <div style="font-weight:800;color:${netIfNo>=0?"var(--yes)":"var(--no)"}">
+            ${usd(retIfNo)} neto <span style="font-size:10px">(${netIfNo>=0?"+":""}${usd(netIfNo)})</span>
+          </div>
+        </div>
+      </div>
+      <div style="margin-top:8px;border-radius:8px;border:1.5px solid ${maxLossAbs>0?"rgba(224,40,74,.3)":"rgba(0,168,112,.3)"};
+          background:${maxLossAbs>0?"rgba(224,40,74,.04)":"rgba(0,168,112,.04)"};padding:10px 12px">
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;font-size:11px">
+          <div>
+            <div style="color:var(--muted);margin-bottom:2px">⚠️ Pérdida máx. real</div>
+            <div style="font-weight:800;color:${maxLossAbs>0?"var(--no)":"var(--yes)"}">
+              ${maxLossAbs>0?"-"+usd(maxLossAbs):"Sin pérdida"}
+            </div>
+            <div style="color:var(--muted);font-size:9px;margin-top:1px">cruzando ambos lados</div>
+          </div>
+          <div>
+            <div style="color:var(--muted);margin-bottom:2px">💰 Spreads para cubrir</div>
+            <div style="font-weight:800;color:var(--text)">${maxLossAbs>0?usd(spreadsNeeded):"—"}</div>
+            <div style="color:var(--muted);font-size:9px;margin-top:1px">monto acumulado necesario</div>
+          </div>
+          <div>
+            <div style="color:var(--muted);margin-bottom:2px">📈 Break-even volumen</div>
+            <div style="font-weight:800;color:var(--accent)">${maxLossAbs>0?fmtVol(breakEvenVol):"Ya cubierto"}</div>
+            <div style="color:var(--muted);font-size:9px;margin-top:1px">volumen de trades necesario</div>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  if(!f.title) return "";
   const rows = [
-    ["Precio inicial SÍ", `${(price*100).toFixed(1)}%`],
-    ["Precio inicial NO",  `${(priceNo*100).toFixed(1)}%`],
-    ["Shares ofrecidos SÍ", `${sharesYes}`],
-    ["Shares ofrecidos NO", `${sharesNo}`],
-    ["Costo MM SÍ", `$${costYes.toFixed(2)}`],
-    ["Costo MM NO", `$${costNo.toFixed(2)}`],
-    ["Total a descontar de tu balance", `$${total.toFixed(2)}`],
-    ["💡 Capital a recuperar al ejecutarse", `$${spreadGain.toFixed(2)}`],
+    ["Precio SÍ / NO",        `${pct(price)} / ${pct(priceNo)}`],
+    ["Shares SÍ (MM)",        `${sharesYes} shares · ${usd(costYes)}`],
+    ["Shares NO (MM)",        `${sharesNo} shares · ${usd(costNo)}`],
+    ["Total invertido",       usd(total)],
+    ["Retorno si gana SÍ",    `${usd(retIfYes)} (neto ${netIfYes>=0?"+":""}${usd(netIfYes)})`],
+    ["Retorno si gana NO",    `${usd(retIfNo)}  (neto ${netIfNo>=0?"+":""}${usd(netIfNo)})`],
+    ["⚠️ Pérdida máx. real",  maxLossAbs>0 ? `-${usd(maxLossAbs)}` : "Sin pérdida (ambos lados cubiertos)"],
+    ["📈 Break-even volumen", maxLossAbs>0 ? fmtVol(breakEvenVol) : "Ya cubierto"],
   ];
 
   return`<div style="background:var(--card2);border-radius:12px;padding:14px 16px;margin-top:4px;border:1px solid var(--border)">
     <div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:10px">
-      📊 Resumen del Market Maker inicial
+      📊 Resumen del Market Maker
     </div>
-    ${rows.map(([label,val],i)=>
-      `<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;
+    ${rows.map(([label,val],i)=>{
+      const isWarning = label.includes("⚠️");
+      const isBreak   = label.includes("📈");
+      return `<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;
         ${i<rows.length-1?"border-bottom:1px solid var(--border);":""}">
-        <span style="font-size:12px;color:${label.includes("💡")?"var(--yes)":"var(--muted)"};">${label}</span>
-        <span style="font-size:13px;font-weight:800;color:${label.includes("💡")?"var(--yes)":"var(--text)"};">${val}</span>
-      </div>`
-    ).join("")}
-    <div style="margin-top:8px;padding:8px;background:${balance>=total?"rgba(0,168,112,.06)":"rgba(224,40,74,.06)"};
-        border-radius:8px;border-left:3px solid ${balance>=total?"var(--yes)":"var(--no)"}">
-      <div style="font-size:11px;color:${balance>=total?"var(--yes)":"var(--no)"};font-weight:700;margin-bottom:2px">
-        ${balance>=total?"✅ Tienes saldo suficiente":"❌ Saldo insuficiente"}
-      </div>
-      <div style="font-size:11px;color:var(--muted)">
-        Tu balance: $${balance.toFixed(2)} · Necesitas: $${total.toFixed(2)}
-        ${balance<total?` · Falta: $${(total-balance).toFixed(2)}`:""}
+        <span style="font-size:12px;color:${isWarning?"var(--no)":isBreak?"var(--accent)":"var(--muted)"};">${label}</span>
+        <span style="font-size:12px;font-weight:700;color:${isWarning?"var(--no)":isBreak?"var(--accent)":"var(--text)"};">${val}</span>
+      </div>`;
+    }).join("")}
+    <div style="margin-top:8px;padding:8px;background:${canAfford?"rgba(0,168,112,.06)":"rgba(224,40,74,.06)"};
+        border-radius:8px;border-left:3px solid ${canAfford?"var(--yes)":"var(--no)"}">
+      <div style="font-size:11px;color:${canAfford?"var(--yes)":"var(--no)"};font-weight:700;">
+        ${canAfford?"✅ Saldo suficiente":"❌ Saldo insuficiente"} · Balance: ${usd(balance)} · Necesitas: ${usd(total)}
       </div>
     </div>
   </div>`;
@@ -8226,22 +8303,79 @@ function renderAdminResolve(){
     const borderStyle = m.manualPaused ? ";border-color:#f59e0b;border-width:2px"
       : m.oracleLocked ? ";border-color:#ef0027;border-width:2px" : "";
 
+    // MM data from STATE
+    const adminUser = STATE.users.find(u=>u.role==="admin");
+    const adminId   = adminUser?.id;
+    const adminPos  = adminId ? (STATE.users.find(u=>u.id===adminId)?.positions?.[m.id]||{}) : {};
+    const mmYes     = adminPos.YES || 0;
+    const mmNo      = adminPos.NO  || 0;
+    // Invested = seedLiquidity (lo que el admin puso al crear)
+    const invested  = m.seedLiquidity || 0;
+    // Spreads recaudados
+    const spreads   = m.spreadPool || 0;
+    // Retorno si gana SÍ: shares SÍ del admin × $0.98
+    const retIfYes  = Math.round(mmYes * 0.98 * 100) / 100;
+    // Retorno si gana NO: shares NO del admin × $0.98
+    const retIfNo   = Math.round(mmNo  * 0.98 * 100) / 100;
+    // P&L actual (mark-to-market): valor actual de posición - inversión
+    const posValueNow = mmYes * pYes + mmNo * pNo;
+    const pnl = Math.round((posValueNow - invested + spreads) * 100) / 100;
+    const pnlColor = pnl >= 0 ? "var(--yes)" : "var(--no)";
+
     return `<div class="card" style="margin-bottom:12px${borderStyle}">
       <div style="display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap">
         <div style="flex:1;min-width:0">
           <div style="font-weight:700;font-size:14px;margin-bottom:4px">${escHtml(m.title)}</div>
-          <div class="market-meta">
+          <div class="market-meta" style="margin-bottom:8px">
             <span>SÍ: <strong style="color:var(--yes)">${pct(pYes)}</strong></span>
             <span>NO: <strong style="color:var(--no)">${pct(pNo)}</strong></span>
             <span>Vol: ${fmtVol(m.totalVolume)}</span>
-            <span>Fee: ${usd(m.spreadPool||0)}</span>
             <span>${timeLeft(m.closesAt)}</span>
             ${oracleTag}
           </div>
-          ${m.manualPaused?`<div style="color:#f59e0b;font-size:12px;font-weight:700;margin-top:4px">⏸ ${m.pauseReason||"Pausado"}</div>`:""}
-          ${m.oracleLocked?`<div style="color:var(--no);font-size:12px;font-weight:700;margin-top:4px">🔒 Oracle bloqueado: ${escHtml(m.pauseReason||"")}</div>`:""}
+
+          <!-- Datos MM en tiempo real -->
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;font-size:11px;margin-top:4px">
+            <div style="background:var(--card2);border-radius:6px;padding:5px 8px">
+              <div style="color:var(--muted);margin-bottom:1px">Spreads</div>
+              <div style="font-weight:700;color:var(--yes)">${usd(spreads)}</div>
+            </div>
+            <div style="background:var(--card2);border-radius:6px;padding:5px 8px">
+              <div style="color:var(--muted);margin-bottom:1px">Invertido MM</div>
+              <div style="font-weight:700;color:var(--text)">${usd(invested)}</div>
+            </div>
+            <div style="background:var(--yes-bg);border-radius:6px;padding:5px 8px">
+              <div style="color:var(--muted);margin-bottom:1px">Shares SÍ (MM)</div>
+              <div style="font-weight:700;color:var(--yes)">${mmYes.toFixed(1)}</div>
+              <div style="color:var(--muted);font-size:9px">→ ${usd(retIfYes)} si gana SÍ</div>
+            </div>
+            <div style="background:var(--no-bg);border-radius:6px;padding:5px 8px">
+              <div style="color:var(--muted);margin-bottom:1px">Shares NO (MM)</div>
+              <div style="font-weight:700;color:var(--no)">${mmNo.toFixed(1)}</div>
+              <div style="color:var(--muted);font-size:9px">→ ${usd(retIfNo)} si gana NO</div>
+            </div>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;font-size:11px;margin-top:6px">
+            <div style="background:var(--card2);border-radius:6px;padding:5px 8px">
+              <div style="color:var(--muted);margin-bottom:1px">P&L actual (MM)</div>
+              <div style="font-weight:700;color:${pnlColor}">${pnl>=0?"+":""}${usd(pnl)}</div>
+            </div>
+            <div style="background:var(--yes-bg);border-radius:6px;padding:5px 8px">
+              <div style="color:var(--muted);margin-bottom:1px">Retorno si SÍ gana</div>
+              <div style="font-weight:700;color:var(--yes)">${usd(retIfYes + spreads)}</div>
+              <div style="color:var(--muted);font-size:9px">${usd(retIfYes+spreads-invested)} neto</div>
+            </div>
+            <div style="background:var(--no-bg);border-radius:6px;padding:5px 8px">
+              <div style="color:var(--muted);margin-bottom:1px">Retorno si NO gana</div>
+              <div style="font-weight:700;color:var(--no)">${usd(retIfNo + spreads)}</div>
+              <div style="color:var(--muted);font-size:9px">${usd(retIfNo+spreads-invested)} neto</div>
+            </div>
+          </div>
+
+          ${m.manualPaused?`<div style="color:#f59e0b;font-size:12px;font-weight:700;margin-top:6px">⏸ ${m.pauseReason||"Pausado"}</div>`:""}
+          ${m.oracleLocked?`<div style="color:var(--no);font-size:12px;font-weight:700;margin-top:6px">🔒 Oracle bloqueado: ${escHtml(m.pauseReason||"")}</div>`:""}
         </div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;flex-shrink:0">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;flex-shrink:0;align-items:flex-start">
           ${showUnlock?`<button class="btn-ghost" style="font-size:12px;padding:5px 12px;color:#f59e0b;border-color:#f59e0b"
             onclick="adminUnlockMarket('${m.id}')">🔓 Desbloquear</button>`:""}
           ${m.manualPaused?`<button class="btn-ghost" style="font-size:12px;padding:5px 12px"
