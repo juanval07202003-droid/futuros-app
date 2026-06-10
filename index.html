@@ -7066,6 +7066,11 @@ function buildPreviewHtml(preview,isBuy){
         <span style="color:var(--muted)">${t("trade_exit_price")}</span>
         <span>${pct(preview.exitPrice)}</span>
       </div>
+      <div style="margin-top:10px;padding:8px 10px;background:rgba(255,193,7,.08);border-radius:8px;
+          border:1px solid rgba(255,193,7,.25);font-size:11px;color:#b8860b;line-height:1.4">
+        ⚠️ La venta requiere un comprador real — si no hay contraparte, la orden queda en el libro esperando.
+        No interviene el Market Maker. El spread del 3% se cobra en USD directamente al admin.
+      </div>
     </div>`;
   }
 }
@@ -7451,10 +7456,14 @@ async function executeTrade(){
       recordBuyTime(u.id, marketId);
       closeTradeModal(); render();
 
-      const msg = netShares > 0
-        ? `✅ ${netShares.toFixed(2)} shares ${side} · pagaste ${usd(dollars)}`
-        : `⏳ Orden en libro — sin contraparte disponible`;
-      notify(msg);
+      const orderId = rpcData.order_id;
+      if(netShares > 0 && !orderId){
+        notify(`✅ ${netShares.toFixed(2)} shares ${side} · pagaste ${usd(dollars)}`);
+      } else if(netShares > 0 && orderId){
+        notify(`✅ ${netShares.toFixed(2)} shares ${side} recibidos · resto en libro esperando contraparte`);
+      } else {
+        notify(`⏳ Orden en libro — esperando contraparte para ${usd(dollars)} en ${side}`,"info");
+      }
 
     }catch(err){
       notify("Error inesperado: "+(err?.message||err),"error");
@@ -7510,7 +7519,7 @@ async function executeTrade(){
       if(idx>=0) STATE.markets[idx]=nm;
 
       const txSell={id:"tx_"+genId(),type:"withdrawal",amount:netReturn,network:"internal",
-        description:`Venta ${side} ${shares.toFixed(2)} shares → ${usd(netReturn)} (spread 3%)`,
+        description:`Venta ${side} ${shares.toFixed(2)} shares → ${usd(netReturn)} · spread 3% cobrado en USD al admin`,
         date:new Date().toISOString(),status:"confirmed"};
       await dbSaveTransaction(u.id, txSell);
 
@@ -7538,7 +7547,15 @@ async function executeTrade(){
       }
 
       closeTradeModal(); render();
-      notify(`✅ Vendiste ${shares.toFixed(2)} shares ${side} · recibiste ${usd(netReturn)}`);
+
+      const sellOrderId = sellData.order_id;
+      if(netReturn > 0 && !sellOrderId){
+        notify(`✅ Vendiste ${shares.toFixed(2)} shares ${side} · recibiste ${usd(netReturn)}`);
+      } else if(netReturn > 0 && sellOrderId){
+        notify(`✅ Venta parcial · recibiste ${usd(netReturn)} · ${shares.toFixed(2)} shares en libro esperando comprador`);
+      } else {
+        notify(`⏳ Orden de venta en libro — esperando comprador real para ${shares.toFixed(2)} shares ${side}`,"info");
+      }
 
     }catch(err){
       notify("Error al vender: "+(err?.message||err),"error");
