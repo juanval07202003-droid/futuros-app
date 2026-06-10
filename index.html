@@ -9205,9 +9205,12 @@ async function adminCreateMarket(){
   // 2. Colocar órdenes MM en ambos lados via RPC
   let mmErrors = [];
 
+  // Cast user_id to string UUID format for RPC
+  const adminUid = String(u.id);
+
   const {data:mmYes, error:errYes} = await db.rpc("place_mm_order",{
-    p_market_id: m.id,
-    p_user_id:   u.id,
+    p_market_id: String(m.id),
+    p_user_id:   adminUid,
     p_side:      "YES",
     p_price:     mmPrice,
     p_shares:    sharesYes,
@@ -9215,15 +9218,15 @@ async function adminCreateMarket(){
   if(errYes || mmYes?.error) mmErrors.push("SÍ: "+(errYes?.message||mmYes?.error));
 
   const {data:mmNo, error:errNo} = await db.rpc("place_mm_order",{
-    p_market_id: m.id,
-    p_user_id:   u.id,
+    p_market_id: String(m.id),
+    p_user_id:   adminUid,
     p_side:      "NO",
     p_price:     1 - mmPrice,
     p_shares:    sharesNo,
   });
   if(errNo || mmNo?.error) mmErrors.push("NO: "+(errNo?.message||mmNo?.error));
 
-  // 3. Actualizar balance local
+  // 3. Actualizar balance local (ya place_mm_order descuenta en DB, sincronizamos STATE)
   const ui = STATE.users.findIndex(x=>x.id===u.id);
   if(ui>=0) STATE.users[ui] = {...STATE.users[ui], balance: Math.max(0,(STATE.users[ui].balance||0)-totalCost)};
 
@@ -9234,8 +9237,9 @@ async function adminCreateMarket(){
 
   if(mmErrors.length){
     notify(`Mercado creado pero hubo errores en MM: ${mmErrors.join(" · ")}`, "error");
+    console.error("[MM Errors]", mmErrors);
   } else {
-    notify(`✅ Mercado creado · MM: ${sharesYes} shares SÍ @ ${pct(mmPrice)} + ${sharesNo} shares NO @ ${pct(1-mmPrice)}`);
+    notify(`✅ Mercado "${m.title.slice(0,30)}" creado · ${sharesYes} shares SÍ + ${sharesNo} shares NO`);
   }
   render();
 }
