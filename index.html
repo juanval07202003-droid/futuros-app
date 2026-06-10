@@ -373,7 +373,7 @@ option{background:var(--card);}
 .stats-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px;}
 .prob-bar{height:5px;border-radius:5px;background:var(--card2);overflow:hidden;margin-bottom:10px;}
 .prob-bar-fill{height:100%;background:linear-gradient(90deg,#0098a8,#0055a8);border-radius:5px;transition:width .4s;}
-.filter-row{display:flex;gap:8px;margin-bottom:24px;flex-wrap:wrap;justify-content:center;}
+.filter-row{display:flex;gap:8px;margin-bottom:24px;overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch;flex-wrap:nowrap;}
 .market-search-wrap{position:relative;margin-bottom:16px;}
 .market-search-input{
   width:100%;padding:11px 16px 11px 42px;
@@ -1750,6 +1750,11 @@ const CAT_SVG={
     <circle cx="12" cy="6" r="3" stroke="${color}" stroke-width="1.8"/>
     <path d="M12 4V8M10.5 5.5H13" stroke="${color}" stroke-width="1.4" stroke-linecap="round"/>
   </svg>`,
+  Política: (color,size=14)=>`<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <circle cx="12" cy="8" r="4" stroke="${color}" stroke-width="1.8"/>
+    <path d="M4 20c0-4 3.6-7 8-7s8 3 8 7" stroke="${color}" stroke-width="1.8" stroke-linecap="round"/>
+    <path d="M16 3l1.5 1.5M8 3L6.5 4.5M12 2V1" stroke="${color}" stroke-width="1.6" stroke-linecap="round"/>
+  </svg>`,
   Cultura: (color,size=14)=>`<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path d="M9 18V6L21 4V16" stroke="${color}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
     <circle cx="6" cy="18" r="3" stroke="${color}" stroke-width="1.8"/>
@@ -1762,10 +1767,6 @@ const CAT_SVG={
     <path d="M12 18V20" stroke="${color}" stroke-width="1.8" stroke-linecap="round"/>
     <path d="M7 9L9 11L7 13" stroke="${color}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
     <path d="M11 13H15" stroke="${color}" stroke-width="1.6" stroke-linecap="round"/>
-  </svg>`,
-  Política: (color,size=14)=>`<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-    <path d="M3 21L12 3L21 21" stroke="${color}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
-    <path d="M6 15H18" stroke="${color}" stroke-width="1.8" stroke-linecap="round"/>
   </svg>`,
   Todos: (color,size=14)=>`<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
     <circle cx="12" cy="12" r="10" stroke="${color}" stroke-width="1.8"/>
@@ -2853,10 +2854,12 @@ function renderSearchPanel(){
     {id:"Breaking", label:en?"Breaking":"Última hora",icon:`<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 4H20V6H4z"/><path d="M4 8H14M4 11H11"/><circle cx="18" cy="17" r="4"/><path d="M18 15V17L19.5 18.5"/></svg>`},
   ];
   const topicCats = [
-    {id:"Deportes",   label:en?"Sports":"Deportes",   color:"#00b4d8"},
-    {id:"Economía",   label:en?"Economy":"Economía",  color:"#ffc800"},
-    {id:"Cultura",    label:en?"Culture":"Cultura",   color:"#c864ff"},
-    {id:"Tecnología", label:en?"Tech":"Tecnología",   color:"#00e5a0"},
+    {id:"Todos",      label:en?"All":"Todos",          color:"#00e5a0"},
+    {id:"Deportes",   label:en?"Sports":"Deportes",    color:"#00b4d8"},
+    {id:"Economía",   label:en?"Economy":"Economía",   color:"#ffc800"},
+    {id:"Política",   label:en?"Politics":"Política",  color:"#ff6b35"},
+    {id:"Cultura",    label:en?"Culture":"Cultura",    color:"#c864ff"},
+    {id:"Tecnología", label:en?"Tech":"Tecnología",    color:"#00e5a0"},
   ];
   const browseTopicsHtml =
     '<div style="margin-bottom:20px">'
@@ -2897,9 +2900,9 @@ function getAutoTrendingIds(){
 }
 
 function renderHome(){
-  const catKeys=["all","sports","economy","culture","tech"];
-  const catIds=["Todos","Deportes","Economía","Cultura","Tecnología"];
-  const catLabels=catKeys.map(k=>t("cat_"+k));
+  const en = STATE.lang==="en";
+  const catIds=["Todos","Deportes","Economía","Política","Cultura","Tecnología"];
+  const catLabels={Todos:en?"All":"Todos",Deportes:en?"Sports":"Deportes",Economía:en?"Economy":"Economía",Política:en?"Politics":"Política",Cultura:en?"Culture":"Cultura",Tecnología:en?"Tech":"Tecnología"};
   const filtered = STATE.markets.filter(m => {
     let catMatch;
     if(STATE.filterCat==="Breaking")  catMatch = STATE.breakingIds.includes(m.id);
@@ -3022,7 +3025,7 @@ function renderHome(){
 
   <!-- Categorías debajo del buscador — incluye Breaking y Trending -->
   <div style="display:flex;gap:0;border-bottom:2px solid var(--border);margin-bottom:20px;overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch;">
-    ${[...catIds.map((c,i)=>({id:c,label:catLabels[i],count:c!=="Todos"?STATE.markets.filter(m=>m.category===c&&!m.resolved).length:null})),
+    ${[...catIds.map((c)=>({id:c,label:catLabels[c]||c,count:c!=="Todos"?STATE.markets.filter(m=>m.category===c&&!m.resolved).length:null})),
        {id:"Breaking",label:(STATE.lang==="en"?"Breaking":"Última hora"),count:STATE.breakingIds.length||null},
        {id:"Trending",label:(STATE.lang==="en"?"Trending":"Tendencias"),count:STATE.trendingIds.length||null},
     ].map(tab=>`
@@ -3107,8 +3110,7 @@ function clearMarketSearch(){STATE.marketSearch="";render();}
 function updateMarketSearch(val){
   STATE.marketSearch = val;
   // Actualizar solo el grid y el contador — sin re-renderizar el input
-  const catKeys=["all","sports","economy","culture","tech"];
-  const catIds=["Todos","Deportes","Economía","Cultura","Tecnología"];
+  const catIds=["Todos","Deportes","Economía","Política","Cultura","Tecnología"];
   const q = val.toLowerCase().trim();
   const filtered = STATE.markets.filter(m=>{
     const catMatch = STATE.filterCat==="Todos"||m.category===STATE.filterCat;
@@ -7934,7 +7936,7 @@ function renderAdminMarkets(){
   <div class="form-grid">
     <div class="full"><label class="lbl">${t("admin_title_field")}</label><input class="inp" type="text" value="${escHtml(f.title)}" placeholder="¿Quién ganará...?" oninput="STATE.mkForm.title=this.value;document.getElementById('mk-prev').innerHTML=getMkPreview()"/></div>
     <div class="full"><label class="lbl">Título en inglés <span style="color:var(--muted);font-weight:400">(opcional)</span></label><input class="inp" type="text" value="${escHtml(f.title_en||'')}" placeholder="Who will win...?" oninput="STATE.mkForm.title_en=this.value"/></div>
-    <div><label class="lbl">${t("admin_category")}</label><select class="inp" onchange="STATE.mkForm.category=this.value;document.getElementById('mk-prev').innerHTML=getMkPreview()">${["Deportes","Economía","Cultura","Tecnología"].map(c=>`<option${f.category===c?" selected":""}>${c}</option>`).join("")}</select></div>
+    <div><label class="lbl">${t("admin_category")}</label><select class="inp" onchange="STATE.mkForm.category=this.value;document.getElementById('mk-prev').innerHTML=getMkPreview()">${["Deportes","Economía","Política","Cultura","Tecnología"].map(c=>`<option${f.category===c?" selected":""}>${c}</option>`).join("")}</select></div>
     <div><label class="lbl">${t("admin_emoji")}</label><input class="inp" value="${escHtml(f.emoji)}" oninput="STATE.mkForm.emoji=this.value;document.getElementById('mk-prev').innerHTML=getMkPreview()"/></div>
     <div class="full">
       <label class="lbl">Imagen del mercado <span style="color:var(--muted);font-weight:400">(opcional · aparece en la card)</span></label>
