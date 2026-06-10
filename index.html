@@ -194,9 +194,12 @@ button:active{transform:scale(.97);}
 .market-detail-grid{display:grid;grid-template-columns:1fr 320px;gap:24px;align-items:start;}
 .market-right-sticky{position:sticky;top:80px;}
 @media(max-width:900px){
-  .market-detail-grid{grid-template-columns:1fr;}
+  .market-detail-grid{grid-template-columns:1fr;gap:16px;}
   .market-detail-grid .market-right-panel{order:-1;}
   .market-right-sticky{position:static;}
+}
+@media(max-width:680px){
+  .market-detail-grid{gap:12px;}
 }
 .trade-inline-tabs{display:flex;gap:0;border-bottom:2px solid var(--border);margin-bottom:16px;}
 .trade-inline-tab{flex:1;padding:10px;font-size:14px;font-weight:700;cursor:pointer;border:none;background:transparent;font-family:inherit;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;transition:all .15s;}
@@ -812,6 +815,7 @@ td{padding:12px;vertical-align:middle;color:var(--text-2);}
 
   /* ── Layout general ── */
   .container,.container-sm,.container-xs{padding:14px 12px;}
+  .fade-up{overflow-x:hidden;}
 
   /* ── Hero ── */
   .hero{margin-bottom:18px;padding-top:4px;}
@@ -1122,7 +1126,7 @@ input, select, textarea{
 // ═══════════════════════════════════════════════════════════════════
 const ENTRY_SPREAD      = 0.02;  // 2% al comprar shares
 const EXIT_SPREAD       = 0.02;  // 2% al resolver si ganas
-const EARLY_SELL_SPREAD = 0.04;  // 4% si vendes antes de resolución
+const EARLY_SELL_SPREAD = 0.03;  // 3% si vendes antes de resolución
 const PRICE_MIN         = 0.01;  // precio mínimo 1%
 const PRICE_MAX         = 0.99;  // precio máximo 99%
 
@@ -1806,13 +1810,20 @@ function getPrice(mkt, side){
   return side === "YES" ? p : 1 - p;
 }
 
+// ── Spread dinámico: 3% si el lado comprado ≥ 75%, 2% si no ──────
+function getDynamicSpread(mkt, side){
+  const price = getPrice(mkt, side);
+  return price >= 0.75 ? 0.03 : ENTRY_SPREAD;
+}
+
 // ── Shares recibidos al comprar ───────────────────────────────────
 function sharesFromCost(mkt, side, dollars){
   if(dollars <= 0) return 0;
   const poolYes = Math.max(0.01, mkt.qYes || 1);
   const poolNo  = Math.max(0.01, mkt.qNo  || 1);
   const total   = poolYes + poolNo;
-  const net     = dollars * (1 - ENTRY_SPREAD);
+  const spread  = getDynamicSpread(mkt, side);
+  const net     = dollars * (1 - spread);
   if(net <= 0) return 0;
   const poolSide   = side==="YES" ? poolYes : poolNo;
   const priceBefore = Math.min(PRICE_MAX, Math.max(PRICE_MIN, poolSide / total));
@@ -1821,7 +1832,7 @@ function sharesFromCost(mkt, side, dollars){
   return net / avgPrice;
 }
 
-// ── Retorno de venta anticipada (4% spread) ───────────────────────
+// ── Retorno de venta anticipada (3% spread) ───────────────────────
 function calcSellReturn(mkt, side, netShares){
   if(netShares <= 0) return 0;
   const poolYes = Math.max(0.01, mkt.qYes || 1);
@@ -4508,16 +4519,13 @@ function renderMarket(){
   // ── Order book snapshot ───────────────────────────────────────────
 
   return`<div class="fade-up" style="max-width:1100px;margin:0 auto;padding:0 16px">
-  <button class="btn-ghost" style="padding:6px 14px;font-size:13px;margin-bottom:20px" onclick="navigate('home')">← ${t("nav_home")}</button>
-
   <!-- TÍTULO + META -->
   <div style="margin-bottom:20px">
     ${mkCatTag(m.category,cc)}
     <h1 style="font-size:clamp(20px,3vw,28px);font-weight:900;margin:8px 0 12px;line-height:1.25;color:var(--text)">${escHtml(mTitle(m))}</h1>
     <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;font-size:13px;color:var(--muted)">
-      <span>📊 Vol: <strong style="color:var(--text)">${fmtVol(m.totalVolume)}</strong></span>
+      <span>📊 Vol: <strong style="color:var(--text)">${fmtVol((m.totalVolume||0)+(m.seedLiquidity||0))}</strong></span>
       <span>⏱ ${timeLeft(m.closesAt)}</span>
-      <span>💰 Fee: <strong style="color:var(--yes)">${usd(m.spreadPool||0)}</strong></span>
       ${u?`<span>📌 ${t("detail_yes")}: <strong style="color:var(--yes)">${(pos.YES||0).toFixed(2)}</strong> · ${t("detail_no")}: <strong style="color:var(--no)">${(pos.NO||0).toFixed(2)}</strong></span>`:""}
     </div>
   </div>
@@ -4599,7 +4607,7 @@ function renderMarket(){
             </div>
           </div>
           <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);display:flex;justify-content:space-between;font-size:11px;color:var(--muted)">
-            <span>Spread: ${(ENTRY_SPREAD*100).toFixed(0)}% entrada · ${(EARLY_SELL_SPREAD*100).toFixed(0)}% venta anticipada</span>
+            
             <span>Pool total: ${usd((m.qYes||0)+(m.qNo||0))}</span>
             <span>Fee acumulado: ${usd(m.spreadPool||0)}</span>
           </div>`;
@@ -4637,24 +4645,16 @@ function renderMarket(){
               ${renderInlineTrade(m, 'YES', 'buy', u, pos)}
             </div>`}
 
-        <!-- Pool info -->
+        <!-- Market info -->
         <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:12px">
             <div>
-              <div style="color:var(--muted)">Pool SÍ</div>
-              <div style="font-weight:700;color:var(--text)">${usd(m.qYes||0)}</div>
-            </div>
-            <div>
-              <div style="color:var(--muted)">Pool NO</div>
-              <div style="font-weight:700;color:var(--text)">${usd(m.qNo||0)}</div>
-            </div>
-            <div>
-              <div style="color:var(--muted)">Fee (3%)</div>
-              <div style="font-weight:700;color:var(--yes)">${usd(m.spreadPool||0)}</div>
-            </div>
-            <div>
               <div style="color:var(--muted)">Volumen</div>
-              <div style="font-weight:700;color:var(--text)">${fmtVol(m.totalVolume)}</div>
+              <div style="font-weight:700;color:var(--text)">${fmtVol((m.totalVolume||0)+(m.seedLiquidity||0))}</div>
+            </div>
+            <div>
+              <div style="color:var(--muted)">Liquidez MM</div>
+              <div style="font-weight:700;color:var(--accent)">${usd(m.seedLiquidity||0)}</div>
             </div>
           </div>
         </div>
@@ -7032,44 +7032,23 @@ function buildPreviewHtml(preview,isBuy){
           padding-bottom:12px;margin-bottom:12px;border-bottom:1px solid rgba(0,168,112,.15)">
         <span style="color:var(--muted);font-size:13px">${t("preview_shares_receive")}</span>
         <div style="text-align:right">
-          <div style="font-size:24px;font-weight:900;color:var(--text);letter-spacing:-.5px">${preview.shares.toFixed(2)}</div>
-          <div style="font-size:11px;color:var(--muted)">${side} ${t("shares_label")}</div>
+          <div style="font-size:32px;font-weight:900;color:var(--text);letter-spacing:-.5px">${preview.shares.toFixed(2)}</div>
+          <div style="font-size:12px;color:var(--muted);font-weight:600">${side} shares</div>
         </div>
       </div>
 
-      <div style="display:flex;flex-direction:column;gap:8px;font-size:13px">
-        <div style="display:flex;justify-content:space-between">
-          <span style="color:var(--muted)">Avg. Price (con impacto)</span>
-          <span style="font-weight:700">${pct(preview.avgPrice||preview.entryPrice)}</span>
-        </div>
-        <div style="display:flex;justify-content:space-between">
-          <span style="color:var(--muted)">Fee entrada (2%)</span>
-          <span style="color:var(--no)">−${usd(preview.entrySpreadAmt||preview.spreadAmt*0.5)}</span>
-        </div>
-        <div style="display:flex;justify-content:space-between">
-          <span style="color:var(--muted)">Fee salida si ganas (2%)</span>
-          <span style="color:var(--no)">−${usd(preview.exitSpreadAmt||preview.spreadAmt*0.5)}</span>
-        </div>
-        <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);
-            padding:6px 8px;background:rgba(224,40,74,.05);border-radius:8px">
-          <span>Total fees (4% del ciclo)</span>
-          <span style="color:var(--no);font-weight:700">−${usd(preview.totalSpreadAmt||preview.spreadAmt)}</span>
-        </div>
-        <div style="height:1px;background:rgba(0,168,112,.15);margin:2px 0"></div>
-
-        <div style="display:flex;justify-content:space-between;align-items:center;
-            background:rgba(0,229,160,.06);border-radius:10px;padding:12px 14px;
-            border:1.5px solid rgba(0,229,160,.2)">
-          <div>
-            <div style="font-weight:700;color:var(--text);font-size:13px">Recibirías si ${side} gana 💰</div>
-            <div style="font-size:11px;color:var(--muted);margin-top:2px">
-              ${preview.shares.toFixed(2)} shares × $0.98 · ROI <strong style="color:${parseFloat(roi)>=0?"var(--yes)":"var(--no)"}">+${roi}%</strong>
-            </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;
+          background:rgba(0,229,160,.06);border-radius:10px;padding:12px 14px;
+          border:1.5px solid rgba(0,229,160,.2)">
+        <div>
+          <div style="font-weight:700;color:var(--text);font-size:13px">Si ${side} gana 💰</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:2px">
+            ROI <strong style="color:${parseFloat(roi)>=0?"var(--yes)":"var(--no)"}">${parseFloat(roi)>=0?"+":""}${roi}%</strong>
           </div>
-          <div style="text-align:right">
-            <div style="font-size:22px;font-weight:900;color:var(--yes);letter-spacing:-.5px">${usd(preview.potentialWin)}</div>
-            <div style="font-size:11px;color:var(--yes);font-weight:700">neto exacto</div>
-          </div>
+        </div>
+        <div style="text-align:right">
+          <div style="font-size:22px;font-weight:900;color:var(--yes);letter-spacing:-.5px">${usd(preview.potentialWin)}</div>
+          <div style="font-size:11px;color:var(--yes);font-weight:700">neto</div>
         </div>
       </div>
     </div>`;
@@ -7084,11 +7063,6 @@ function buildPreviewHtml(preview,isBuy){
         <span style="color:var(--muted)">${t("trade_exit_price")}</span>
         <span>${pct(preview.exitPrice)}</span>
       </div>
-      <div class="preview-row">
-        <span style="color:var(--muted)">Fee venta anticipada (4%)</span>
-        <span style="color:var(--no)">−${usd(preview.spreadAmt||0)}</span>
-      </div>
-      <div class="preview-note">Venta antes de resolución · spread 4%</div>
     </div>`;
   }
 }
@@ -7131,9 +7105,10 @@ function calcTradePreview(){
     const total   = poolYes + poolNo;
     const poolSide = side==="YES" ? poolYes : poolNo;
 
-    // 2% spread de entrada (ENTRY_SPREAD)
-    const entrySpreadAmt = dollars * ENTRY_SPREAD;
-    const net = dollars * (1 - ENTRY_SPREAD);
+    // Spread dinámico: 2% normal, 3% si precio ≥ 75%
+    const entrySpread    = getDynamicSpread(m, side);
+    const entrySpreadAmt = dollars * entrySpread;
+    const net = dollars * (1 - entrySpread);
 
     // Precio promedio de ejecución
     const priceBefore = Math.min(PRICE_MAX, Math.max(PRICE_MIN, poolSide / total));
@@ -7142,13 +7117,12 @@ function calcTradePreview(){
 
     const netShares = net / avgPrice;
 
-    // Ganancia potencial si gana: shares × $0.98 (descontando 2% de salida)
-    // Se muestra el neto real que recibirías = shares × (1 - EXIT_SPREAD)
-    const grossWin     = netShares;                            // shares × $1 si gana
-    const exitSpreadAmt= grossWin * EXIT_SPREAD;              // 2% al resolver
-    const potentialWin = Math.round((grossWin - exitSpreadAmt) * 100) / 100;  // neto real
+    // Ganancia potencial: shares × $1 - 2% exit spread al resolver
+    const grossWin        = netShares;
+    const exitSpreadAmt   = grossWin * EXIT_SPREAD;
+    const potentialWin    = Math.round((grossWin - exitSpreadAmt) * 100) / 100;
     const potentialProfit = potentialWin - dollars;
-    const totalSpreadAmt  = entrySpreadAmt + exitSpreadAmt;   // 4% total
+    const totalSpreadAmt  = entrySpreadAmt + exitSpreadAmt;
     const totalSpreadPct  = ((totalSpreadAmt / dollars) * 100);
     const roi = dollars > 0 ? ((potentialProfit / dollars) * 100).toFixed(1) : "0.0";
 
@@ -7157,7 +7131,7 @@ function calcTradePreview(){
       shares: netShares,
       rawShares: netShares,
       entryPrice: priceBefore,
-      avgPrice: avgPrice / (1 - ENTRY_SPREAD),  // precio efectivo con spread
+      avgPrice: avgPrice / (1 - entrySpread),
       newPrice: priceAfter,
       potentialProfit,
       potentialWin,
@@ -7167,12 +7141,13 @@ function calcTradePreview(){
       totalSpreadPct,
       spreadAmt: totalSpreadAmt,
       spreadPct: totalSpreadPct,
+      entrySpread,  // para mostrar en UI
       maxBet,
       overMax: false
     };
 
   } else {
-    // Venta anticipada — spread 4%
+    // Venta anticipada — spread 3%
     const shares = parseFloat(STATE.tradeShares);
     if(!shares || shares <= 0) return null;
     const ret = calcSellReturn(m, side, shares);
@@ -7556,7 +7531,7 @@ async function executeTrade(){
       const newPos={...(u.positions[marketId]||{YES:0,NO:0})};
       newPos[side]=Math.max(0,(newPos[side]||0)-shares);
       const txSell={id:"tx_"+genId(),type:"withdrawal",amount:netReturn,network:"internal",
-        description:`Venta ${side} ${shares.toFixed(2)} shares → ${usd(netReturn)} (spread 4%)`,
+        description:`Venta ${side} ${shares.toFixed(2)} shares → ${usd(netReturn)} (spread 3%)`,
         date:new Date().toISOString(),status:"confirmed"};
 
       const uiNow=STATE.users.findIndex(x=>x.id===u.id);
@@ -7999,7 +7974,7 @@ function renderAdminMarkets(){
       <div style="font-weight:700;font-size:13px;color:var(--text);margin-bottom:4px">🤖 Market Maker inicial</div>
       <div style="font-size:12px;color:var(--muted);margin-bottom:14px">
         Tu inventario inicial en ambos lados. Define el precio de partida y permite compras desde el primer segundo.
-        Tu balance se descuenta — lo recuperas cuando se ejecuten las órdenes + el 2% de spread.
+        Tu balance se descuenta — lo recuperas cuando se ejecuten las órdenes. El spread (2–3% entrada, 3% venta anticipada) se acredita a tu posición en shares.
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
         <div>
@@ -8184,7 +8159,7 @@ function getMkPreview(){
     ["Costo MM SÍ", `$${costYes.toFixed(2)}`],
     ["Costo MM NO", `$${costNo.toFixed(2)}`],
     ["Total a descontar de tu balance", `$${total.toFixed(2)}`],
-    ["💡 Spread ganado si todo se ejecuta (2%)", `$${spreadGain.toFixed(2)}`],
+    ["💡 Capital a recuperar al ejecutarse", `$${spreadGain.toFixed(2)}`],
   ];
 
   return`<div style="background:var(--card2);border-radius:12px;padding:14px 16px;margin-top:4px;border:1px solid var(--border)">
