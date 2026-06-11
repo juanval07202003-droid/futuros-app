@@ -2678,7 +2678,9 @@ function render(){
     case"home":     app.innerHTML=renderHome();     break;
     case"feed":     app.innerHTML=renderFeed();     dbLoadFeed(); break;
     case"auth":     app.innerHTML=renderAuth();     bindAuth(); break;
-    case"market":   app.innerHTML=renderMarket();   break;
+    case"market":   app.innerHTML=renderMarket();
+      (()=>{const mu=getUser(),mm=getMarket(STATE.selectedMarket);if(mu&&mm)setTimeout(()=>loadPendingOrders(mm.id),100);})();
+      break;
     case"portfolio":app.innerHTML=renderPortfolio();break;
     case"wallet":   app.innerHTML=renderWallet();   break;
     case"admin":    app.innerHTML=renderAdmin();    break;
@@ -4676,9 +4678,7 @@ function renderMarket(){
           <div style="font-weight:700;color:var(--no)">${usd((pos.NO||0)*(1-pYes))}</div>
         </div>`:""}
       </div>`:""}
-      ${u?`<div id="pending-orders-${m.id}" style="margin-top:8px">
-        <script>loadPendingOrders('${m.id}')<\/script>
-      </div>`:""}
+      ${u?`<div id="pending-orders-${m.id}" style="margin-top:8px"></div>`:""}
     </div>
   </div>
 </div>`;
@@ -9535,10 +9535,10 @@ async function adminCreateMarket(){
     title:f.title, category:f.category, emoji:f.emoji, description:f.description,
     alpha: 0.1,
     seedLiquidity: totalCost,
-    lpYes: costYes,
-    lpNo:  costNo,
-    qYes: costYes,
-    qNo:  costNo,
+    lpYes: 0.01,
+    lpNo:  0.01,
+    qYes: 0.01,
+    qNo:  0.01,
     totalVolume:0, spreadPool:0, totalPaid:0,
     closesAt:new Date(f.closesAt).toISOString(), resolved:false, resolution:null,
     oracleType:f.oracleType||"none", oracleConfig:f.oracleConfig||"",
