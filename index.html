@@ -4676,9 +4676,96 @@ function renderMarket(){
           <div style="font-weight:700;color:var(--no)">${usd((pos.NO||0)*(1-pYes))}</div>
         </div>`:""}
       </div>`:""}
+      ${u?`<div id="pending-orders-${m.id}" style="margin-top:8px">
+        <script>loadPendingOrders('${m.id}')<\/script>
+      </div>`:""}
     </div>
   </div>
 </div>`;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PENDING ORDERS — órdenes del usuario esperando contraparte
+// ═══════════════════════════════════════════════════════════════════
+async function loadPendingOrders(marketId){
+  const u = getUser();
+  if(!u) return;
+  const el = document.getElementById("pending-orders-"+marketId);
+  if(!el) return;
+
+  const {data:orders} = await db.from("orders")
+    .select("id,side,price,shares,filled,status,is_mirror,created_at")
+    .eq("market_id", marketId)
+    .eq("user_id", u.id)
+    .in("status", ["open","partial"])
+    .eq("is_mirror", false)
+    .order("created_at", {ascending:false});
+
+  if(!orders || orders.length === 0){ el.innerHTML=""; return; }
+
+  el.innerHTML = `<div class="card" style="padding:14px;margin-top:0">
+    <div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;
+        letter-spacing:.5px;margin-bottom:10px">⏳ Órdenes pendientes</div>
+    ${orders.map(o=>{
+      const pending = (o.shares||0) - (o.filled||0);
+      const isSell  = o.order_type === "sell" || o.is_sell;
+      const color   = o.side==="YES" ? "var(--yes)" : "var(--no)";
+      return `<div style="display:flex;justify-content:space-between;align-items:center;
+          padding:6px 0;border-bottom:1px solid var(--border)">
+        <div>
+          <span style="color:${color};font-weight:700;font-size:12px">${o.side}</span>
+          <span style="color:var(--muted);font-size:11px;margin-left:6px">
+            ${pending.toFixed(2)} shares · ${pct(o.price||0)}
+          </span>
+          <span style="background:rgba(255,193,7,.15);color:#b8860b;font-size:10px;
+              padding:1px 6px;border-radius:10px;margin-left:6px">
+            esperando contraparte
+          </span>
+        </div>
+        <button onclick="cancelPendingOrder('${o.id}','${marketId}')"
+          style="font-size:11px;padding:3px 8px;border-radius:6px;border:1px solid var(--border);
+            background:transparent;color:var(--muted);cursor:pointer">✕ Cancelar</button>
+      </div>`;
+    }).join("")}
+  </div>`;
+}
+
+async function cancelPendingOrder(orderId, marketId){
+  const u = getUser();
+  if(!u) return;
+  if(!confirm("¿Cancelar esta orden? El capital reservado será devuelto a tu balance.")) return;
+
+  // Calcular reembolso
+  const {data:order} = await db.from("orders")
+    .select("shares,filled,price,side,status")
+    .eq("id", orderId).maybeSingle();
+
+  if(!order || !["open","partial"].includes(order.status)){
+    return notify("Orden no encontrada o ya ejecutada","error");
+  }
+
+  const refund = Math.round(((order.shares||0)-(order.filled||0)) * (order.price||0) * 100) / 100;
+
+  // Cancelar orden
+  await db.from("orders").update({status:"cancelled"}).eq("id", orderId);
+
+  // Devolver capital si es orden de compra (las de venta no tienen capital reservado)
+  if(refund > 0){
+    const {data:uw} = await db.from("users").select("balance").eq("id", u.id).maybeSingle();
+    if(uw){
+      const newBal = Math.round(((uw.balance||0) + refund) * 100) / 100;
+      await db.from("users").update({balance: newBal}).eq("id", u.id);
+      const ui = STATE.users.findIndex(x=>x.id===u.id);
+      if(ui>=0) STATE.users[ui]={...STATE.users[ui], balance: newBal};
+      notify(`✅ Orden cancelada · ${usd(refund)} devueltos`);
+    }
+  } else {
+    notify("Orden cancelada");
+  }
+
+  // Recargar órdenes pendientes
+  loadPendingOrders(marketId);
+  render();
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -8468,6 +8555,13 @@ function renderAdminResolve(){
 
           ${m.manualPaused?`<div style="color:#f59e0b;font-size:12px;font-weight:700;margin-top:6px">⏸ ${m.pauseReason||"Pausado"}</div>`:""}
           ${m.oracleLocked?`<div style="color:var(--no);font-size:12px;font-weight:700;margin-top:6px">🔒 Oracle bloqueado: ${escHtml(m.pauseReason||"")}</div>`:""}
+
+          <!-- Posiciones de usuarios en tiempo real -->
+          <div id="admin-pos-${m.id}" style="margin-top:8px">
+            <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;
+                letter-spacing:.5px;margin-bottom:6px">👥 Posiciones de participantes</div>
+            <div style="font-size:11px;color:var(--muted)">Cargando...</div>
+          </div>
         </div>
 
         <!-- Botones -->
@@ -8481,8 +8575,7 @@ function renderAdminResolve(){
             onclick="adminResolve('${m.id}','YES')">✅ Resolver SÍ</button>
           <button class="btn-red" style="font-size:12px;padding:6px 14px"
             onclick="adminResolve('${m.id}','NO')">❌ Resolver NO</button>
-          <button class="btn-ghost" style="font-size:11px;padding:4px 10px;color:var(--muted)"
-            onclick="adminShowPositions('${m.id}')">👥 Posiciones</button>
+
         </div>
       </div>
     </div>`;
@@ -8492,6 +8585,11 @@ function renderAdminResolve(){
     <div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;
         letter-spacing:.5px;margin:16px 0 10px">${title} (${markets.length})</div>
     ${markets.map(m=>renderRow(m,showUnlock)).join("")}`;
+
+  // Auto-cargar posiciones para todos los mercados pendientes después de render
+  setTimeout(()=>{
+    [...pending, ...locked].forEach(m => loadAdminPositions(m.id));
+  }, 100);
 
   return`<div>
     ${locked.length?`<div style="background:rgba(239,0,39,.06);border:1px solid rgba(239,0,39,.2);
@@ -8532,20 +8630,46 @@ async function adminUnlockMarket(id){
 
 
 
-async function adminShowPositions(marketId){
+async function adminShowPositions(marketId){ loadAdminPositions(marketId); }
+
+async function loadAdminPositions(marketId){
   if(!isAdmin()) return;
-  const {data:positions} = await db.from("positions").select("user_id,yes_shares,no_shares").eq("market_id",marketId);
+  const el = document.getElementById("admin-pos-"+marketId);
+  if(!el) return;
+
+  const {data:positions} = await db.from("positions")
+    .select("user_id,yes_shares,no_shares")
+    .eq("market_id", marketId)
+    .or("yes_shares.gt.0,no_shares.gt.0");
+
   if(!positions || positions.length===0){
-    return notify("No hay posiciones registradas en DB para este mercado","info");
+    el.innerHTML = `<div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">👥 Posiciones de participantes</div>
+      <div style="font-size:11px;color:var(--muted)">Sin posiciones registradas</div>`;
+    return;
   }
-  const m = STATE.markets.find(x=>x.id===marketId);
-  let msg = `Posiciones en "${m?.title?.slice(0,30)||marketId}":\n`;
-  for(const p of positions){
+
+  const rows = positions.map(p=>{
     const u = STATE.users.find(x=>String(x.id)===String(p.user_id));
-    const name = u?.username || p.user_id.slice(0,8)+"...";
-    msg += `\n@${name}: SÍ=${p.yes_shares?.toFixed(2)||0} · NO=${p.no_shares?.toFixed(2)||0}`;
-  }
-  alert(msg);
+    const name = u?.username || ("..."+String(p.user_id).slice(-6));
+    const isAdminUser = u?.role==="admin";
+    const yesShares = p.yes_shares||0;
+    const noShares  = p.no_shares||0;
+    return `<div style="display:flex;justify-content:space-between;align-items:center;
+        padding:4px 0;border-bottom:1px solid var(--border);font-size:11px">
+      <span style="color:var(--muted);font-weight:${isAdminUser?"700":"400"}">
+        @${name}${isAdminUser?" 🏦":""}
+      </span>
+      <span style="display:flex;gap:10px">
+        ${yesShares>0?`<span style="color:var(--yes);font-weight:700">SÍ ${yesShares.toFixed(2)}</span>`:""}
+        ${noShares>0 ?`<span style="color:var(--no);font-weight:700">NO ${noShares.toFixed(2)}</span>`:""}
+      </span>
+    </div>`;
+  }).join("");
+
+  el.innerHTML = `
+    <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;
+        letter-spacing:.5px;margin-bottom:6px">👥 Posiciones de participantes (${positions.length})</div>
+    <div style="max-height:120px;overflow-y:auto;scrollbar-width:thin">${rows}</div>`;
 }
 
 async function adminDeleteMarket(id){
