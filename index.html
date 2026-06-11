@@ -8322,30 +8322,49 @@ function renderAdminResolve(){
     const borderStyle = m.manualPaused ? ";border-color:#f59e0b;border-width:2px"
       : m.oracleLocked ? ";border-color:#ef0027;border-width:2px" : "";
 
-    // MM data from STATE
-    const adminUser = STATE.users.find(u=>u.role==="admin");
-    const adminId   = adminUser?.id;
-    const adminPos  = adminId ? (STATE.users.find(u=>u.id===adminId)?.positions?.[m.id]||{}) : {};
-    const mmYes     = adminPos.YES || 0;
-    const mmNo      = adminPos.NO  || 0;
-    // Invested = seedLiquidity (lo que el admin puso al crear)
-    const invested  = m.seedLiquidity || 0;
-    // Spreads recaudados
-    const spreads   = m.spreadPool || 0;
-    // Retorno si gana SÍ: shares SÍ del admin × $0.98
-    const retIfYes  = Math.round(mmYes * 0.98 * 100) / 100;
-    // Retorno si gana NO: shares NO del admin × $0.98
-    const retIfNo   = Math.round(mmNo  * 0.98 * 100) / 100;
-    // P&L actual (mark-to-market): valor actual de posición - inversión
-    const posValueNow = mmYes * pYes + mmNo * pNo;
-    const pnl = Math.round((posValueNow - invested + spreads) * 100) / 100;
-    const pnlColor = pnl >= 0 ? "var(--yes)" : "var(--no)";
+    // ── Datos MM en tiempo real ──────────────────────────────────
+    const adminUser   = STATE.users.find(u=>u.role==="admin");
+    const adminId     = adminUser?.id;
+    const adminPos    = adminId ? (STATE.users.find(u=>u.id===adminId)?.positions?.[m.id]||{}) : {};
+    const mmYes       = adminPos.YES || 0;
+    const mmNo        = adminPos.NO  || 0;
+    const invested    = m.seedLiquidity || 0;
 
-    return `<div class="card" style="margin-bottom:12px${borderStyle}">
+    // Spread acumulado en el mercado (se cobra al resolver, no antes)
+    const spreads     = m.spreadPool || 0;
+
+    // Pool total del mercado (dinero real dentro)
+    const poolTotal   = (m.qYes||0) + (m.qNo||0);
+    const poolYes     = m.qYes || 0;
+    const poolNo      = m.qNo  || 0;
+
+    // Shares comprometidos del MM (contraparte virtual activa)
+    // = shares en positions - shares propios iniciales
+    const mmYesCommitted = Math.max(0, mmYes - (m.lp_yes ? m.lp_yes/Math.max(0.001,pYes) : 0));
+    const mmNoCommitted  = Math.max(0, mmNo  - (m.lp_no  ? m.lp_no /Math.max(0.001,pNo)  : 0));
+    const mmYesFree      = Math.max(0, mmYes - mmYesCommitted);
+    const mmNoFree       = Math.max(0, mmNo  - mmNoCommitted);
+
+    // Pares que se pueden emparejar entre sí al resolver
+    const mmPairs     = Math.min(mmYesFree, mmNoFree);
+    const mmPairValue = Math.round(mmPairs * 0.98 * 100) / 100; // $0.98 por par
+
+    // Retorno al admin si gana SÍ: shares SÍ × $0.98 + spread + pares
+    const retIfYes = Math.round((mmYes * 0.98 + spreads) * 100) / 100;
+    const retIfNo  = Math.round((mmNo  * 0.98 + spreads) * 100) / 100;
+    const netIfYes = Math.round((retIfYes - invested) * 100) / 100;
+    const netIfNo  = Math.round((retIfNo  - invested) * 100) / 100;
+
+    // Dinero total dentro del mercado (pool + spreads reservados)
+    const totalInMarket = Math.round((poolTotal + spreads) * 100) / 100;
+
+    return `<div class="card" style="margin-bottom:16px${borderStyle}">
       <div style="display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap">
         <div style="flex:1;min-width:0">
+
+          <!-- Título y meta -->
           <div style="font-weight:700;font-size:14px;margin-bottom:4px">${escHtml(m.title)}</div>
-          <div class="market-meta" style="margin-bottom:8px">
+          <div class="market-meta" style="margin-bottom:10px">
             <span>SÍ: <strong style="color:var(--yes)">${pct(pYes)}</strong></span>
             <span>NO: <strong style="color:var(--no)">${pct(pNo)}</strong></span>
             <span>Vol: ${fmtVol(m.totalVolume)}</span>
@@ -8353,58 +8372,115 @@ function renderAdminResolve(){
             ${oracleTag}
           </div>
 
-          <!-- Datos MM en tiempo real -->
-          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;font-size:11px;margin-top:4px">
-            <div style="background:var(--card2);border-radius:6px;padding:5px 8px">
-              <div style="color:var(--muted);margin-bottom:1px">Spreads</div>
-              <div style="font-weight:700;color:var(--yes)">${usd(spreads)}</div>
+          <!-- Bloque 1: Dinero dentro del mercado -->
+          <div style="background:rgba(0,168,112,.05);border:1px solid rgba(0,168,112,.2);border-radius:8px;padding:8px 10px;margin-bottom:8px">
+            <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">
+              💰 Dinero dentro del mercado
             </div>
-            <div style="background:var(--card2);border-radius:6px;padding:5px 8px">
-              <div style="color:var(--muted);margin-bottom:1px">Invertido MM</div>
-              <div style="font-weight:700;color:var(--text)">${usd(invested)}</div>
-            </div>
-            <div style="background:var(--yes-bg);border-radius:6px;padding:5px 8px">
-              <div style="color:var(--muted);margin-bottom:1px">Shares SÍ (MM)</div>
-              <div style="font-weight:700;color:var(--yes)">${mmYes.toFixed(1)}</div>
-              <div style="color:var(--muted);font-size:9px">→ ${usd(retIfYes)} si gana SÍ</div>
-            </div>
-            <div style="background:var(--no-bg);border-radius:6px;padding:5px 8px">
-              <div style="color:var(--muted);margin-bottom:1px">Shares NO (MM)</div>
-              <div style="font-weight:700;color:var(--no)">${mmNo.toFixed(1)}</div>
-              <div style="color:var(--muted);font-size:9px">→ ${usd(retIfNo)} si gana NO</div>
+            <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;font-size:11px">
+              <div>
+                <div style="color:var(--muted);margin-bottom:1px">Pool Total</div>
+                <div style="font-weight:800;color:var(--text)">${usd(poolTotal)}</div>
+              </div>
+              <div>
+                <div style="color:var(--muted);margin-bottom:1px">Pool SÍ</div>
+                <div style="font-weight:700;color:var(--yes)">${usd(poolYes)}</div>
+              </div>
+              <div>
+                <div style="color:var(--muted);margin-bottom:1px">Pool NO</div>
+                <div style="font-weight:700;color:var(--no)">${usd(poolNo)}</div>
+              </div>
+              <div style="background:rgba(255,193,7,.1);border-radius:6px;padding:3px 6px">
+                <div style="color:var(--muted);margin-bottom:1px">Spreads (bloqueados)</div>
+                <div style="font-weight:800;color:#b8860b">${usd(spreads)}</div>
+                <div style="font-size:9px;color:var(--muted)">se cobran al resolver</div>
+              </div>
             </div>
           </div>
-          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;font-size:11px;margin-top:6px">
-            <div style="background:var(--card2);border-radius:6px;padding:5px 8px">
-              <div style="color:var(--muted);margin-bottom:1px">P&L actual (MM)</div>
-              <div style="font-weight:700;color:${pnlColor}">${pnl>=0?"+":""}${usd(pnl)}</div>
+
+          <!-- Bloque 2: Posición MM -->
+          <div style="background:var(--card2);border-radius:8px;padding:8px 10px;margin-bottom:8px">
+            <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">
+              🏦 Posición Market Maker
             </div>
-            <div style="background:var(--yes-bg);border-radius:6px;padding:5px 8px">
-              <div style="color:var(--muted);margin-bottom:1px">Retorno si SÍ gana</div>
-              <div style="font-weight:700;color:var(--yes)">${usd(retIfYes + spreads)}</div>
-              <div style="color:var(--muted);font-size:9px">${usd(retIfYes+spreads-invested)} neto</div>
+            <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;font-size:11px">
+              <div style="background:var(--yes-bg);border-radius:6px;padding:4px 7px">
+                <div style="color:var(--muted);margin-bottom:1px">Shares SÍ</div>
+                <div style="font-weight:800;color:var(--yes)">${mmYes.toFixed(2)}</div>
+                <div style="font-size:9px;color:var(--muted)">libres: ${mmYesFree.toFixed(1)}</div>
+              </div>
+              <div style="background:var(--no-bg);border-radius:6px;padding:4px 7px">
+                <div style="color:var(--muted);margin-bottom:1px">Shares NO</div>
+                <div style="font-weight:800;color:var(--no)">${mmNo.toFixed(2)}</div>
+                <div style="font-size:9px;color:var(--muted)">libres: ${mmNoFree.toFixed(1)}</div>
+              </div>
+              <div style="background:rgba(99,102,241,.06);border-radius:6px;padding:4px 7px">
+                <div style="color:var(--muted);margin-bottom:1px">Pares libres MM</div>
+                <div style="font-weight:800;color:#6366f1">${mmPairs.toFixed(1)}</div>
+                <div style="font-size:9px;color:var(--muted)">→ ${usd(mmPairValue)} garantizados</div>
+              </div>
+              <div style="background:var(--card);border-radius:6px;padding:4px 7px">
+                <div style="color:var(--muted);margin-bottom:1px">Invertido MM</div>
+                <div style="font-weight:800;color:var(--text)">${usd(invested)}</div>
+              </div>
             </div>
-            <div style="background:var(--no-bg);border-radius:6px;padding:5px 8px">
-              <div style="color:var(--muted);margin-bottom:1px">Retorno si NO gana</div>
-              <div style="font-weight:700;color:var(--no)">${usd(retIfNo + spreads)}</div>
-              <div style="color:var(--muted);font-size:9px">${usd(retIfNo+spreads-invested)} neto</div>
+          </div>
+
+          <!-- Bloque 3: Escenarios de resolución -->
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:11px;margin-bottom:6px">
+            <div style="background:var(--yes-bg);border:1px solid rgba(0,168,112,.2);border-radius:8px;padding:8px 10px">
+              <div style="font-weight:700;color:var(--yes);margin-bottom:4px">✅ Si gana SÍ</div>
+              <div style="display:flex;justify-content:space-between;margin-bottom:2px">
+                <span style="color:var(--muted)">Shares SÍ × $0.98</span>
+                <span style="font-weight:700">${usd(mmYes*0.98)}</span>
+              </div>
+              <div style="display:flex;justify-content:space-between;margin-bottom:2px">
+                <span style="color:var(--muted)">+ Spreads cobrados</span>
+                <span style="font-weight:700;color:#b8860b">+${usd(spreads)}</span>
+              </div>
+              <div style="height:1px;background:rgba(0,168,112,.2);margin:4px 0"></div>
+              <div style="display:flex;justify-content:space-between">
+                <span style="color:var(--muted)">Neto admin</span>
+                <span style="font-weight:800;color:${netIfYes>=0?"var(--yes)":"var(--no)"}">
+                  ${netIfYes>=0?"+":""}${usd(netIfYes)}
+                </span>
+              </div>
+            </div>
+            <div style="background:var(--no-bg);border:1px solid rgba(224,40,74,.2);border-radius:8px;padding:8px 10px">
+              <div style="font-weight:700;color:var(--no);margin-bottom:4px">❌ Si gana NO</div>
+              <div style="display:flex;justify-content:space-between;margin-bottom:2px">
+                <span style="color:var(--muted)">Shares NO × $0.98</span>
+                <span style="font-weight:700">${usd(mmNo*0.98)}</span>
+              </div>
+              <div style="display:flex;justify-content:space-between;margin-bottom:2px">
+                <span style="color:var(--muted)">+ Spreads cobrados</span>
+                <span style="font-weight:700;color:#b8860b">+${usd(spreads)}</span>
+              </div>
+              <div style="height:1px;background:rgba(224,40,74,.2);margin:4px 0"></div>
+              <div style="display:flex;justify-content:space-between">
+                <span style="color:var(--muted)">Neto admin</span>
+                <span style="font-weight:800;color:${netIfNo>=0?"var(--yes)":"var(--no)"}">
+                  ${netIfNo>=0?"+":""}${usd(netIfNo)}
+                </span>
+              </div>
             </div>
           </div>
 
           ${m.manualPaused?`<div style="color:#f59e0b;font-size:12px;font-weight:700;margin-top:6px">⏸ ${m.pauseReason||"Pausado"}</div>`:""}
           ${m.oracleLocked?`<div style="color:var(--no);font-size:12px;font-weight:700;margin-top:6px">🔒 Oracle bloqueado: ${escHtml(m.pauseReason||"")}</div>`:""}
         </div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;flex-shrink:0;align-items:flex-start">
+
+        <!-- Botones -->
+        <div style="display:flex;flex-direction:column;gap:6px;flex-shrink:0;align-items:stretch;min-width:110px">
           ${showUnlock?`<button class="btn-ghost" style="font-size:12px;padding:5px 12px;color:#f59e0b;border-color:#f59e0b"
             onclick="adminUnlockMarket('${m.id}')">🔓 Desbloquear</button>`:""}
-          ${m.manualPaused?`<button class="btn-ghost" style="font-size:12px;padding:5px 12px"
-            onclick="adminUnpauseMarket('${m.id}')">▶ Reanudar</button>`
-          :`<button class="btn-ghost" style="font-size:12px;padding:5px 12px"
-            onclick="adminPauseMarket('${m.id}')">⏸ Pausar</button>`}
-          <button class="btn-green" style="font-size:12px;padding:5px 14px"
-            onclick="adminResolve('${m.id}','YES')">✅ SÍ</button>
-          <button class="btn-red" style="font-size:12px;padding:5px 14px"
-            onclick="adminResolve('${m.id}','NO')">❌ NO</button>
+          ${m.manualPaused
+            ?`<button class="btn-ghost" style="font-size:12px;padding:5px 12px" onclick="adminUnpauseMarket('${m.id}')">▶ Reanudar</button>`
+            :`<button class="btn-ghost" style="font-size:12px;padding:5px 12px" onclick="adminPauseMarket('${m.id}')">⏸ Pausar</button>`}
+          <button class="btn-green" style="font-size:12px;padding:6px 14px"
+            onclick="adminResolve('${m.id}','YES')">✅ Resolver SÍ</button>
+          <button class="btn-red" style="font-size:12px;padding:6px 14px"
+            onclick="adminResolve('${m.id}','NO')">❌ Resolver NO</button>
           <button class="btn-ghost" style="font-size:11px;padding:4px 10px;color:var(--muted)"
             onclick="adminShowPositions('${m.id}')">👥 Posiciones</button>
         </div>
@@ -9606,9 +9682,31 @@ async function adminResolve(id,result){
     }
   }
 
+  // ── Acreditar spread_pool acumulado al admin ─────────────────
+  const spreadToCredit = Math.round((m.spreadPool||0) * 100) / 100;
+  if(spreadToCredit > 0.001 && adminId){
+    const {data:admSpread} = await db.from("users").select("balance").eq("id", adminId).maybeSingle();
+    if(admSpread){
+      const newAdmBal = Math.round(((admSpread.balance||0) + spreadToCredit) * 100) / 100;
+      await db.from("users").update({balance: newAdmBal}).eq("id", adminId);
+      await db.from("transactions").insert({
+        user_id: adminId, id: "tx_"+genId(), type: "deposit",
+        amount: spreadToCredit, network: "internal", status: "confirmed",
+        created_at: resolvedAt,
+        description: `💰 Spreads mercado · "${titleShort}" · acumulado durante el mercado`
+      });
+      const ai = STATE.users.findIndex(u=>String(u.id)===String(adminId));
+      if(ai>=0) STATE.users[ai]={...STATE.users[ai], balance: newAdmBal};
+      console.log(`[Resolve] Spread pool ${usd(spreadToCredit)} → admin`);
+    }
+    // Reset spread_pool en DB a 0 (ya cobrado)
+    await db.from("markets").update({spread_pool: 0}).eq("id", id);
+  }
+
   const payStr=payoutPerShare>=0.999?"$1.00/share":`${usd(payoutPerShare)}/share`;
   const refundStr = mmRefundTotal>0 ? ` · MM devuelto: ${usd(mmRefundTotal)}` : "";
-  notify(`✓ Resuelto ${result} · ${payStr} · ${totalWinners} ganador${totalWinners!==1?"es":""} pagado${totalWinners!==1?"s":""} de ${userIds.length} participante${userIds.length!==1?"s":""}${refundStr}`);
+  const spreadStr = spreadToCredit>0 ? ` · Spreads cobrados: ${usd(spreadToCredit)}` : "";
+  notify(`✓ Resuelto ${result} · ${payStr} · ${totalWinners} ganador${totalWinners!==1?"es":""} pagado${totalWinners!==1?"s":""} de ${userIds.length} participante${userIds.length!==1?"s":""}${refundStr}${spreadStr}`);
   render();
 }
 
