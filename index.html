@@ -8425,24 +8425,63 @@ function renderAdminResolve(){
     const poolYes     = m.qYes || 0;
     const poolNo      = m.qNo  || 0;
 
-    // Shares comprometidos del MM (contraparte virtual activa)
-    // = shares en positions - shares propios iniciales
-    const mmYesCommitted = Math.max(0, mmYes - (m.lp_yes ? m.lp_yes/Math.max(0.001,pYes) : 0));
-    const mmNoCommitted  = Math.max(0, mmNo  - (m.lp_no  ? m.lp_no /Math.max(0.001,pNo)  : 0));
+    // ── Shares comprometidos del MM ─────────────────────────────
+    // Los shares comprometidos = filled de las órdenes MM
+    // (cada share comprometido tiene un espejo activo como contraparte)
+    // Como no tenemos las órdenes MM en STATE, los estimamos por diferencia:
+    // comprometidos = total - libres donde libres = shares iniciales del MM
+    const mmInitialYes  = m.lpYes ? Math.round(m.lpYes / Math.max(0.001, pYes) * 100)/100
+                                  : (m.seedLiquidity ? Math.round(m.seedLiquidity/2/Math.max(0.001,pYes)*100)/100 : 0);
+    const mmInitialNo   = m.lpNo  ? Math.round(m.lpNo  / Math.max(0.001, pNo)  * 100)/100
+                                  : (m.seedLiquidity ? Math.round(m.seedLiquidity/2/Math.max(0.001,pNo) *100)/100 : 0);
+
+    // Precio de compra original del admin (precio al crear el mercado)
+    const mmBuyPriceYes = m.lpYes && mmInitialYes > 0 ? Math.round(m.lpYes/mmInitialYes*100)/100 : pYes;
+    const mmBuyPriceNo  = m.lpNo  && mmInitialNo  > 0 ? Math.round(m.lpNo /mmInitialNo *100)/100 : pNo;
+
+    // Shares comprometidos (actuando como contraparte, tienen espejo activo)
+    const mmYesCommitted = Math.max(0, Math.round((mmYes - mmInitialYes) * 100)/100);
+    const mmNoCommitted  = Math.max(0, Math.round((mmNo  - mmInitialNo ) * 100)/100);
     const mmYesFree      = Math.max(0, mmYes - mmYesCommitted);
     const mmNoFree       = Math.max(0, mmNo  - mmNoCommitted);
 
-    // Pares que se pueden emparejar entre sí al resolver
+    // Pares libres que se emparejan entre sí → $0.98 por par
     const mmPairs     = Math.min(mmYesFree, mmNoFree);
-    const mmPairValue = Math.round(mmPairs * 0.98 * 100) / 100; // $0.98 por par
+    const mmPairPayout = Math.round(mmPairs * 0.98 * 100) / 100;
 
-    // Retorno al admin si gana SÍ: shares SÍ × $0.98 + spread + pares
-    const retIfYes = Math.round((mmYes * 0.98 + spreads) * 100) / 100;
-    const retIfNo  = Math.round((mmNo  * 0.98 + spreads) * 100) / 100;
+    // Shares libres sin par → devolver precio de compra
+    const mmUnpairYes = Math.max(0, mmYesFree - mmPairs);
+    const mmUnpairNo  = Math.max(0, mmNoFree  - mmPairs);
+    const mmUnpairYesRefund = Math.round(mmUnpairYes * mmBuyPriceYes * 100) / 100;
+    const mmUnpairNoRefund  = Math.round(mmUnpairNo  * mmBuyPriceNo  * 100) / 100;
+
+    // Shares comprometidos ganadores → $0.98 por share
+    // Shares comprometidos perdedores → $0 (cubrieron a usuarios)
+    const mmCommittedWinYes = Math.round(mmYesCommitted * 0.98 * 100) / 100;
+    const mmCommittedWinNo  = Math.round(mmNoCommitted  * 0.98 * 100) / 100;
+
+    // Pérdida por diferencia de precio (comprometidos a precio diferente al compra)
+    // El admin puso contraparte al precio actual pero compró a precio original
+    // Diferencia = (precio_compra - precio_contraparte) × shares_comprometidos
+    const mmLossPriceYes = Math.max(0, Math.round((mmBuyPriceYes - (1-pYes)) * mmYesCommitted * 100)/100);
+    const mmLossPriceNo  = Math.max(0, Math.round((mmBuyPriceNo  - (1-pNo )) * mmNoCommitted  * 100)/100);
+
+    // Escenario SÍ gana:
+    // + pares × $0.98
+    // + sin par SÍ × precio_compra_SÍ
+    // + sin par NO × precio_compra_NO
+    // + comprometidos SÍ × $0.98
+    // + spreads
+    const retIfYes = Math.round((mmPairPayout + mmUnpairYesRefund + mmUnpairNoRefund + mmCommittedWinYes + spreads) * 100) / 100;
+    // Escenario NO gana:
+    const retIfNo  = Math.round((mmPairPayout + mmUnpairYesRefund + mmUnpairNoRefund + mmCommittedWinNo  + spreads) * 100) / 100;
     const netIfYes = Math.round((retIfYes - invested) * 100) / 100;
     const netIfNo  = Math.round((retIfNo  - invested) * 100) / 100;
 
-    // Dinero total dentro del mercado (pool + spreads reservados)
+    // Pérdida máxima real = shares comprometidos del lado perdedor × precio que costaron como contraparte
+    const maxLossIfSiWins  = Math.round(mmNoCommitted  * (1-pYes) * 100) / 100; // perdiste NO comprometidos
+    const maxLossIfNoWins  = Math.round(mmYesCommitted * (1-pNo ) * 100) / 100; // perdiste SÍ comprometidos
+
     const totalInMarket = Math.round((poolTotal + spreads) * 100) / 100;
 
     return `<div class="card" style="margin-bottom:16px${borderStyle}">
@@ -8490,25 +8529,59 @@ function renderAdminResolve(){
             <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">
               🏦 Posición Market Maker
             </div>
-            <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;font-size:11px">
+            <!-- Fila 1: Totales -->
+            <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;font-size:11px;margin-bottom:6px">
               <div style="background:var(--yes-bg);border-radius:6px;padding:4px 7px">
-                <div style="color:var(--muted);margin-bottom:1px">Shares SÍ</div>
+                <div style="color:var(--muted);margin-bottom:1px">Shares SÍ total</div>
                 <div style="font-weight:800;color:var(--yes)">${mmYes.toFixed(2)}</div>
-                <div style="font-size:9px;color:var(--muted)">libres: ${mmYesFree.toFixed(1)}</div>
+                <div style="font-size:9px;color:var(--muted)">comprados a ${pct(mmBuyPriceYes)}</div>
               </div>
               <div style="background:var(--no-bg);border-radius:6px;padding:4px 7px">
-                <div style="color:var(--muted);margin-bottom:1px">Shares NO</div>
+                <div style="color:var(--muted);margin-bottom:1px">Shares NO total</div>
                 <div style="font-weight:800;color:var(--no)">${mmNo.toFixed(2)}</div>
-                <div style="font-size:9px;color:var(--muted)">libres: ${mmNoFree.toFixed(1)}</div>
-              </div>
-              <div style="background:rgba(99,102,241,.06);border-radius:6px;padding:4px 7px">
-                <div style="color:var(--muted);margin-bottom:1px">Pares libres MM</div>
-                <div style="font-weight:800;color:#6366f1">${mmPairs.toFixed(1)}</div>
-                <div style="font-size:9px;color:var(--muted)">→ ${usd(mmPairValue)} garantizados</div>
+                <div style="font-size:9px;color:var(--muted)">comprados a ${pct(mmBuyPriceNo)}</div>
               </div>
               <div style="background:var(--card);border-radius:6px;padding:4px 7px">
-                <div style="color:var(--muted);margin-bottom:1px">Invertido MM</div>
+                <div style="color:var(--muted);margin-bottom:1px">Invertido total</div>
                 <div style="font-weight:800;color:var(--text)">${usd(invested)}</div>
+              </div>
+              <div style="background:rgba(99,102,241,.06);border-radius:6px;padding:4px 7px">
+                <div style="color:var(--muted);margin-bottom:1px">Pares libres</div>
+                <div style="font-weight:800;color:#6366f1">${mmPairs.toFixed(1)}</div>
+                <div style="font-size:9px;color:var(--muted)">→ ${usd(mmPairPayout)}</div>
+              </div>
+            </div>
+            <!-- Fila 2: Libres vs Comprometidos -->
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:11px">
+              <div style="border:1px solid rgba(0,168,112,.2);border-radius:6px;padding:6px 8px">
+                <div style="font-weight:700;color:var(--yes);margin-bottom:4px;font-size:10px">✅ LIBRES (recuperables)</div>
+                <div style="display:flex;justify-content:space-between;margin-bottom:2px">
+                  <span style="color:var(--muted)">SÍ libres sin par</span>
+                  <span>${mmUnpairYes.toFixed(2)} → ${usd(mmUnpairYesRefund)}</span>
+                </div>
+                <div style="display:flex;justify-content:space-between;margin-bottom:2px">
+                  <span style="color:var(--muted)">NO libres sin par</span>
+                  <span>${mmUnpairNo.toFixed(2)} → ${usd(mmUnpairNoRefund)}</span>
+                </div>
+                <div style="display:flex;justify-content:space-between;border-top:1px solid var(--border);padding-top:3px;margin-top:3px">
+                  <span style="color:var(--muted)">Pares × $0.98</span>
+                  <span style="font-weight:700;color:var(--yes)">${usd(mmPairPayout)}</span>
+                </div>
+              </div>
+              <div style="border:1px solid rgba(224,40,74,.2);border-radius:6px;padding:6px 8px">
+                <div style="font-weight:700;color:var(--no);margin-bottom:4px;font-size:10px">⚠️ COMPROMETIDOS (en riesgo)</div>
+                <div style="display:flex;justify-content:space-between;margin-bottom:2px">
+                  <span style="color:var(--muted)">SÍ comprometidos</span>
+                  <span style="color:var(--yes)">${mmYesCommitted.toFixed(2)} sh</span>
+                </div>
+                <div style="display:flex;justify-content:space-between;margin-bottom:2px">
+                  <span style="color:var(--muted)">NO comprometidos</span>
+                  <span style="color:var(--no)">${mmNoCommitted.toFixed(2)} sh</span>
+                </div>
+                <div style="display:flex;justify-content:space-between;border-top:1px solid var(--border);padding-top:3px;margin-top:3px">
+                  <span style="color:var(--muted)">Precio actual SÍ/NO</span>
+                  <span>${pct(pYes)} / ${pct(pNo)}</span>
+                </div>
               </div>
             </div>
           </div>
@@ -8516,43 +8589,74 @@ function renderAdminResolve(){
           <!-- Bloque 3: Escenarios de resolución -->
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:11px;margin-bottom:6px">
             <div style="background:var(--yes-bg);border:1px solid rgba(0,168,112,.2);border-radius:8px;padding:8px 10px">
-              <div style="font-weight:700;color:var(--yes);margin-bottom:4px">✅ Si gana SÍ</div>
+              <div style="font-weight:700;color:var(--yes);margin-bottom:6px">✅ Si gana SÍ</div>
               <div style="display:flex;justify-content:space-between;margin-bottom:2px">
-                <span style="color:var(--muted)">Shares SÍ × $0.98</span>
-                <span style="font-weight:700">${usd(mmYes*0.98)}</span>
+                <span style="color:var(--muted)">Pares libres × $0.98</span>
+                <span>+${usd(mmPairPayout)}</span>
               </div>
               <div style="display:flex;justify-content:space-between;margin-bottom:2px">
-                <span style="color:var(--muted)">+ Spreads cobrados</span>
-                <span style="font-weight:700;color:#b8860b">+${usd(spreads)}</span>
+                <span style="color:var(--muted)">Sin par SÍ → precio compra</span>
+                <span>+${usd(mmUnpairYesRefund)}</span>
               </div>
-              <div style="height:1px;background:rgba(0,168,112,.2);margin:4px 0"></div>
+              <div style="display:flex;justify-content:space-between;margin-bottom:2px">
+                <span style="color:var(--muted)">Sin par NO → precio compra</span>
+                <span>+${usd(mmUnpairNoRefund)}</span>
+              </div>
+              <div style="display:flex;justify-content:space-between;margin-bottom:2px">
+                <span style="color:var(--yes);font-weight:600">Comprometidos SÍ × $0.98</span>
+                <span style="color:var(--yes)">+${usd(mmCommittedWinYes)}</span>
+              </div>
+              <div style="display:flex;justify-content:space-between;margin-bottom:2px">
+                <span style="color:var(--no)">Comprometidos NO → perdidos</span>
+                <span style="color:var(--no)">-${usd(maxLossIfSiWins)}</span>
+              </div>
+              <div style="display:flex;justify-content:space-between;margin-bottom:2px">
+                <span style="color:var(--muted)">+ Spreads acumulados</span>
+                <span style="color:#b8860b">+${usd(spreads)}</span>
+              </div>
+              <div style="height:1px;background:rgba(0,168,112,.3);margin:5px 0"></div>
               <div style="display:flex;justify-content:space-between">
-                <span style="color:var(--muted)">Neto admin</span>
-                <span style="font-weight:800;color:${netIfYes>=0?"var(--yes)":"var(--no)"}">
-                  ${netIfYes>=0?"+":""}${usd(netIfYes)}
+                <span style="font-weight:700">Neto admin</span>
+                <span style="font-weight:800;color:${netIfYes>=0?'var(--yes)':'var(--no)'}">
+                  ${netIfYes>=0?'+':''}${usd(netIfYes)}
                 </span>
               </div>
             </div>
             <div style="background:var(--no-bg);border:1px solid rgba(224,40,74,.2);border-radius:8px;padding:8px 10px">
-              <div style="font-weight:700;color:var(--no);margin-bottom:4px">❌ Si gana NO</div>
+              <div style="font-weight:700;color:var(--no);margin-bottom:6px">❌ Si gana NO</div>
               <div style="display:flex;justify-content:space-between;margin-bottom:2px">
-                <span style="color:var(--muted)">Shares NO × $0.98</span>
-                <span style="font-weight:700">${usd(mmNo*0.98)}</span>
+                <span style="color:var(--muted)">Pares libres × $0.98</span>
+                <span>+${usd(mmPairPayout)}</span>
               </div>
               <div style="display:flex;justify-content:space-between;margin-bottom:2px">
-                <span style="color:var(--muted)">+ Spreads cobrados</span>
-                <span style="font-weight:700;color:#b8860b">+${usd(spreads)}</span>
+                <span style="color:var(--muted)">Sin par SÍ → precio compra</span>
+                <span>+${usd(mmUnpairYesRefund)}</span>
               </div>
-              <div style="height:1px;background:rgba(224,40,74,.2);margin:4px 0"></div>
+              <div style="display:flex;justify-content:space-between;margin-bottom:2px">
+                <span style="color:var(--muted)">Sin par NO → precio compra</span>
+                <span>+${usd(mmUnpairNoRefund)}</span>
+              </div>
+              <div style="display:flex;justify-content:space-between;margin-bottom:2px">
+                <span style="color:var(--no);font-weight:600">Comprometidos NO × $0.98</span>
+                <span style="color:var(--no)">+${usd(mmCommittedWinNo)}</span>
+              </div>
+              <div style="display:flex;justify-content:space-between;margin-bottom:2px">
+                <span style="color:var(--yes)">Comprometidos SÍ → perdidos</span>
+                <span style="color:var(--yes)">-${usd(maxLossIfNoWins)}</span>
+              </div>
+              <div style="display:flex;justify-content:space-between;margin-bottom:2px">
+                <span style="color:var(--muted)">+ Spreads acumulados</span>
+                <span style="color:#b8860b">+${usd(spreads)}</span>
+              </div>
+              <div style="height:1px;background:rgba(224,40,74,.3);margin:5px 0"></div>
               <div style="display:flex;justify-content:space-between">
-                <span style="color:var(--muted)">Neto admin</span>
-                <span style="font-weight:800;color:${netIfNo>=0?"var(--yes)":"var(--no)"}">
-                  ${netIfNo>=0?"+":""}${usd(netIfNo)}
+                <span style="font-weight:700">Neto admin</span>
+                <span style="font-weight:800;color:${netIfNo>=0?'var(--yes)':'var(--no)'}">
+                  ${netIfNo>=0?'+':''}${usd(netIfNo)}
                 </span>
               </div>
             </div>
           </div>
-
           ${m.manualPaused?`<div style="color:#f59e0b;font-size:12px;font-weight:700;margin-top:6px">⏸ ${m.pauseReason||"Pausado"}</div>`:""}
           ${m.oracleLocked?`<div style="color:var(--no);font-size:12px;font-weight:700;margin-top:6px">🔒 Oracle bloqueado: ${escHtml(m.pauseReason||"")}</div>`:""}
 
@@ -9625,65 +9729,163 @@ async function adminCreateMarket(){
 async function adminResolve(id,result){
   if(!isAdmin()) return notify("Sin permisos","error");
   if(result !== "YES" && result !== "NO") return notify("Resultado inválido","error");
-  // Verify admin role from DB
   const {data:adminDb} = await db.from("users").select("role").eq("id",STATE.session).maybeSingle();
   if(adminDb?.role !== "admin") return notify("Sin permisos (DB)","error");
-  // Verify market not already resolved in DB
   const {data:mDb} = await db.from("markets").select("resolved").eq("id",id).maybeSingle();
   if(mDb?.resolved) return notify("Este mercado ya fue resuelto","error");
 
-  const i=STATE.markets.findIndex(m=>m.id===id);if(i<0)return;
-  const m=STATE.markets[i];
+  const i = STATE.markets.findIndex(m=>m.id===id);
+  if(i<0) return;
+  const m = STATE.markets[i];
   if(m.resolved) return notify("Mercado ya resuelto","error");
 
-  // Reload fresh market data from DB to get accurate totalPaid/spreadPool
+  // ── Cargar datos frescos del mercado ────────────────────────────
   const {data:mFresh} = await db.from("markets")
-    .select("q_yes,q_no,total_paid,spread_pool,seed_liquidity,total_volume")
+    .select("q_yes,q_no,total_paid,spread_pool,seed_liquidity,lp_yes,lp_no")
     .eq("id",id).maybeSingle();
-  const mForPayout = mFresh ? {
-    ...m,
-    qYes:         mFresh.q_yes         ?? m.qYes,
-    qNo:          mFresh.q_no          ?? m.qNo,
-    totalPaid:    mFresh.total_paid     ?? m.totalPaid,
-    spreadPool:   mFresh.spread_pool    ?? m.spreadPool,
-    seedLiquidity:mFresh.seed_liquidity ?? m.seedLiquidity,
-  } : m;
 
-  const payoutPerShare=calcPayoutPerShare(mForPayout,result);
-  STATE.markets[i]={...m,resolved:true,resolution:result,payoutPerShare};
+  const qYes       = mFresh?.q_yes        ?? m.qYes        ?? 1;
+  const qNo        = mFresh?.q_no         ?? m.qNo         ?? 1;
+  const spreadPool = mFresh?.spread_pool  ?? m.spreadPool  ?? 0;
+  const lpYes      = mFresh?.lp_yes       ?? m.lpYes       ?? 0;
+  const lpNo       = mFresh?.lp_no        ?? m.lpNo        ?? 0;
+  const priceYes   = Math.max(0.01, Math.min(0.99, qYes/(qYes+qNo)));
+  const priceNo    = 1 - priceYes;
+
+  const resolvedAt = new Date().toISOString();
+  const titleShort = m.title.slice(0,25)+(m.title.length>25?"…":"");
+  const adminUser  = STATE.users.find(u=>u.role==="admin");
+  const adminId    = adminUser ? String(adminUser.id) : STATE.session;
+
+  // Marcar mercado como resuelto en DB primero
+  STATE.markets[i] = {...m, resolved:true, resolution:result};
   await dbSaveMarket(STATE.markets[i]);
 
-  // Pay winners & record resolution tx for all participants
-  const {data:positions, error:posErr} = await db.from("positions").select("*").eq("market_id",id);
-  console.log("[Resolve] Positions found:", positions?.length, posErr);
-  // Normalize user_id to string to avoid UUID vs string type mismatch
-  const userIds = [...new Set((positions||[]).map(p=>String(p.user_id)))];
-  const loseSide = result==="YES" ? "NO" : "YES";
-  const titleShort = m.title.slice(0,25)+(m.title.length>25?"…":"");
-  const resolvedAt = new Date().toISOString();
-  // Admin id para acreditar spreads de salida
-  const adminUser = STATE.users.find(u=>u.role==="admin");
-  const adminId   = adminUser ? String(adminUser.id) : STATE.session;
+  // ── Cargar posiciones de todos los participantes ─────────────────
+  const {data:positions} = await db.from("positions").select("*").eq("market_id",id);
+  const adminPos = (positions||[]).find(p=>String(p.user_id)===adminId);
+  const adminSI  = adminPos?.yes_shares || 0;
+  const adminNO  = adminPos?.no_shares  || 0;
+
+  // ── Cargar órdenes MM del admin ──────────────────────────────────
+  const {data:mmOrders} = await db.from("orders")
+    .select("*").eq("market_id",id).eq("is_mm",true);
+
+  // Shares comprometidos del admin = filled de sus órdenes MM
+  // (filled en orden MM = cuántos están activos como contraparte en espejos)
+  const mmYesOrder    = (mmOrders||[]).find(o=>o.side==="YES");
+  const mmNoOrder     = (mmOrders||[]).find(o=>o.side==="NO");
+  const mmYesPrice    = mmYesOrder?.price || priceYes;
+  const mmNoPrice     = mmNoOrder?.price  || priceNo;
+
+  // Shares comprometidos = los que están en espejos activos
+  const {data:mirrorOrders} = await db.from("orders")
+    .select("*").eq("market_id",id).eq("is_mirror",true).in("status",["open","partial"]);
+
+  // Committed YES = espejos NO activos que referencian orden MM YES
+  // (cuando usuario compró SÍ, se creó espejo NO comprometiendo shares SÍ del admin)
+  const committedYes = (mirrorOrders||[])
+    .filter(o=>o.side==="NO" && o.mm_order_id===mmYesOrder?.id)
+    .reduce((s,o)=>s+(o.shares-o.filled),0);
+
+  // Committed NO = espejos SÍ activos que referencian orden MM NO
+  const committedNo = (mirrorOrders||[])
+    .filter(o=>o.side==="YES" && o.mm_order_id===mmNoOrder?.id)
+    .reduce((s,o)=>s+(o.shares-o.filled),0);
+
+  // Shares libres del admin = total - comprometidos
+  const freeYes = Math.max(0, adminSI - committedYes);
+  const freeNo  = Math.max(0, adminNO - committedNo);
+
+  console.log(`[Resolve] adminSI=${adminSI.toFixed(2)} adminNO=${adminNO.toFixed(2)}`);
+  console.log(`[Resolve] committedYes=${committedYes.toFixed(2)} committedNo=${committedNo.toFixed(2)}`);
+  console.log(`[Resolve] freeYes=${freeYes.toFixed(2)} freeNo=${freeNo.toFixed(2)}`);
+  console.log(`[Resolve] result=${result}`);
+
+  // ══════════════════════════════════════════════════════════════════
+  // PASO 1 — Shares libres del admin → emparejar SÍ+NO → $0.98 por par
+  // ══════════════════════════════════════════════════════════════════
+  const pairedShares = Math.min(freeYes, freeNo);
+  const pairedPayout = Math.round(pairedShares * 0.98 * 100) / 100;
+
+  console.log(`[Resolve] PASO1: ${pairedShares.toFixed(2)} pares → $${pairedPayout}`);
+
+  // ══════════════════════════════════════════════════════════════════
+  // PASO 2 — Shares libres sin par → devolver precio de compra
+  // ══════════════════════════════════════════════════════════════════
+  const unpairYes    = Math.max(0, freeYes - pairedShares);
+  const unpairNo     = Math.max(0, freeNo  - pairedShares);
+  // Precio de compra = lpYes/shares_mm o el precio de la orden MM
+  const unpairYesRefund = Math.round(unpairYes * mmYesPrice * 100) / 100;
+  const unpairNoRefund  = Math.round(unpairNo  * mmNoPrice  * 100) / 100;
+
+  console.log(`[Resolve] PASO2: ${unpairYes.toFixed(2)} SÍ sin par → $${unpairYesRefund}`);
+  console.log(`[Resolve] PASO2: ${unpairNo.toFixed(2)} NO sin par → $${unpairNoRefund}`);
+
+  // ══════════════════════════════════════════════════════════════════
+  // PASO 3 — Shares comprometidos del lado GANADOR → $0.98
+  // ══════════════════════════════════════════════════════════════════
+  const committedWin  = result==="YES" ? committedYes : committedNo;
+  const committedLose = result==="YES" ? committedNo  : committedYes;
+  const committedWinPayout = Math.round(committedWin * 0.98 * 100) / 100;
+
+  console.log(`[Resolve] PASO3: ${committedWin.toFixed(2)} comprometidos ganadores → $${committedWinPayout}`);
+
+  // ══════════════════════════════════════════════════════════════════
+  // PASO 4 — Shares comprometidos del lado PERDEDOR → $0
+  // ══════════════════════════════════════════════════════════════════
+  // (estos pagaron a los usuarios ganadores, no hay devolución)
+  console.log(`[Resolve] PASO4: ${committedLose.toFixed(2)} comprometidos perdedores → $0 (cubrieron usuarios ganadores)`);
+
+  // ══════════════════════════════════════════════════════════════════
+  // PASO 5 — Shares libres del lado perdedor sin par → devolver precio
+  // (ya incluido en PASO 2 — unpairYes o unpairNo según resultado)
+  // ══════════════════════════════════════════════════════════════════
+
+  // ── Acreditar todo al admin de una vez ──────────────────────────
+  const adminTotalPayout = pairedPayout + unpairYesRefund + unpairNoRefund + committedWinPayout;
+  console.log(`[Resolve] Admin total: $${adminTotalPayout.toFixed(2)}`);
+
+  if(adminTotalPayout > 0.001){
+    const {data:admFresh} = await db.from("users").select("balance").eq("id",adminId).maybeSingle();
+    if(admFresh){
+      const admNewBal = Math.round(((admFresh.balance||0) + adminTotalPayout) * 100) / 100;
+      await db.from("users").update({balance: admNewBal}).eq("id", adminId);
+      await db.from("transactions").insert({
+        user_id: adminId, id: "tx_"+genId(), type: "deposit",
+        amount: adminTotalPayout, network: "internal", status: "confirmed",
+        created_at: resolvedAt,
+        description: `✅ Resolución MM · "${titleShort}" · ${pairedShares.toFixed(0)} pares $${pairedPayout} + sin par $${(unpairYesRefund+unpairNoRefund).toFixed(2)} + comprometidos $${committedWinPayout}`
+      });
+      const ai = STATE.users.findIndex(u=>String(u.id)===adminId);
+      if(ai>=0) STATE.users[ai]={...STATE.users[ai], balance: admNewBal};
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // PASO 6 — Usuarios ganadores → $0.98 por share
+  // ══════════════════════════════════════════════════════════════════
+  const userIds = [...new Set((positions||[])
+    .filter(p=>String(p.user_id)!==adminId)
+    .map(p=>String(p.user_id)))];
+
+  let totalWinners = 0;
 
   for(const uid of userIds){
-    const pos = positions.find(p=>String(p.user_id)===uid);
+    const pos = (positions||[]).find(p=>String(p.user_id)===uid);
     if(!pos) continue;
     const winShares  = result==="YES" ? (pos.yes_shares||0) : (pos.no_shares||0);
     const loseShares = result==="YES" ? (pos.no_shares||0)  : (pos.yes_shares||0);
 
-    // Fetch fresh balance from DB
     const {data:uw} = await db.from("users").select("balance,username").eq("id",uid).maybeSingle();
     if(!uw) continue;
 
-    if(winShares > 0){
-      // ── GANADOR: pago neto (shares × $1) menos 2% exit spread ──
-      const grossPayout = Math.round(winShares * 100) / 100;          // shares × $1
-      const exitFee     = Math.round(grossPayout * EXIT_SPREAD * 100) / 100; // 2%
-      const payout      = Math.round((grossPayout - exitFee) * 100) / 100;   // neto al usuario
-      console.log(`[Resolve] uid=${uid} winShares=${winShares} gross=${grossPayout} exitFee=${exitFee} payout=${payout}`);
+    if(winShares > 0.001){
+      totalWinners++;
+      const payout  = Math.round(winShares * 0.98 * 100) / 100;
+      const exitFee = Math.round(winShares * 0.02 * 100) / 100;
+      const newBal  = Math.round(((uw.balance||0) + payout) * 100) / 100;
 
-      // Acreditar neto al ganador
-      const newBal = Math.round(((uw.balance||0) + payout) * 100) / 100;
       await db.from("users").update({balance: newBal}).eq("id", uid);
       await db.from("transactions").insert({
         user_id: uid, id: "tx_"+genId(), type: "deposit", amount: payout,
@@ -9691,19 +9893,19 @@ async function adminResolve(id,result){
         description: `✅ Ganaste · "${titleShort}" · ${winShares.toFixed(4)} shares × $0.98`
       });
 
-      // Acreditar exit spread (2%) al admin en USD
-      if(exitFee > 0.001 && adminId){
-        const {data:adm} = await db.from("users").select("balance").eq("id", adminId).maybeSingle();
-        if(adm){
-          const admBal = Math.round(((adm.balance||0) + exitFee) * 100) / 100;
-          await db.from("users").update({balance: admBal}).eq("id", adminId);
+      // Exit spread (2%) al admin
+      if(exitFee > 0.001){
+        const {data:admE} = await db.from("users").select("balance").eq("id",adminId).maybeSingle();
+        if(admE){
+          const admEB = Math.round(((admE.balance||0) + exitFee) * 100) / 100;
+          await db.from("users").update({balance: admEB}).eq("id", adminId);
           await db.from("transactions").insert({
             user_id: adminId, id: "tx_"+genId(), type: "deposit", amount: exitFee,
             network: "internal", status: "confirmed", created_at: resolvedAt,
-            description: `💰 Spread salida (2%) · "${titleShort}" · ${winShares.toFixed(4)} shares ganadores`
+            description: `💰 Spread salida 2% · "${titleShort}" · ${winShares.toFixed(2)} shares @${uid.slice(0,6)}`
           });
-          const ai = STATE.users.findIndex(u=>String(u.id)===String(adminId));
-          if(ai>=0) STATE.users[ai]={...STATE.users[ai], balance: admBal};
+          const ai = STATE.users.findIndex(u=>String(u.id)===adminId);
+          if(ai>=0) STATE.users[ai]={...STATE.users[ai], balance: admEB};
         }
       }
 
@@ -9711,126 +9913,78 @@ async function adminResolve(id,result){
       if(ui>=0) STATE.users[ui]={...STATE.users[ui], balance: newBal};
     }
 
-    if(loseShares > 0){
-      // ── PERDEDOR: registrar pérdida (balance ya descontado al comprar) ──
+    if(loseShares > 0.001){
       await db.from("transactions").insert({
-        user_id: uid, id: "tx_"+genId(), type: "loss",
-        amount: Math.round(loseShares * (1 - (getPrice({qYes:1,qNo:1},"YES"))) * 100)/100,
+        user_id: uid, id: "tx_"+genId(), type: "loss", amount: 0,
         network: "internal", status: "confirmed", created_at: resolvedAt,
-        description: `❌ Perdiste · "${titleShort}" · ${loseShares.toFixed(4)} shares ${loseSide}`
+        description: `❌ Perdiste · "${titleShort}" · ${loseShares.toFixed(4)} shares ${result==="YES"?"NO":"SÍ"}`
       });
     }
   }
-  const totalWinners = userIds.filter(uid=>{
-    const pos = positions.find(p=>String(p.user_id)===uid);
-    const ws = result==="YES"?(pos?.yes_shares||0):(pos?.no_shares||0);
-    return ws > 0;
-  }).length;
 
-  // ── Devolver capital de órdenes MM no ejecutadas + pagar shares ganadores MM ──
-  // Las órdenes MM que quedaron sin ejecutar (unfilled) tienen capital bloqueado que hay que devolver.
-  // Los shares MM ganadores ya se pagaron en el loop de positions arriba.
-  // Los shares MM del lado perdedor no se pagan ($0).
-  const {data:openMmOrders} = await db.from("orders")
-    .select("*")
-    .eq("market_id", id)
-    .eq("is_mm", true)
-    .in("status", ["open","partial"]);
+  // ══════════════════════════════════════════════════════════════════
+  // PASO 7 — Cancelar órdenes pendientes y devolver capital
+  // ══════════════════════════════════════════════════════════════════
+  // Cancelar todas las órdenes del mercado
+  await db.from("orders").update({status:"cancelled"}).eq("market_id",id).in("status",["open","partial"]);
 
-  let mmRefundTotal = 0;
-  if(openMmOrders && openMmOrders.length > 0){
-    // Agrupar refunds por user para hacer un solo UPDATE por usuario
-    const refundByUser = {};
-    for(const order of openMmOrders){
-      // Solo devolver la parte NO ejecutada (la ejecutada ya generó posición y se pagó arriba)
-      const unfilledShares = Math.max(0, (order.shares||0) - (order.filled||0));
-      const refund = Math.round(unfilledShares * (order.price||0) * 100) / 100;
-      console.log(`[Resolve MM] order ${order.id} side=${order.side} shares=${order.shares} filled=${order.filled} unfilled=${unfilledShares} refund=${refund}`);
-      if(refund > 0.001){
-        const uid = String(order.user_id);
-        refundByUser[uid] = (refundByUser[uid]||0) + refund;
-        mmRefundTotal += refund;
-      }
-      await db.from("orders").update({status:"cancelled"}).eq("id", order.id);
-    }
-    // Acreditar refunds agrupados
-    for(const [uid, refund] of Object.entries(refundByUser)){
-      const {data:uw} = await db.from("users").select("balance").eq("id", uid).maybeSingle();
-      if(!uw) continue;
-      const newBal = Math.round(((uw.balance||0) + refund) * 100) / 100;
-      await db.from("users").update({balance: newBal}).eq("id", uid);
-      // Registrar transacción de devolución MM
+  // Devolver capital de órdenes límite reales de usuarios (no espejos, no MM)
+  const {data:limitOrders} = await db.from("orders")
+    .select("user_id,shares,filled,price,side")
+    .eq("market_id",id)
+    .eq("is_mm",false)
+    .eq("is_mirror",false)
+    .in("status",["open","partial"]);
+
+  for(const ord of (limitOrders||[])){
+    const uid = String(ord.user_id);
+    if(uid===adminId) continue;
+    const unfilledShares = Math.max(0,(ord.shares||0)-(ord.filled||0));
+    const refund = Math.round(unfilledShares*(ord.price||0)*100)/100;
+    if(refund < 0.001) continue;
+    const {data:ow} = await db.from("users").select("balance").eq("id",uid).maybeSingle();
+    if(!ow) continue;
+    const newBal = Math.round(((ow.balance||0)+refund)*100)/100;
+    await db.from("users").update({balance:newBal}).eq("id",uid);
+    await db.from("transactions").insert({
+      user_id:uid, id:"tx_"+genId(), type:"deposit", amount:refund,
+      network:"internal", status:"confirmed", created_at:resolvedAt,
+      description:`♻️ Devolución orden pendiente · "${titleShort}"`
+    });
+    const ui = STATE.users.findIndex(u=>String(u.id)===uid);
+    if(ui>=0) STATE.users[ui]={...STATE.users[ui], balance:newBal};
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // PASO 8 — Acreditar spread_pool al admin
+  // ══════════════════════════════════════════════════════════════════
+  const spreadToCredit = Math.round((spreadPool||0)*100)/100;
+  if(spreadToCredit > 0.001){
+    const {data:admS} = await db.from("users").select("balance").eq("id",adminId).maybeSingle();
+    if(admS){
+      const admSBal = Math.round(((admS.balance||0)+spreadToCredit)*100)/100;
+      await db.from("users").update({balance:admSBal}).eq("id",adminId);
       await db.from("transactions").insert({
-        user_id: uid,
-        id: "tx_"+genId(),
-        type: "deposit",
-        amount: refund,
-        network: "internal",
-        description: `♻️ Devolución MM · "${titleShort}" · capital no ejecutado`,
-        created_at: resolvedAt,
-        status: "confirmed"
+        user_id:adminId, id:"tx_"+genId(), type:"deposit",
+        amount:spreadToCredit, network:"internal", status:"confirmed",
+        created_at:resolvedAt,
+        description:`💰 Spreads acumulados · "${titleShort}"`
       });
-      const oi = STATE.users.findIndex(u=>String(u.id)===uid);
-      if(oi>=0) STATE.users[oi]={...STATE.users[oi], balance: newBal};
-      console.log(`[Resolve MM] Refund ${usd(refund)} → uid=${uid} newBal=${newBal}`);
-    }
-    console.log(`[Resolve] MM capital devuelto: ${usd(mmRefundTotal)} de ${openMmOrders.length} órdenes`);
-  }
-
-  // Cancelar órdenes espejo y órdenes pendientes de usuarios sin ejecutar
-  const {data:pendingOrders} = await db.from("orders")
-    .select("id,user_id,shares,filled,price,is_mirror")
-    .eq("market_id", id)
-    .in("status", ["open","partial"])
-    .eq("is_mm", false);
-
-  if(pendingOrders && pendingOrders.length > 0){
-    for(const order of pendingOrders){
-      // Órdenes espejo no son dinero real del usuario — no devolver
-      // Órdenes reales sin ejecutar sí devolver
-      if(!order.is_mirror){
-        const unfilledShares = (order.shares||0) - (order.filled||0);
-        const refund = Math.round(unfilledShares * (order.price||0) * 100) / 100;
-        if(refund > 0.001){
-          const {data:orderOwner} = await db.from("users")
-            .select("balance").eq("id", order.user_id).maybeSingle();
-          if(orderOwner){
-            const newBal = Math.round(((orderOwner.balance||0) + refund) * 100) / 100;
-            await db.from("users").update({balance: newBal}).eq("id", order.user_id);
-            const oi = STATE.users.findIndex(u=>String(u.id)===String(order.user_id));
-            if(oi>=0) STATE.users[oi]={...STATE.users[oi], balance: newBal};
-          }
-        }
-      }
-      await db.from("orders").update({status:"cancelled"}).eq("id", order.id);
+      await db.from("markets").update({spread_pool:0}).eq("id",id);
+      const ai = STATE.users.findIndex(u=>String(u.id)===adminId);
+      if(ai>=0) STATE.users[ai]={...STATE.users[ai], balance:admSBal};
     }
   }
 
-  // ── Acreditar spread_pool acumulado al admin ─────────────────
-  const spreadToCredit = Math.round((m.spreadPool||0) * 100) / 100;
-  if(spreadToCredit > 0.001 && adminId){
-    const {data:admSpread} = await db.from("users").select("balance").eq("id", adminId).maybeSingle();
-    if(admSpread){
-      const newAdmBal = Math.round(((admSpread.balance||0) + spreadToCredit) * 100) / 100;
-      await db.from("users").update({balance: newAdmBal}).eq("id", adminId);
-      await db.from("transactions").insert({
-        user_id: adminId, id: "tx_"+genId(), type: "deposit",
-        amount: spreadToCredit, network: "internal", status: "confirmed",
-        created_at: resolvedAt,
-        description: `💰 Spreads mercado · "${titleShort}" · acumulado durante el mercado`
-      });
-      const ai = STATE.users.findIndex(u=>String(u.id)===String(adminId));
-      if(ai>=0) STATE.users[ai]={...STATE.users[ai], balance: newAdmBal};
-      console.log(`[Resolve] Spread pool ${usd(spreadToCredit)} → admin`);
-    }
-    // Reset spread_pool en DB a 0 (ya cobrado)
-    await db.from("markets").update({spread_pool: 0}).eq("id", id);
-  }
-
-  const payStr=payoutPerShare>=0.999?"$1.00/share":`${usd(payoutPerShare)}/share`;
-  const refundStr = mmRefundTotal>0 ? ` · MM devuelto: ${usd(mmRefundTotal)}` : "";
-  const spreadStr = spreadToCredit>0 ? ` · Spreads cobrados: ${usd(spreadToCredit)}` : "";
-  notify(`✓ Resuelto ${result} · ${payStr} · ${totalWinners} ganador${totalWinners!==1?"es":""} pagado${totalWinners!==1?"s":""} de ${userIds.length} participante${userIds.length!==1?"s":""}${refundStr}${spreadStr}`);
+  // ── Notificación final ───────────────────────────────────────────
+  notify(
+    `✅ Resuelto ${result} · `+
+    `Pares admin: $${pairedPayout} · `+
+    `Sin par: $${(unpairYesRefund+unpairNoRefund).toFixed(2)} · `+
+    `Comprometidos ganadores: $${committedWinPayout} · `+
+    `${totalWinners} usuario${totalWinners!==1?"s":""} pagado${totalWinners!==1?"s":""}`+
+    (spreadToCredit>0.001 ? ` · Spreads: $${spreadToCredit.toFixed(2)}` : "")
+  );
   render();
 }
 
