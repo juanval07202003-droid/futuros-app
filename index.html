@@ -4681,13 +4681,33 @@ function renderMarket(){
       ${u&&((pos.YES||0)>0||(pos.NO||0)>0)?`
       <div class="card" style="padding:16px;margin-top:12px">
         <div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px">Mis posiciones</div>
-        ${(pos.YES||0)>0?`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-          <div><span style="color:var(--yes);font-weight:700">SÍ</span> <span style="color:var(--muted);font-size:12px">${(pos.YES||0).toFixed(2)} shares</span></div>
-          <div style="font-weight:700;color:var(--yes)">${usd((pos.YES||0)*pYes)}</div>
+        ${(pos.YES||0)>0?`
+        <div style="margin-bottom:10px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+            <div style="display:flex;align-items:center;gap:6px">
+              <span style="color:var(--yes);font-weight:700">SÍ</span>
+              <span style="color:var(--muted);font-size:12px">${(pos.YES||0).toFixed(2)} shares</span>
+            </div>
+            <div style="font-weight:700;color:var(--yes)">${usd((pos.YES||0)*pYes)}</div>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <span style="font-size:11px;color:var(--muted)">Si gana SÍ → $0.98/share</span>
+            <span style="font-size:12px;font-weight:700;color:var(--yes)">+${usd(Math.round((pos.YES||0)*0.98*100)/100)}</span>
+          </div>
         </div>`:""}
-        ${(pos.NO||0)>0?`<div style="display:flex;justify-content:space-between;align-items:center">
-          <div><span style="color:var(--no);font-weight:700">NO</span> <span style="color:var(--muted);font-size:12px">${(pos.NO||0).toFixed(2)} shares</span></div>
-          <div style="font-weight:700;color:var(--no)">${usd((pos.NO||0)*(1-pYes))}</div>
+        ${(pos.NO||0)>0?`
+        <div style="${(pos.YES||0)>0?"border-top:1px solid var(--border);padding-top:10px":""}">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+            <div style="display:flex;align-items:center;gap:6px">
+              <span style="color:var(--no);font-weight:700">NO</span>
+              <span style="color:var(--muted);font-size:12px">${(pos.NO||0).toFixed(2)} shares</span>
+            </div>
+            <div style="font-weight:700;color:var(--no)">${usd((pos.NO||0)*(1-pYes))}</div>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <span style="font-size:11px;color:var(--muted)">Si gana NO → $0.98/share</span>
+            <span style="font-size:12px;font-weight:700;color:var(--no)">+${usd(Math.round((pos.NO||0)*0.98*100)/100)}</span>
+          </div>
         </div>`:""}
       </div>`:""}
       ${u?`<div id="pending-orders-${m.id}" style="margin-top:8px"></div>`:""}
@@ -8455,86 +8475,29 @@ function renderAdminResolve(){
       : m.oracleLocked ? ";border-color:#ef0027;border-width:2px" : "";
 
     // ── Datos MM en tiempo real ──────────────────────────────────
-    const adminUser   = STATE.users.find(u=>u.role==="admin");
-    const adminId     = adminUser?.id;
-    const adminPos    = adminId ? (STATE.users.find(u=>u.id===adminId)?.positions?.[m.id]||{}) : {};
-    const mmYes       = adminPos.YES || 0;
-    const mmNo        = adminPos.NO  || 0;
-    const invested    = m.seedLiquidity || 0;
-
-    // Spread acumulado en el mercado (se cobra al resolver, no antes)
-    const spreads     = m.spreadPool || 0;
-
-    // Pool total del mercado (dinero real dentro)
-    const poolTotal   = (m.qYes||0) + (m.qNo||0);
-    const poolYes     = m.qYes || 0;
-    const poolNo      = m.qNo  || 0;
-
-    // ── Shares comprometidos del MM ─────────────────────────────
-    // Los shares comprometidos = filled de las órdenes MM
-    // (cada share comprometido tiene un espejo activo como contraparte)
-    // Como no tenemos las órdenes MM en STATE, los estimamos por diferencia:
-    // comprometidos = total - libres donde libres = shares iniciales del MM
-    const mmInitialYes  = m.lpYes ? Math.round(m.lpYes / Math.max(0.001, pYes) * 100)/100
-                                  : (m.seedLiquidity ? Math.round(m.seedLiquidity/2/Math.max(0.001,pYes)*100)/100 : 0);
-    const mmInitialNo   = m.lpNo  ? Math.round(m.lpNo  / Math.max(0.001, pNo)  * 100)/100
-                                  : (m.seedLiquidity ? Math.round(m.seedLiquidity/2/Math.max(0.001,pNo) *100)/100 : 0);
-
-    // Precio de compra original del admin (precio al crear el mercado)
-    const mmBuyPriceYes = m.lpYes && mmInitialYes > 0 ? Math.round(m.lpYes/mmInitialYes*100)/100 : pYes;
-    const mmBuyPriceNo  = m.lpNo  && mmInitialNo  > 0 ? Math.round(m.lpNo /mmInitialNo *100)/100 : pNo;
-
-    // Shares comprometidos (actuando como contraparte, tienen espejo activo)
-    const mmYesCommitted = Math.max(0, Math.round((mmYes - mmInitialYes) * 100)/100);
-    const mmNoCommitted  = Math.max(0, Math.round((mmNo  - mmInitialNo ) * 100)/100);
-    const mmYesFree      = Math.max(0, mmYes - mmYesCommitted);
-    const mmNoFree       = Math.max(0, mmNo  - mmNoCommitted);
-
-    // Pares libres que se emparejan entre sí → $0.98 por par
-    const mmPairs     = Math.min(mmYesFree, mmNoFree);
-    const mmPairPayout = Math.round(mmPairs * 0.98 * 100) / 100;
-
-    // Shares libres sin par → devolver precio de compra
-    const mmUnpairYes = Math.max(0, mmYesFree - mmPairs);
-    const mmUnpairNo  = Math.max(0, mmNoFree  - mmPairs);
-    const mmUnpairYesRefund = Math.round(mmUnpairYes * mmBuyPriceYes * 100) / 100;
-    const mmUnpairNoRefund  = Math.round(mmUnpairNo  * mmBuyPriceNo  * 100) / 100;
-
-    // Shares comprometidos ganadores → $0.98 por share
-    // Shares comprometidos perdedores → $0 (cubrieron a usuarios)
-    const mmCommittedWinYes = Math.round(mmYesCommitted * 0.98 * 100) / 100;
-    const mmCommittedWinNo  = Math.round(mmNoCommitted  * 0.98 * 100) / 100;
-
-    // Pérdida por diferencia de precio (comprometidos a precio diferente al compra)
-    // El admin puso contraparte al precio actual pero compró a precio original
-    // Diferencia = (precio_compra - precio_contraparte) × shares_comprometidos
-    const mmLossPriceYes = Math.max(0, Math.round((mmBuyPriceYes - (1-pYes)) * mmYesCommitted * 100)/100);
-    const mmLossPriceNo  = Math.max(0, Math.round((mmBuyPriceNo  - (1-pNo )) * mmNoCommitted  * 100)/100);
-
-    // Escenario SÍ gana:
-    // + pares × $0.98
-    // + sin par SÍ × precio_compra_SÍ
-    // + sin par NO × precio_compra_NO
-    // + comprometidos SÍ × $0.98
-    // + spreads
-    const retIfYes = Math.round((mmPairPayout + mmUnpairYesRefund + mmUnpairNoRefund + mmCommittedWinYes + spreads) * 100) / 100;
-    // Escenario NO gana:
-    const retIfNo  = Math.round((mmPairPayout + mmUnpairYesRefund + mmUnpairNoRefund + mmCommittedWinNo  + spreads) * 100) / 100;
-    const netIfYes = Math.round((retIfYes - invested) * 100) / 100;
-    const netIfNo  = Math.round((retIfNo  - invested) * 100) / 100;
-
-    // Pérdida máxima real = shares comprometidos del lado perdedor × precio que costaron como contraparte
-    const maxLossIfSiWins  = Math.round(mmNoCommitted  * (1-pYes) * 100) / 100; // perdiste NO comprometidos
-    const maxLossIfNoWins  = Math.round(mmYesCommitted * (1-pNo ) * 100) / 100; // perdiste SÍ comprometidos
-
-    const totalInMarket = Math.round((poolTotal + spreads) * 100) / 100;
+    // ── Datos del nuevo modelo MM ────────────────────────────────
+    const spreads   = m.spreadPool || 0;
+    const poolYes   = m.qYes || 0;
+    const poolNo    = m.qNo  || 0;
+    const poolTotal = Math.round((poolYes + poolNo) * 100) / 100;
+    const lpYes     = m.lpYes || 0;
+    const lpNo      = m.lpNo  || 0;
+    const lpTotal   = Math.round((lpYes + lpNo) * 100) / 100;
+    const invested  = m.seedLiquidity || 0;
+    const mmCommittedYes   = Math.max(0, Math.round((invested/2 - lpYes) * 100)/100);
+    const mmCommittedNo    = Math.max(0, Math.round((invested/2 - lpNo)  * 100)/100);
+    const mmCommittedTotal = Math.round((mmCommittedYes + mmCommittedNo) * 100)/100;
+    const maxLossIfYes  = mmCommittedNo;
+    const maxLossIfNo   = mmCommittedYes;
+    const netIfYes = Math.round((lpTotal + spreads - maxLossIfYes) * 100)/100;
+    const netIfNo  = Math.round((lpTotal + spreads - maxLossIfNo)  * 100)/100;
 
     return `<div class="card" style="margin-bottom:16px${borderStyle}">
       <div style="display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap">
         <div style="flex:1;min-width:0">
 
           <!-- Título y meta -->
-          <div style="font-weight:700;font-size:14px;margin-bottom:4px">${escHtml(m.title)}</div>
+          <div style="font-weight:700;font-size:15px;margin-bottom:4px">${escHtml(m.title)}</div>
           <div class="market-meta" style="margin-bottom:10px">
             <span>SÍ: <strong style="color:var(--yes)">${pct(pYes)}</strong></span>
             <span>NO: <strong style="color:var(--no)">${pct(pNo)}</strong></span>
@@ -8543,172 +8506,122 @@ function renderAdminResolve(){
             ${oracleTag}
           </div>
 
-          <!-- Bloque 1: Dinero dentro del mercado -->
-          <div style="background:rgba(0,168,112,.05);border:1px solid rgba(0,168,112,.2);border-radius:8px;padding:8px 10px;margin-bottom:8px">
-            <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">
-              💰 Dinero dentro del mercado
-            </div>
-            <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;font-size:11px">
+          <!-- Bloque 1: Pool del mercado -->
+          <div style="background:rgba(0,168,112,.05);border:1px solid rgba(0,168,112,.2);border-radius:10px;padding:10px 12px;margin-bottom:8px">
+            <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">💰 Pool del mercado</div>
+            <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;font-size:11px">
               <div>
-                <div style="color:var(--muted);margin-bottom:1px">Pool Total</div>
-                <div style="font-weight:800;color:var(--text)">${usd(poolTotal)}</div>
+                <div style="color:var(--muted);margin-bottom:2px;font-size:10px">Total</div>
+                <div style="font-weight:800;font-size:13px;color:var(--text)">${usd(poolTotal)}</div>
               </div>
               <div>
-                <div style="color:var(--muted);margin-bottom:1px">Pool SÍ</div>
-                <div style="font-weight:700;color:var(--yes)">${usd(poolYes)}</div>
+                <div style="color:var(--muted);margin-bottom:2px;font-size:10px">Pool SÍ</div>
+                <div style="font-weight:700;font-size:13px;color:var(--yes)">${usd(poolYes)}</div>
               </div>
               <div>
-                <div style="color:var(--muted);margin-bottom:1px">Pool NO</div>
-                <div style="font-weight:700;color:var(--no)">${usd(poolNo)}</div>
+                <div style="color:var(--muted);margin-bottom:2px;font-size:10px">Pool NO</div>
+                <div style="font-weight:700;font-size:13px;color:var(--no)">${usd(poolNo)}</div>
               </div>
-              <div style="background:rgba(255,193,7,.1);border-radius:6px;padding:3px 6px">
-                <div style="color:var(--muted);margin-bottom:1px">Spreads USD (bloqueados)</div>
-                <div id="spread-live-${m.id}" style="font-weight:800;color:#b8860b">${usd(spreads)}</div>
-                <div style="font-size:9px;color:var(--muted)">se cobran al resolver</div>
+              <div style="background:rgba(255,193,7,.12);border-radius:6px;padding:4px 7px">
+                <div style="color:var(--muted);margin-bottom:2px;font-size:10px">Spreads acumulados</div>
+                <div id="spread-live-${m.id}" style="font-weight:800;font-size:13px;color:#b8860b">${usd(spreads)}</div>
+                <div style="font-size:9px;color:var(--muted)">se acreditan al resolver</div>
               </div>
             </div>
           </div>
 
-          <!-- Bloque 2: Posición MM -->
-          <div style="background:var(--card2);border-radius:8px;padding:8px 10px;margin-bottom:8px">
-            <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">
-              🏦 Posición Market Maker
-            </div>
-            <!-- Fila 1: Totales -->
-            <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;font-size:11px;margin-bottom:6px">
-              <div style="background:var(--yes-bg);border-radius:6px;padding:4px 7px">
-                <div style="color:var(--muted);margin-bottom:1px">Shares SÍ total</div>
-                <div style="font-weight:800;color:var(--yes)">${mmYes.toFixed(2)}</div>
-                <div style="font-size:9px;color:var(--muted)">comprados a ${pct(mmBuyPriceYes)}</div>
+          <!-- Bloque 2: Liquidez MM -->
+          <div style="background:var(--card2);border-radius:10px;padding:10px 12px;margin-bottom:8px">
+            <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">🏦 Liquidez Market Maker</div>
+            <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;font-size:11px;margin-bottom:8px">
+              <div style="background:var(--yes-bg);border-radius:8px;padding:6px 8px">
+                <div style="color:var(--muted);margin-bottom:2px;font-size:10px">Pool SÍ disponible</div>
+                <div style="font-weight:800;font-size:13px;color:var(--yes)">${usd(lpYes)}</div>
+                <div style="font-size:9px;color:var(--muted)">listo para cubrir</div>
               </div>
-              <div style="background:var(--no-bg);border-radius:6px;padding:4px 7px">
-                <div style="color:var(--muted);margin-bottom:1px">Shares NO total</div>
-                <div style="font-weight:800;color:var(--no)">${mmNo.toFixed(2)}</div>
-                <div style="font-size:9px;color:var(--muted)">comprados a ${pct(mmBuyPriceNo)}</div>
+              <div style="background:var(--no-bg);border-radius:8px;padding:6px 8px">
+                <div style="color:var(--muted);margin-bottom:2px;font-size:10px">Pool NO disponible</div>
+                <div style="font-weight:800;font-size:13px;color:var(--no)">${usd(lpNo)}</div>
+                <div style="font-size:9px;color:var(--muted)">listo para cubrir</div>
               </div>
-              <div style="background:var(--card);border-radius:6px;padding:4px 7px">
-                <div style="color:var(--muted);margin-bottom:1px">Invertido total</div>
-                <div style="font-weight:800;color:var(--text)">${usd(invested)}</div>
-              </div>
-              <div style="background:rgba(99,102,241,.06);border-radius:6px;padding:4px 7px">
-                <div style="color:var(--muted);margin-bottom:1px">Pares libres</div>
-                <div style="font-weight:800;color:#6366f1">${mmPairs.toFixed(1)}</div>
-                <div style="font-size:9px;color:var(--muted)">→ ${usd(mmPairPayout)}</div>
+              <div style="background:rgba(99,102,241,.06);border-radius:8px;padding:6px 8px">
+                <div style="color:var(--muted);margin-bottom:2px;font-size:10px">Total disponible</div>
+                <div style="font-weight:800;font-size:13px;color:#6366f1">${usd(lpTotal)}</div>
+                <div style="font-size:9px;color:var(--muted)">se devuelve al resolver</div>
               </div>
             </div>
-            <!-- Fila 2: Libres vs Comprometidos -->
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:11px">
-              <div style="border:1px solid rgba(0,168,112,.2);border-radius:6px;padding:6px 8px">
-                <div style="font-weight:700;color:var(--yes);margin-bottom:4px;font-size:10px">✅ LIBRES (recuperables)</div>
-                <div style="display:flex;justify-content:space-between;margin-bottom:2px">
-                  <span style="color:var(--muted)">SÍ libres sin par</span>
-                  <span>${mmUnpairYes.toFixed(2)} → ${usd(mmUnpairYesRefund)}</span>
+            <div style="border-top:1px solid var(--border);padding-top:8px">
+              <div style="font-size:10px;color:var(--muted);margin-bottom:6px;font-weight:600">⚡ Capital en órdenes de venta activas</div>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;font-size:11px">
+                <div style="display:flex;justify-content:space-between">
+                  <span style="color:var(--muted)">Lado SÍ</span>
+                  <span style="color:var(--yes);font-weight:700">${usd(mmCommittedYes)}</span>
                 </div>
-                <div style="display:flex;justify-content:space-between;margin-bottom:2px">
-                  <span style="color:var(--muted)">NO libres sin par</span>
-                  <span>${mmUnpairNo.toFixed(2)} → ${usd(mmUnpairNoRefund)}</span>
+                <div style="display:flex;justify-content:space-between">
+                  <span style="color:var(--muted)">Lado NO</span>
+                  <span style="color:var(--no);font-weight:700">${usd(mmCommittedNo)}</span>
                 </div>
-                <div style="display:flex;justify-content:space-between;border-top:1px solid var(--border);padding-top:3px;margin-top:3px">
-                  <span style="color:var(--muted)">Pares × $0.98</span>
-                  <span style="font-weight:700;color:var(--yes)">${usd(mmPairPayout)}</span>
-                </div>
-              </div>
-              <div style="border:1px solid rgba(224,40,74,.2);border-radius:6px;padding:6px 8px">
-                <div style="font-weight:700;color:var(--no);margin-bottom:4px;font-size:10px">⚠️ COMPROMETIDOS (en riesgo)</div>
-                <div style="display:flex;justify-content:space-between;margin-bottom:2px">
-                  <span style="color:var(--muted)">SÍ comprometidos</span>
-                  <span style="color:var(--yes)">${mmYesCommitted.toFixed(2)} sh</span>
-                </div>
-                <div style="display:flex;justify-content:space-between;margin-bottom:2px">
-                  <span style="color:var(--muted)">NO comprometidos</span>
-                  <span style="color:var(--no)">${mmNoCommitted.toFixed(2)} sh</span>
-                </div>
-                <div style="display:flex;justify-content:space-between;border-top:1px solid var(--border);padding-top:3px;margin-top:3px">
-                  <span style="color:var(--muted)">Precio actual SÍ/NO</span>
-                  <span>${pct(pYes)} / ${pct(pNo)}</span>
+                <div style="display:flex;justify-content:space-between">
+                  <span style="color:var(--muted)">Total</span>
+                  <span style="font-weight:700">${usd(mmCommittedTotal)}</span>
                 </div>
               </div>
             </div>
           </div>
 
-          <!-- Bloque 3: Escenarios de resolución -->
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:11px;margin-bottom:6px">
-            <div style="background:var(--yes-bg);border:1px solid rgba(0,168,112,.2);border-radius:8px;padding:8px 10px">
-              <div style="font-weight:700;color:var(--yes);margin-bottom:6px">✅ Si gana SÍ</div>
-              <div style="display:flex;justify-content:space-between;margin-bottom:2px">
-                <span style="color:var(--muted)">Pares libres × $0.98</span>
-                <span>+${usd(mmPairPayout)}</span>
+          <!-- Bloque 3: Escenarios al resolver -->
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:11px;margin-bottom:8px">
+            <div style="background:var(--yes-bg);border:1px solid rgba(0,168,112,.25);border-radius:10px;padding:10px">
+              <div style="font-weight:700;color:var(--yes);margin-bottom:8px;font-size:12px">✅ Si gana SÍ</div>
+              <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+                <span style="color:var(--muted)">Pool disponible devuelto</span>
+                <span>+${usd(lpTotal)}</span>
               </div>
-              <div style="display:flex;justify-content:space-between;margin-bottom:2px">
-                <span style="color:var(--muted)">Sin par SÍ → precio compra</span>
-                <span>+${usd(mmUnpairYesRefund)}</span>
-              </div>
-              <div style="display:flex;justify-content:space-between;margin-bottom:2px">
-                <span style="color:var(--muted)">Sin par NO → precio compra</span>
-                <span>+${usd(mmUnpairNoRefund)}</span>
-              </div>
-              <div style="display:flex;justify-content:space-between;margin-bottom:2px">
-                <span style="color:var(--yes);font-weight:600">Comprometidos SÍ × $0.98</span>
-                <span style="color:var(--yes)">+${usd(mmCommittedWinYes)}</span>
-              </div>
-              <div style="display:flex;justify-content:space-between;margin-bottom:2px">
-                <span style="color:var(--no)">Comprometidos NO → perdidos</span>
-                <span style="color:var(--no)">-${usd(maxLossIfSiWins)}</span>
-              </div>
-              <div style="display:flex;justify-content:space-between;margin-bottom:2px">
-                <span style="color:var(--muted)">+ Spreads acumulados</span>
+              <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+                <span style="color:var(--muted)">Spreads acumulados</span>
                 <span style="color:#b8860b">+${usd(spreads)}</span>
               </div>
-              <div style="height:1px;background:rgba(0,168,112,.3);margin:5px 0"></div>
+              <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+                <span style="color:var(--no)">Pool NO comprometido → $0</span>
+                <span style="color:var(--no)">-${usd(maxLossIfYes)}</span>
+              </div>
+              <div style="height:1px;background:rgba(0,168,112,.3);margin:6px 0"></div>
               <div style="display:flex;justify-content:space-between">
-                <span style="font-weight:700">Neto admin</span>
-                <span style="font-weight:800;color:${netIfYes>=0?'var(--yes)':'var(--no)'}">
+                <span style="font-weight:700">Neto MM</span>
+                <span style="font-weight:800;font-size:13px;color:${netIfYes>=0?'var(--yes)':'var(--no)'}">
                   ${netIfYes>=0?'+':''}${usd(netIfYes)}
                 </span>
               </div>
             </div>
-            <div style="background:var(--no-bg);border:1px solid rgba(224,40,74,.2);border-radius:8px;padding:8px 10px">
-              <div style="font-weight:700;color:var(--no);margin-bottom:6px">❌ Si gana NO</div>
-              <div style="display:flex;justify-content:space-between;margin-bottom:2px">
-                <span style="color:var(--muted)">Pares libres × $0.98</span>
-                <span>+${usd(mmPairPayout)}</span>
+            <div style="background:var(--no-bg);border:1px solid rgba(224,40,74,.25);border-radius:10px;padding:10px">
+              <div style="font-weight:700;color:var(--no);margin-bottom:8px;font-size:12px">❌ Si gana NO</div>
+              <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+                <span style="color:var(--muted)">Pool disponible devuelto</span>
+                <span>+${usd(lpTotal)}</span>
               </div>
-              <div style="display:flex;justify-content:space-between;margin-bottom:2px">
-                <span style="color:var(--muted)">Sin par SÍ → precio compra</span>
-                <span>+${usd(mmUnpairYesRefund)}</span>
-              </div>
-              <div style="display:flex;justify-content:space-between;margin-bottom:2px">
-                <span style="color:var(--muted)">Sin par NO → precio compra</span>
-                <span>+${usd(mmUnpairNoRefund)}</span>
-              </div>
-              <div style="display:flex;justify-content:space-between;margin-bottom:2px">
-                <span style="color:var(--no);font-weight:600">Comprometidos NO × $0.98</span>
-                <span style="color:var(--no)">+${usd(mmCommittedWinNo)}</span>
-              </div>
-              <div style="display:flex;justify-content:space-between;margin-bottom:2px">
-                <span style="color:var(--yes)">Comprometidos SÍ → perdidos</span>
-                <span style="color:var(--yes)">-${usd(maxLossIfNoWins)}</span>
-              </div>
-              <div style="display:flex;justify-content:space-between;margin-bottom:2px">
-                <span style="color:var(--muted)">+ Spreads acumulados</span>
+              <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+                <span style="color:var(--muted)">Spreads acumulados</span>
                 <span style="color:#b8860b">+${usd(spreads)}</span>
               </div>
-              <div style="height:1px;background:rgba(224,40,74,.3);margin:5px 0"></div>
+              <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+                <span style="color:var(--yes)">Pool SÍ comprometido → $0</span>
+                <span style="color:var(--yes)">-${usd(maxLossIfNo)}</span>
+              </div>
+              <div style="height:1px;background:rgba(224,40,74,.3);margin:6px 0"></div>
               <div style="display:flex;justify-content:space-between">
-                <span style="font-weight:700">Neto admin</span>
-                <span style="font-weight:800;color:${netIfNo>=0?'var(--yes)':'var(--no)'}">
+                <span style="font-weight:700">Neto MM</span>
+                <span style="font-weight:800;font-size:13px;color:${netIfNo>=0?'var(--yes)':'var(--no)'}">
                   ${netIfNo>=0?'+':''}${usd(netIfNo)}
                 </span>
               </div>
             </div>
           </div>
-          ${m.manualPaused?`<div style="color:#f59e0b;font-size:12px;font-weight:700;margin-top:6px">⏸ ${m.pauseReason||"Pausado"}</div>`:""}
-          ${m.oracleLocked?`<div style="color:var(--no);font-size:12px;font-weight:700;margin-top:6px">🔒 Oracle bloqueado: ${escHtml(m.pauseReason||"")}</div>`:""}
+
+          ${m.manualPaused?`<div style="color:#f59e0b;font-size:12px;font-weight:700;margin-top:4px">⏸ ${m.pauseReason||"Pausado"}</div>`:""}
+          ${m.oracleLocked?`<div style="color:var(--no);font-size:12px;font-weight:700;margin-top:4px">🔒 Oracle bloqueado: ${escHtml(m.pauseReason||"")}</div>`:""}
 
           <!-- Comprometidos en tiempo real (desde DB) -->
-          <div id="mm-committed-${m.id}" style="margin-top:8px">
-            <div style="font-size:11px;color:var(--muted)">Cargando datos MM...</div>
-          </div>
+          <div id="mm-committed-${m.id}" style="margin-top:8px"></div>
 
           <!-- Posiciones de usuarios en tiempo real -->
           <div id="admin-pos-${m.id}" style="margin-top:0">
@@ -8719,17 +8632,16 @@ function renderAdminResolve(){
         </div>
 
         <!-- Botones -->
-        <div style="display:flex;flex-direction:column;gap:6px;flex-shrink:0;align-items:stretch;min-width:110px">
+        <div style="display:flex;flex-direction:column;gap:6px;flex-shrink:0;align-items:stretch;min-width:120px">
           ${showUnlock?`<button class="btn-ghost" style="font-size:12px;padding:5px 12px;color:#f59e0b;border-color:#f59e0b"
             onclick="adminUnlockMarket('${m.id}')">🔓 Desbloquear</button>`:""}
           ${m.manualPaused
             ?`<button class="btn-ghost" style="font-size:12px;padding:5px 12px" onclick="adminUnpauseMarket('${m.id}')">▶ Reanudar</button>`
             :`<button class="btn-ghost" style="font-size:12px;padding:5px 12px" onclick="adminPauseMarket('${m.id}')">⏸ Pausar</button>`}
-          <button class="btn-green" style="font-size:12px;padding:6px 14px"
+          <button class="btn-green" style="font-size:13px;padding:8px 14px;font-weight:700"
             onclick="adminResolve('${m.id}','YES')">✅ Resolver SÍ</button>
-          <button class="btn-red" style="font-size:12px;padding:6px 14px"
+          <button class="btn-red" style="font-size:13px;padding:8px 14px;font-weight:700"
             onclick="adminResolve('${m.id}','NO')">❌ Resolver NO</button>
-
         </div>
       </div>
     </div>`;
