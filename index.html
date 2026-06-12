@@ -2679,7 +2679,16 @@ function render(){
   if(footer){footer.style.display=(STATE.view==="admin"||STATE.view==="market")?"none":"block";}
   switch(STATE.view){
     case"home":     app.innerHTML=renderHome();     break;
-    case"feed":     app.innerHTML=renderFeed();     dbLoadFeed(); break;
+    case"feed":     app.innerHTML=renderFeed();     dbLoadFeed();
+      // Cargar órdenes pendientes para cada mercado visible en el feed
+      setTimeout(()=>{
+        const u=getUser();
+        if(u) STATE.markets.forEach(m=>{
+          const el=document.getElementById("pending-orders-"+m.id);
+          if(el) loadPendingOrders(m.id);
+        });
+      }, 300);
+      break;
     case"auth":     app.innerHTML=renderAuth();     bindAuth(); break;
     case"market":   app.innerHTML=renderMarket();
       (()=>{const mu=getUser(),mm=getMarket(STATE.selectedMarket);if(mu&&mm)setTimeout(()=>loadPendingOrders(mm.id),100);})();
@@ -4696,38 +4705,50 @@ async function loadPendingOrders(marketId){
   const el = document.getElementById("pending-orders-"+marketId);
   if(!el) return;
 
-  const {data:orders} = await db.from("orders")
-    .select("id,side,price,shares,filled,status,is_mirror,created_at")
+  const {data:ordersRaw} = await db.from("orders")
+    .select("id,side,price,shares,filled,status,is_mirror,is_mm,mm_order_id,created_at")
     .eq("market_id", marketId)
     .eq("user_id", u.id)
     .in("status", ["open","partial"])
     .eq("is_mirror", false)
+    .eq("is_mm", false)
     .order("created_at", {ascending:false});
+
+  // Excluir órdenes puente del MM: el usuario ya recibió sus shares,
+  // solo espera que llegue contraparte real para liberar al MM
+  const orders = (ordersRaw||[]).filter(o => !o.mm_order_id);
 
   if(!orders || orders.length === 0){ el.innerHTML=""; return; }
 
   el.innerHTML = `<div class="card" style="padding:14px;margin-top:0">
-    <div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;
-        letter-spacing:.5px;margin-bottom:10px">⏳ Órdenes pendientes</div>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+      <div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;
+          letter-spacing:.5px">⏳ Órdenes pendientes</div>
+      <span style="background:rgba(255,193,7,.2);color:#b8860b;font-size:10px;font-weight:700;
+          padding:1px 7px;border-radius:10px">${orders.length}</span>
+    </div>
     ${orders.map(o=>{
-      const pending = (o.shares||0) - (o.filled||0);
-      const isSell  = o.order_type === "sell" || o.is_sell;
-      const color   = o.side==="YES" ? "var(--yes)" : "var(--no)";
+      const pending   = (o.shares||0) - (o.filled||0);
+      const filled    = o.filled||0;
+      const pctFilled = o.shares>0 ? Math.round(filled/o.shares*100) : 0;
+      const color     = o.side==="YES" ? "var(--yes)" : "var(--no)";
+      const sideLabel = o.side==="YES" ? "SÍ" : "NO";
       return `<div style="display:flex;justify-content:space-between;align-items:center;
-          padding:6px 0;border-bottom:1px solid var(--border)">
-        <div>
-          <span style="color:${color};font-weight:700;font-size:12px">${o.side}</span>
-          <span style="color:var(--muted);font-size:11px;margin-left:6px">
-            ${pending.toFixed(2)} shares · ${pct(o.price||0)}
-          </span>
-          <span style="background:rgba(255,193,7,.15);color:#b8860b;font-size:10px;
-              padding:1px 6px;border-radius:10px;margin-left:6px">
-            esperando contraparte
-          </span>
+          padding:8px 0;border-bottom:1px solid var(--border)">
+        <div style="flex:1">
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">
+            <span style="color:${color};font-weight:700;font-size:12px">${sideLabel}</span>
+            <span style="color:var(--muted);font-size:11px">${pending.toFixed(2)} shares · ${pct(o.price||0)}</span>
+            <span style="background:rgba(255,193,7,.15);color:#b8860b;font-size:10px;
+                padding:1px 6px;border-radius:10px">esperando contraparte</span>
+          </div>
+          ${filled>0?`<div style="font-size:10px;color:var(--muted)">
+            Parcialmente llena: ${filled.toFixed(2)} de ${(o.shares||0).toFixed(2)} shares (${pctFilled}%)
+          </div>`:""}
         </div>
         <button onclick="cancelPendingOrder('${o.id}','${marketId}')"
           style="font-size:11px;padding:3px 8px;border-radius:6px;border:1px solid var(--border);
-            background:transparent;color:var(--muted);cursor:pointer">✕ Cancelar</button>
+            background:transparent;color:var(--muted);cursor:pointer;margin-left:8px">✕ Cancelar</button>
       </div>`;
     }).join("")}
   </div>`;
@@ -4738,37 +4759,48 @@ async function cancelPendingOrder(orderId, marketId){
   if(!u) return;
   if(!confirm("¿Cancelar esta orden? El capital reservado será devuelto a tu balance.")) return;
 
-  // Calcular reembolso
-  const {data:order} = await db.from("orders")
-    .select("shares,filled,price,side,status")
-    .eq("id", orderId).maybeSingle();
+  // Deshabilitar todos los botones de cancelar para evitar doble clic
+  document.querySelectorAll("[onclick*='cancelPendingOrder']").forEach(b=>{
+    b.disabled = true;
+    b.textContent = "…";
+  });
 
-  if(!order || !["open","partial"].includes(order.status)){
-    return notify("Orden no encontrada o ya ejecutada","error");
-  }
+  try {
+    // Una sola transacción atómica en Supabase:
+    // verifica status, cancela y devuelve capital en un solo paso
+    const {data, error} = await db.rpc("cancel_pending_order", {
+      p_order_id: orderId,
+      p_user_id:  u.id,
+    });
 
-  const refund = Math.round(((order.shares||0)-(order.filled||0)) * (order.price||0) * 100) / 100;
+    if(error || !data){
+      notify("Error al cancelar: " + (error?.message || "intenta de nuevo"), "error");
+      return;
+    }
+    if(data.error){
+      notify(data.error, "error");
+      return;
+    }
 
-  // Cancelar orden
-  await db.from("orders").update({status:"cancelled"}).eq("id", orderId);
-
-  // Devolver capital si es orden de compra (las de venta no tienen capital reservado)
-  if(refund > 0){
+    // Actualizar balance en STATE desde DB (fuente de verdad)
     const {data:uw} = await db.from("users").select("balance").eq("id", u.id).maybeSingle();
     if(uw){
-      const newBal = Math.round(((uw.balance||0) + refund) * 100) / 100;
-      await db.from("users").update({balance: newBal}).eq("id", u.id);
       const ui = STATE.users.findIndex(x=>x.id===u.id);
-      if(ui>=0) STATE.users[ui]={...STATE.users[ui], balance: newBal};
-      notify(`✅ Orden cancelada · ${usd(refund)} devueltos`);
+      if(ui>=0) STATE.users[ui]={...STATE.users[ui], balance: uw.balance};
     }
-  } else {
-    notify("Orden cancelada");
-  }
 
-  // Recargar órdenes pendientes
-  loadPendingOrders(marketId);
-  render();
+    const refund = data.refund || 0;
+    if(refund > 0){
+      notify(`✅ Orden cancelada · ${usd(refund)} devueltos`);
+    } else {
+      notify("Orden cancelada");
+    }
+
+  } finally {
+    // Recargar órdenes y re-renderizar siempre, incluso si hubo error
+    await loadPendingOrders(marketId);
+    render();
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -7545,6 +7577,7 @@ async function executeTrade(){
 
       recordBuyTime(u.id, marketId);
       closeTradeModal(); render();
+      setTimeout(()=>loadPendingOrders(marketId), 400);
 
       const orderId = rpcData.order_id;
       const inShares = rpcData.spread_in_shares;
@@ -7641,6 +7674,7 @@ async function executeTrade(){
       }
 
       closeTradeModal(); render();
+      setTimeout(()=>loadPendingOrders(marketId), 400);
 
       const sellOrderId = sellData.order_id;
       const sellInShares = sellData.spread_in_shares;
