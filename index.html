@@ -1817,7 +1817,10 @@ function getPrice(mkt, side){
 // ── Spread dinámico: 3% si el lado comprado ≥ 75%, 2% si no ──────
 function getDynamicSpread(mkt, side){
   const price = getPrice(mkt, side);
-  return price >= 0.75 ? 0.03 : ENTRY_SPREAD;
+  return price >= 0.78 ? 0.03 : 0.02;
+}
+function spreadInShares(mkt, side){
+  return getPrice(mkt, side) >= 0.78;
 }
 
 // ── Shares recibidos al comprar ───────────────────────────────────
@@ -7544,10 +7547,14 @@ async function executeTrade(){
       closeTradeModal(); render();
 
       const orderId = rpcData.order_id;
+      const inShares = rpcData.spread_in_shares;
+      const spreadInfo = inShares
+        ? `· spread 3% en shares al MM`
+        : `· spread 2% en USD al pool`;
       if(netShares > 0 && !orderId){
-        notify(`✅ ${netShares.toFixed(2)} shares ${side} · pagaste ${usd(dollars)}`);
+        notify(`✅ ${netShares.toFixed(2)} shares ${side} · pagaste ${usd(dollars)} ${spreadInfo}`);
       } else if(netShares > 0 && orderId){
-        notify(`✅ ${netShares.toFixed(2)} shares ${side} recibidos · resto en libro esperando contraparte`);
+        notify(`✅ ${netShares.toFixed(2)} shares ${side} recibidos ${spreadInfo} · resto en libro`);
       } else {
         notify(`⏳ Orden en libro — esperando contraparte para ${usd(dollars)} en ${side}`,"info");
       }
@@ -7636,10 +7643,14 @@ async function executeTrade(){
       closeTradeModal(); render();
 
       const sellOrderId = sellData.order_id;
+      const sellInShares = sellData.spread_in_shares;
+      const sellSpreadInfo = sellInShares
+        ? `· spread 3% en shares al MM`
+        : `· spread 2% en USD al pool`;
       if(netReturn > 0 && !sellOrderId){
-        notify(`✅ Vendiste ${shares.toFixed(2)} shares ${side} · recibiste ${usd(netReturn)}`);
+        notify(`✅ Vendiste ${shares.toFixed(2)} shares ${side} · recibiste ${usd(netReturn)} ${sellSpreadInfo}`);
       } else if(netReturn > 0 && sellOrderId){
-        notify(`✅ Venta parcial · recibiste ${usd(netReturn)} · ${shares.toFixed(2)} shares en libro esperando comprador`);
+        notify(`✅ Venta parcial · recibiste ${usd(netReturn)} ${sellSpreadInfo} · resto en libro`);
       } else {
         notify(`⏳ Orden de venta en libro — esperando comprador real para ${shares.toFixed(2)} shares ${side}`,"info");
       }
@@ -8517,8 +8528,8 @@ function renderAdminResolve(){
                 <div style="font-weight:700;color:var(--no)">${usd(poolNo)}</div>
               </div>
               <div style="background:rgba(255,193,7,.1);border-radius:6px;padding:3px 6px">
-                <div style="color:var(--muted);margin-bottom:1px">Spreads (bloqueados)</div>
-                <div style="font-weight:800;color:#b8860b">${usd(spreads)}</div>
+                <div style="color:var(--muted);margin-bottom:1px">Spreads USD (bloqueados)</div>
+                <div id="spread-live-${m.id}" style="font-weight:800;color:#b8860b">${usd(spreads)}</div>
                 <div style="font-size:9px;color:var(--muted)">se cobran al resolver</div>
               </div>
             </div>
@@ -8660,8 +8671,13 @@ function renderAdminResolve(){
           ${m.manualPaused?`<div style="color:#f59e0b;font-size:12px;font-weight:700;margin-top:6px">⏸ ${m.pauseReason||"Pausado"}</div>`:""}
           ${m.oracleLocked?`<div style="color:var(--no);font-size:12px;font-weight:700;margin-top:6px">🔒 Oracle bloqueado: ${escHtml(m.pauseReason||"")}</div>`:""}
 
+          <!-- Comprometidos en tiempo real (desde DB) -->
+          <div id="mm-committed-${m.id}" style="margin-top:8px">
+            <div style="font-size:11px;color:var(--muted)">Cargando datos MM...</div>
+          </div>
+
           <!-- Posiciones de usuarios en tiempo real -->
-          <div id="admin-pos-${m.id}" style="margin-top:8px">
+          <div id="admin-pos-${m.id}" style="margin-top:0">
             <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;
                 letter-spacing:.5px;margin-bottom:6px">👥 Posiciones de participantes</div>
             <div style="font-size:11px;color:var(--muted)">Cargando...</div>
@@ -8694,6 +8710,20 @@ function renderAdminResolve(){
   setTimeout(()=>{
     [...pending, ...locked].forEach(m => loadAdminPositions(m.id));
   }, 100);
+
+  // Refrescar spread_pool cada 15 segundos
+  if(window._spreadRefreshInterval) clearInterval(window._spreadRefreshInterval);
+  window._spreadRefreshInterval = setInterval(()=>{
+    if(STATE.view !== 'admin') { clearInterval(window._spreadRefreshInterval); return; }
+    const allMarkets = [...(STATE.markets||[])].filter(m=>!m.resolved);
+    allMarkets.forEach(m => {
+      db.from("markets").select("spread_pool").eq("id",m.id).maybeSingle()
+        .then(({data}) => {
+          const el = document.getElementById("spread-live-"+m.id);
+          if(el && data) el.textContent = usd(data.spread_pool||0);
+        });
+    });
+  }, 15000);
 
   return`<div>
     ${locked.length?`<div style="background:rgba(239,0,39,.06);border:1px solid rgba(239,0,39,.2);
@@ -8740,6 +8770,71 @@ async function loadAdminPositions(marketId){
   if(!isAdmin()) return;
   const el = document.getElementById("admin-pos-"+marketId);
   if(!el) return;
+
+  // Actualizar spread_pool en tiempo real
+  const {data:mktFresh} = await db.from("markets")
+    .select("spread_pool").eq("id", marketId).maybeSingle();
+  const spreadEl = document.getElementById("spread-live-"+marketId);
+  if(spreadEl && mktFresh) {
+    spreadEl.textContent = usd(mktFresh.spread_pool || 0);
+  }
+
+  // Cargar órdenes MM para calcular comprometidos reales
+  const {data:mmOrders} = await db.from("orders")
+    .select("side,shares,filled,status,price")
+    .eq("market_id", marketId)
+    .eq("is_mm", true);
+
+  // Comprometidos = filled en orden MM (espejos activos)
+  const mmYesOrder = (mmOrders||[]).find(o=>o.side==="YES");
+  const mmNoOrder  = (mmOrders||[]).find(o=>o.side==="NO");
+  const mmYesTotal     = mmYesOrder?.shares || 0;
+  const mmNoTotal      = mmNoOrder?.shares  || 0;
+  const mmYesCommitted = mmYesOrder?.filled  || 0;
+  const mmNoCommitted  = mmNoOrder?.filled   || 0;
+  const mmYesFree      = Math.max(0, mmYesTotal - mmYesCommitted);
+  const mmNoFree       = Math.max(0, mmNoTotal  - mmNoCommitted);
+  const mmBuyPriceYes  = mmYesOrder?.price || 0.5;
+  const mmBuyPriceNo   = mmNoOrder?.price  || 0.5;
+  const mmPairs        = Math.min(mmYesFree, mmNoFree);
+
+  // Actualizar bloque de posicion MM si existe
+  const mmEl = document.getElementById("mm-committed-"+marketId);
+  if(mmEl){
+    mmEl.innerHTML = `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:11px;margin-bottom:8px">
+        <div style="border:1px solid rgba(0,168,112,.2);border-radius:6px;padding:6px 8px">
+          <div style="font-weight:700;color:var(--yes);margin-bottom:4px;font-size:10px">✅ LIBRES (recuperables)</div>
+          <div style="display:flex;justify-content:space-between;margin-bottom:2px">
+            <span style="color:var(--muted)">SÍ libres</span>
+            <span style="color:var(--yes);font-weight:700">${mmYesFree.toFixed(2)} sh</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;margin-bottom:2px">
+            <span style="color:var(--muted)">NO libres</span>
+            <span style="color:var(--no);font-weight:700">${mmNoFree.toFixed(2)} sh</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;border-top:1px solid var(--border);padding-top:3px;margin-top:3px">
+            <span style="color:var(--muted)">Pares recuperables</span>
+            <span style="font-weight:700;color:#6366f1">${mmPairs.toFixed(1)} × $0.98 = $${(mmPairs*0.98).toFixed(2)}</span>
+          </div>
+        </div>
+        <div style="border:1px solid rgba(224,40,74,.2);border-radius:6px;padding:6px 8px">
+          <div style="font-weight:700;color:var(--no);margin-bottom:4px;font-size:10px">⚠️ COMPROMETIDOS (contraparte activa)</div>
+          <div style="display:flex;justify-content:space-between;margin-bottom:2px">
+            <span style="color:var(--muted)">SÍ comprometidos</span>
+            <span style="color:var(--yes);font-weight:700">${mmYesCommitted.toFixed(2)} sh @ ${(mmBuyPriceYes*100).toFixed(0)}%</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;margin-bottom:2px">
+            <span style="color:var(--muted)">NO comprometidos</span>
+            <span style="color:var(--no);font-weight:700">${mmNoCommitted.toFixed(2)} sh @ ${(mmBuyPriceNo*100).toFixed(0)}%</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;border-top:1px solid var(--border);padding-top:3px;margin-top:3px">
+            <span style="color:var(--muted)">Pérd. máx. si SÍ gana</span>
+            <span style="color:var(--no);font-weight:700">-$${(mmNoCommitted*(1-mmBuyPriceYes)).toFixed(2)}</span>
+          </div>
+        </div>
+      </div>`;
+  }
 
   const {data:positions} = await db.from("positions")
     .select("user_id,yes_shares,no_shares")
