@@ -8462,6 +8462,7 @@ function renderAdminResolve(){
     const mmCommittedTotal = Math.round((mmCommittedYes + mmCommittedNo) * 100)/100;
     const maxLossIfYes  = mmCommittedNo;
     const maxLossIfNo   = mmCommittedYes;
+    const netIfYes = Math.round((lpTotal + spreads - maxLossIfYes) * 100)/100;
     const netIfNo  = Math.round((lpTotal + spreads - maxLossIfNo)  * 100)/100;
 
     return `<div class="card" style="margin-bottom:16px${borderStyle}">
