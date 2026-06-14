@@ -9863,6 +9863,8 @@ async function adminResolve(id,result){
     .select("q_yes,q_no,total_paid,spread_pool,seed_liquidity,lp_yes,lp_no,price_yes,tick")
     .eq("id",id).maybeSingle();
 
+  console.log("[Resolve] mFresh:", JSON.stringify(mFresh));
+
   const qYes       = mFresh?.q_yes        ?? m.qYes        ?? 0;
   const qNo        = mFresh?.q_no         ?? m.qNo         ?? 0;
   const spreadPool = mFresh?.spread_pool  ?? m.spreadPool  ?? 0;
@@ -9874,8 +9876,9 @@ async function adminResolve(id,result){
 
   const resolvedAt = new Date().toISOString();
   const titleShort = m.title.slice(0,25)+(m.title.length>25?"…":"");
-  const adminUser  = STATE.users.find(u=>u.role==="admin");
-  const adminId    = adminUser ? String(adminUser.id) : STATE.session;
+  // Usar el usuario logueado (quien creó y resuelve el mercado)
+  // No buscar "el primer admin" — puede haber múltiples admins
+  const adminId    = String(STATE.session);
 
   // Marcar mercado como resuelto en DB primero
   STATE.markets[i] = {...m, resolved:true, resolution:result};
