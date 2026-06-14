@@ -4594,7 +4594,7 @@ function renderMarket(){
               id="ob-btn-trades-${m.id}"
               style="font-size:11px;padding:3px 10px;border-radius:20px;border:1px solid var(--border);
                 background:transparent;color:var(--muted);cursor:pointer">
-              Trades
+              Contratos
             </button>
             <button onclick="setObTab('${m.id}','positions')"
               id="ob-btn-positions-${m.id}"
@@ -4819,55 +4819,94 @@ async function renderObBook(marketId, el){
 }
 
 async function renderObTrades(marketId, el){
-  // Últimos 40 trades ejecutados — muestra emparejamientos reales entre usuarios
-  const {data:trades} = await db.from("orders")
-    .select("id,side,price,shares,filled,is_mm,order_type,user_id,created_at,status")
+  // Contratos ACTIVOS del mercado — no historial
+  // Lee de la tabla contracts: cada fila es un par SÍ+NO vivo
+  // Si se borra el mercado, estos contratos desaparecen
+  const {data:contracts} = await db.from("contracts")
+    .select("id,shares,yes_user_id,yes_price,no_user_id,no_price,created_at,updated_at")
     .eq("market_id", marketId)
-    .in("status", ["filled","partial"])
-    .gt("filled", 0)
+    .eq("status", "active")
     .order("created_at", {ascending:false})
     .limit(40);
 
-  if(!trades || !trades.length){
-    el.innerHTML=`<div style="color:var(--muted);font-size:12px;text-align:center;padding:20px 0">Sin trades ejecutados aún</div>`;
+  if(!contracts || !contracts.length){
+    el.innerHTML=`<div style="color:var(--muted);font-size:12px;text-align:center;padding:20px 0">
+      Sin contratos activos — los contratos aparecen cuando se forman pares SÍ+NO
+    </div>`;
     return;
   }
 
-  const rows = trades.map(t=>{
-    const u = STATE.users.find(x=>String(x.id)===String(t.user_id));
-    const name = t.is_mm ? "MM" : (u?.username ? "@"+u.username : "Usuario");
-    const isMM = t.is_mm;
-    const isSell = t.order_type==="sell";
-    const color = t.side==="YES" ? "var(--yes)" : "var(--no)";
-    const sideLabel = t.side==="YES" ? "SÍ" : "NO";
-    const typeLabel = isMM ? "🏦" : isSell ? "↩️" : "↗️";
-    const ago = timeAgo(t.created_at);
+  // Contar totales
+  const totalShares = contracts.reduce((s,c)=>s+c.shares,0);
+  const adminUser   = STATE.users.find(u=>u.role==="admin");
+  const adminId     = adminUser ? String(adminUser.id) : "";
+  const mmContracts = contracts.filter(c=>
+    String(c.yes_user_id)===adminId || String(c.no_user_id)===adminId
+  );
+  const userContracts = contracts.filter(c=>
+    String(c.yes_user_id)!==adminId && String(c.no_user_id)!==adminId
+  );
 
-    return `<div style="display:grid;grid-template-columns:20px 40px 55px 70px 1fr 50px;
-        gap:4px;align-items:center;padding:4px 0;border-bottom:1px solid var(--border);font-size:11px">
-      <span>${typeLabel}</span>
-      <span style="color:${color};font-weight:700">${sideLabel}</span>
-      <span style="color:${color}">${pct(t.price||0)}</span>
-      <span style="color:var(--muted)">${(t.filled||0).toFixed(2)} sh</span>
-      <span style="color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(name)}</span>
+  const getName = (uid) => {
+    if(String(uid)===adminId) return "🏦 MM";
+    const u = STATE.users.find(x=>String(x.id)===String(uid));
+    return u?.username ? "@"+u.username : "Usuario";
+  };
+
+  const rows = contracts.map(c=>{
+    const yesName = getName(c.yes_user_id);
+    const noName  = getName(c.no_user_id);
+    const isMMContract = String(c.yes_user_id)===adminId || String(c.no_user_id)===adminId;
+    const ago = timeAgo(c.updated_at || c.created_at);
+
+    return `<div style="display:grid;grid-template-columns:65px 65px 60px 60px 1fr 40px;
+        gap:4px;align-items:center;padding:5px 0;border-bottom:1px solid var(--border);font-size:11px">
+      <div style="display:flex;flex-direction:column">
+        <span style="color:var(--yes);font-weight:700;font-size:10px">SÍ ${pct(c.yes_price)}</span>
+        <span style="color:var(--muted);font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(yesName)}</span>
+      </div>
+      <div style="display:flex;flex-direction:column">
+        <span style="color:var(--no);font-weight:700;font-size:10px">NO ${pct(c.no_price)}</span>
+        <span style="color:var(--muted);font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(noName)}</span>
+      </div>
+      <span style="font-weight:700;color:var(--text)">${c.shares.toFixed(2)}</span>
+      <span style="color:var(--muted);font-size:10px">${usd(c.shares)}</span>
+      <span style="font-size:10px;padding:1px 5px;border-radius:10px;
+        background:${isMMContract?"rgba(99,102,241,.1)":"rgba(0,168,112,.1)"};
+        color:${isMMContract?"#6366f1":"var(--yes)"}">
+        ${isMMContract?"MM↔Usuario":"Usuario↔Usuario"}
+      </span>
       <span style="color:var(--muted);text-align:right;font-size:10px">${ago}</span>
     </div>`;
   }).join("");
 
   el.innerHTML = `
-    <div style="display:grid;grid-template-columns:20px 40px 55px 70px 1fr 50px;
-        gap:4px;margin-bottom:4px;padding-bottom:4px;border-bottom:2px solid var(--border)">
-      <span style="font-size:9px;color:var(--muted)"></span>
-      <span style="font-size:9px;color:var(--muted)">LADO</span>
-      <span style="font-size:9px;color:var(--muted)">PRECIO</span>
-      <span style="font-size:9px;color:var(--muted)">SHARES</span>
-      <span style="font-size:9px;color:var(--muted)">TRADER</span>
-      <span style="font-size:9px;color:var(--muted);text-align:right">HACE</span>
+    <!-- Resumen -->
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:10px;font-size:11px">
+      <div style="background:var(--card2);border-radius:6px;padding:6px 8px;text-align:center">
+        <div style="color:var(--muted);font-size:10px;margin-bottom:1px">Shares activos</div>
+        <div style="font-weight:800;color:var(--text)">${totalShares.toFixed(2)}</div>
+      </div>
+      <div style="background:rgba(0,168,112,.06);border-radius:6px;padding:6px 8px;text-align:center">
+        <div style="color:var(--muted);font-size:10px;margin-bottom:1px">Usuario↔Usuario</div>
+        <div style="font-weight:800;color:var(--yes)">${userContracts.reduce((s,c)=>s+c.shares,0).toFixed(2)}</div>
+      </div>
+      <div style="background:rgba(99,102,241,.06);border-radius:6px;padding:6px 8px;text-align:center">
+        <div style="color:var(--muted);font-size:10px;margin-bottom:1px">MM↔Usuario</div>
+        <div style="font-weight:800;color:#6366f1">${mmContracts.reduce((s,c)=>s+c.shares,0).toFixed(2)}</div>
+      </div>
     </div>
-    <div style="max-height:280px;overflow-y:auto;scrollbar-width:thin">${rows}</div>
-    <div style="margin-top:6px;font-size:10px;color:var(--muted)">
-      ↗️ Compra &nbsp;↩️ Venta anticipada &nbsp;🏦 Market Maker
-    </div>`;
+    <!-- Headers -->
+    <div style="display:grid;grid-template-columns:65px 65px 60px 60px 1fr 40px;
+        gap:4px;margin-bottom:4px;padding-bottom:4px;border-bottom:2px solid var(--border)">
+      <span style="font-size:9px;color:var(--muted)">LADO SÍ</span>
+      <span style="font-size:9px;color:var(--muted)">LADO NO</span>
+      <span style="font-size:9px;color:var(--muted)">SHARES</span>
+      <span style="font-size:9px;color:var(--muted)">VALOR</span>
+      <span style="font-size:9px;color:var(--muted)">TIPO</span>
+      <span style="font-size:9px;color:var(--muted);text-align:right">ACT.</span>
+    </div>
+    <div style="max-height:260px;overflow-y:auto;scrollbar-width:thin">${rows}</div>`;
 }
 
 function renderObPositions(marketId, el){
