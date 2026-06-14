@@ -8690,41 +8690,51 @@ async function loadAdminPositions(marketId){
   const el = document.getElementById("admin-pos-"+marketId);
   if(!el) return;
 
-  // Actualizar spread_pool en tiempo real
+  // Cargar datos frescos del mercado
   const {data:mktFresh} = await db.from("markets")
-    .select("spread_pool").eq("id", marketId).maybeSingle();
+    .select("spread_pool,lp_yes,lp_no,seed_liquidity,price_yes,tick,q_yes,q_no")
+    .eq("id", marketId).maybeSingle();
+
+  // Actualizar spread_pool en tiempo real
   const spreadEl = document.getElementById("spread-live-"+marketId);
-  if(spreadEl && mktFresh) {
-    spreadEl.textContent = usd(mktFresh.spread_pool || 0);
-  }
+  if(spreadEl && mktFresh) spreadEl.textContent = usd(mktFresh.spread_pool || 0);
 
-  // Cargar órdenes MM para calcular comprometidos reales
-  const {data:mmOrders} = await db.from("orders")
-    .select("side,shares,filled,status,price")
+  // Cargar órdenes de venta activas del MM (is_mm=true, con mm_order_id)
+  const {data:mmSellOrders} = await db.from("orders")
+    .select("side,shares,filled,price,mm_order_id,status")
     .eq("market_id", marketId)
-    .eq("is_mm", true);
+    .eq("is_mm", true)
+    .eq("order_type", "limit")
+    .in("status", ["open","partial"]);
 
-  // Comprometidos = filled en orden MM (espejos activos)
-  const mmYesOrder = (mmOrders||[]).find(o=>o.side==="YES");
-  const mmNoOrder  = (mmOrders||[]).find(o=>o.side==="NO");
-  const mmYesTotal     = mmYesOrder?.shares || 0;
-  const mmNoTotal      = mmNoOrder?.shares  || 0;
-  const mmYesCommitted = mmYesOrder?.filled  || 0;
-  const mmNoCommitted  = mmNoOrder?.filled   || 0;
-  const mmYesFree      = Math.max(0, mmYesTotal - mmYesCommitted);
-  const mmNoFree       = Math.max(0, mmNoTotal  - mmNoCommitted);
-  const mmBuyPriceYes  = mmYesOrder?.price || 0.5;
-  const mmBuyPriceNo   = mmNoOrder?.price  || 0.5;
-  const mmPairs        = Math.min(mmYesFree, mmNoFree);
+  const sellActiveYes = (mmSellOrders||[])
+    .filter(o=>o.side==="YES")
+    .reduce((s,o)=>s+(o.shares-o.filled)*o.price, 0);
+  const sellActiveNo = (mmSellOrders||[])
+    .filter(o=>o.side==="NO")
+    .reduce((s,o)=>s+(o.shares-o.filled)*o.price, 0);
+  const sellActiveTotal = Math.round((sellActiveYes+sellActiveNo)*100)/100;
 
-  // Actualizar bloque de posicion MM si existe
+  const lpYes   = mktFresh?.lp_yes || 0;
+  const lpNo    = mktFresh?.lp_no  || 0;
+  const seed    = mktFresh?.seed_liquidity || 0;
+  const spreads = mktFresh?.spread_pool || 0;
+  const tick    = mktFresh?.tick || 0.01;
+  const priceY  = mktFresh?.price_yes || 0.50;
+
+  // Capital comprometido = seed/2 - pool disponible
+  const committedYes = Math.max(0, Math.round((seed/2 - lpYes)*100)/100);
+  const committedNo  = Math.max(0, Math.round((seed/2 - lpNo )*100)/100);
+
+  // Break-even: cuánto volumen necesita para cubrir la pérdida máxima con spreads
+  // La pérdida máxima es el menor pool comprometido (el lado perdedor en peor caso)
+  const maxLoss       = Math.min(committedYes, committedNo) || Math.max(committedYes, committedNo);
+  const breakEvenVol  = maxLoss > 0 ? Math.round(maxLoss / 0.02) : 0;  // 2% entrada
+  const currentVol    = (mktFresh?.q_yes||0) + (mktFresh?.q_no||0);
+  const breakEvenPct  = breakEvenVol > 0 ? Math.min(100, Math.round(currentVol/breakEvenVol*100)) : 100;
+
   const mmEl = document.getElementById("mm-committed-"+marketId);
   if(mmEl){
-    // Nuevo modelo: mostrar pool disponible y órdenes de venta activas
-    const mmSellOrders = (orders||[]).filter(o=>o.is_mm && o.status==='open' && o.mm_order_id);
-    const sellActiveYes = mmSellOrders.filter(o=>o.side==='YES').reduce((s,o)=>s+(o.shares-o.filled)*o.price,0);
-    const sellActiveNo  = mmSellOrders.filter(o=>o.side==='NO' ).reduce((s,o)=>s+(o.shares-o.filled)*o.price,0);
-    const sellActiveTotal = Math.round((sellActiveYes+sellActiveNo)*100)/100;
     mmEl.innerHTML = `
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:11px;margin-bottom:8px">
         <div style="border:1px solid rgba(0,168,112,.2);border-radius:6px;padding:6px 8px">
@@ -8746,15 +8756,59 @@ async function loadAdminPositions(marketId){
           <div style="font-weight:700;color:var(--no);margin-bottom:4px;font-size:10px">⚠️ Capital comprometido (en riesgo)</div>
           <div style="display:flex;justify-content:space-between;margin-bottom:2px">
             <span style="color:var(--muted)">Lado SÍ comprometido</span>
-            <span style="color:var(--yes);font-weight:700">$${mmYesCommitted.toFixed(2)}</span>
+            <span style="color:var(--yes);font-weight:700">$${committedYes.toFixed(2)}</span>
           </div>
           <div style="display:flex;justify-content:space-between;margin-bottom:2px">
             <span style="color:var(--muted)">Lado NO comprometido</span>
-            <span style="color:var(--no);font-weight:700">$${mmNoCommitted.toFixed(2)}</span>
+            <span style="color:var(--no);font-weight:700">$${committedNo.toFixed(2)}</span>
           </div>
           <div style="display:flex;justify-content:space-between;border-top:1px solid var(--border);padding-top:3px;margin-top:3px">
             <span style="color:var(--muted)">Pérd. máx. si SÍ gana</span>
-            <span style="color:var(--no);font-weight:700">-$${mmNoCommitted.toFixed(2)}</span>
+            <span style="color:var(--no);font-weight:700">-$${committedNo.toFixed(2)}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Control tick en vivo -->
+      <div style="background:rgba(99,102,241,.06);border:1px solid rgba(99,102,241,.2);border-radius:8px;padding:8px 10px;margin-bottom:8px">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+          <div>
+            <div style="font-size:10px;font-weight:700;color:#6366f1;margin-bottom:2px">🎛 Tick actual: <strong>${tick}</strong> (${(tick*100).toFixed(2)}% por trade)</div>
+            <div style="font-size:10px;color:var(--muted)">Ajusta para controlar volatilidad en momentos de alta actividad</div>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px">
+            <select id="tick-select-${marketId}" style="font-size:11px;padding:3px 6px;border-radius:6px;border:1px solid var(--border);background:var(--card);color:var(--text)">
+              ${["0.010","0.009","0.008","0.007","0.006","0.005","0.004","0.003","0.002","0.001"].map(v=>
+                `<option value="${v}"${Math.abs(parseFloat(v)-tick)<0.0001?" selected":""}>${v}</option>`
+              ).join("")}
+            </select>
+            <button onclick="adminUpdateTick('${marketId}')"
+              style="font-size:11px;padding:4px 10px;border-radius:6px;background:var(--accent);color:#fff;border:none;cursor:pointer;font-weight:600">
+              Actualizar
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Break-even -->
+      <div style="background:rgba(255,193,7,.06);border:1px solid rgba(255,193,7,.25);border-radius:8px;padding:8px 10px;margin-bottom:8px">
+        <div style="font-size:10px;font-weight:700;color:#b8860b;margin-bottom:6px">📈 Punto de equilibrio (Break-even)</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;font-size:11px">
+          <div>
+            <div style="color:var(--muted);font-size:10px;margin-bottom:1px">Pérdida máxima</div>
+            <div style="font-weight:700;color:var(--no)">-$${maxLoss.toFixed(2)}</div>
+          </div>
+          <div>
+            <div style="color:var(--muted);font-size:10px;margin-bottom:1px">Volumen necesario</div>
+            <div style="font-weight:700;color:#b8860b">$${breakEvenVol.toLocaleString()}</div>
+            <div style="font-size:9px;color:var(--muted)">al 2% de comisión</div>
+          </div>
+          <div>
+            <div style="color:var(--muted);font-size:10px;margin-bottom:1px">Progreso actual</div>
+            <div style="font-weight:700;color:${breakEvenPct>=100?"var(--yes)":"var(--text)"}">${breakEvenPct}%</div>
+            <div style="height:4px;background:var(--border);border-radius:2px;margin-top:3px">
+              <div style="height:4px;background:${breakEvenPct>=100?"var(--yes)":"#b8860b"};border-radius:2px;width:${Math.min(100,breakEvenPct)}%"></div>
+            </div>
           </div>
         </div>
       </div>`;
@@ -8793,6 +8847,25 @@ async function loadAdminPositions(marketId){
     <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;
         letter-spacing:.5px;margin-bottom:6px">👥 Posiciones de participantes (${positions.length})</div>
     <div style="max-height:120px;overflow-y:auto;scrollbar-width:thin">${rows}</div>`;
+}
+
+async function adminUpdateTick(marketId){
+  if(!isAdmin()) return;
+  const sel = document.getElementById("tick-select-"+marketId);
+  if(!sel) return;
+  const newTick = parseFloat(sel.value);
+  if(isNaN(newTick) || newTick < 0.001 || newTick > 0.01)
+    return notify("Tick inválido — debe estar entre 0.001 y 0.010","error");
+
+  const {error} = await db.from("markets").update({tick: newTick}).eq("id", marketId);
+  if(error) return notify("Error actualizando tick: "+error.message,"error");
+
+  // Actualizar STATE
+  const idx = STATE.markets.findIndex(m=>m.id===marketId);
+  if(idx>=0) STATE.markets[idx] = {...STATE.markets[idx], tick: newTick};
+
+  notify(`✅ Tick actualizado a ${newTick} (${(newTick*100).toFixed(2)}% por trade)`);
+  loadAdminPositions(marketId);
 }
 
 async function adminDeleteMarket(id){
@@ -9761,15 +9834,16 @@ async function adminResolve(id,result){
 
   // ── Cargar datos frescos del mercado ────────────────────────────
   const {data:mFresh} = await db.from("markets")
-    .select("q_yes,q_no,total_paid,spread_pool,seed_liquidity,lp_yes,lp_no")
+    .select("q_yes,q_no,total_paid,spread_pool,seed_liquidity,lp_yes,lp_no,price_yes,tick")
     .eq("id",id).maybeSingle();
 
-  const qYes       = mFresh?.q_yes        ?? m.qYes        ?? 1;
-  const qNo        = mFresh?.q_no         ?? m.qNo         ?? 1;
+  const qYes       = mFresh?.q_yes        ?? m.qYes        ?? 0;
+  const qNo        = mFresh?.q_no         ?? m.qNo         ?? 0;
   const spreadPool = mFresh?.spread_pool  ?? m.spreadPool  ?? 0;
   const lpYes      = mFresh?.lp_yes       ?? m.lpYes       ?? 0;
   const lpNo       = mFresh?.lp_no        ?? m.lpNo        ?? 0;
-  const priceYes   = Math.max(0.01, Math.min(0.99, qYes/(qYes+qNo)));
+  const seedLiq    = mFresh?.seed_liquidity ?? m.seedLiquidity ?? 0;
+  const priceYes   = mFresh?.price_yes    ?? m.priceYes    ?? 0.50;
   const priceNo    = 1 - priceYes;
 
   const resolvedAt = new Date().toISOString();
@@ -9787,84 +9861,27 @@ async function adminResolve(id,result){
   const adminSI  = adminPos?.yes_shares || 0;
   const adminNO  = adminPos?.no_shares  || 0;
 
-  // ── Cargar órdenes MM del admin ──────────────────────────────────
-  const {data:mmOrders} = await db.from("orders")
-    .select("*").eq("market_id",id).eq("is_mm",true);
+  // ── NUEVO MODELO: pool disponible + shares del MM en posiciones ──
+  // Pool disponible = lp_yes + lp_no (dinero que no se comprometió)
+  // Shares del MM = posición real que tiene por ser contraparte
+  // El lado perdedor del MM → $0, el ganador → $0.98/share
 
-  // Shares comprometidos del admin = filled de sus órdenes MM
-  // (filled en orden MM = cuántos están activos como contraparte en espejos)
-  const mmYesOrder    = (mmOrders||[]).find(o=>o.side==="YES");
-  const mmNoOrder     = (mmOrders||[]).find(o=>o.side==="NO");
-  const mmYesPrice    = mmYesOrder?.price || priceYes;
-  const mmNoPrice     = mmNoOrder?.price  || priceNo;
+  const mmPoolReturn  = Math.round((lpYes + lpNo) * 100) / 100;
 
-  // Shares comprometidos = los que están en espejos activos
-  const {data:mirrorOrders} = await db.from("orders")
-    .select("*").eq("market_id",id).eq("is_mirror",true).in("status",["open","partial"]);
+  // Shares del MM por lado (contraparte de usuarios)
+  // Si gana SÍ → MM tiene NO comprometidos → valen $0
+  // Si gana NO → MM tiene SÍ comprometidos → valen $0
+  const mmWinShares  = result==="YES" ? adminSI : adminNO;
+  const mmLoseShares = result==="YES" ? adminNO : adminSI;
+  const mmWinPayout  = Math.round(mmWinShares * 0.98 * 100) / 100;
 
-  // Committed YES = espejos NO activos que referencian orden MM YES
-  // (cuando usuario compró SÍ, se creó espejo NO comprometiendo shares SÍ del admin)
-  const committedYes = (mirrorOrders||[])
-    .filter(o=>o.side==="NO" && o.mm_order_id===mmYesOrder?.id)
-    .reduce((s,o)=>s+(o.shares-o.filled),0);
+  // Admin recibe: pool disponible devuelto + shares ganadores × $0.98
+  const adminTotalPayout = Math.round((mmPoolReturn + mmWinPayout) * 100) / 100;
 
-  // Committed NO = espejos SÍ activos que referencian orden MM NO
-  const committedNo = (mirrorOrders||[])
-    .filter(o=>o.side==="YES" && o.mm_order_id===mmNoOrder?.id)
-    .reduce((s,o)=>s+(o.shares-o.filled),0);
-
-  // Shares libres del admin = total - comprometidos
-  const freeYes = Math.max(0, adminSI - committedYes);
-  const freeNo  = Math.max(0, adminNO - committedNo);
-
-  console.log(`[Resolve] adminSI=${adminSI.toFixed(2)} adminNO=${adminNO.toFixed(2)}`);
-  console.log(`[Resolve] committedYes=${committedYes.toFixed(2)} committedNo=${committedNo.toFixed(2)}`);
-  console.log(`[Resolve] freeYes=${freeYes.toFixed(2)} freeNo=${freeNo.toFixed(2)}`);
-  console.log(`[Resolve] result=${result}`);
-
-  // ══════════════════════════════════════════════════════════════════
-  // PASO 1 — Shares libres del admin → emparejar SÍ+NO → $0.98 por par
-  // ══════════════════════════════════════════════════════════════════
-  const pairedShares = Math.min(freeYes, freeNo);
-  const pairedPayout = Math.round(pairedShares * 0.98 * 100) / 100;
-
-  console.log(`[Resolve] PASO1: ${pairedShares.toFixed(2)} pares → $${pairedPayout}`);
-
-  // ══════════════════════════════════════════════════════════════════
-  // PASO 2 — Shares libres sin par → devolver precio de compra
-  // ══════════════════════════════════════════════════════════════════
-  const unpairYes    = Math.max(0, freeYes - pairedShares);
-  const unpairNo     = Math.max(0, freeNo  - pairedShares);
-  // Precio de compra = lpYes/shares_mm o el precio de la orden MM
-  const unpairYesRefund = Math.round(unpairYes * mmYesPrice * 100) / 100;
-  const unpairNoRefund  = Math.round(unpairNo  * mmNoPrice  * 100) / 100;
-
-  console.log(`[Resolve] PASO2: ${unpairYes.toFixed(2)} SÍ sin par → $${unpairYesRefund}`);
-  console.log(`[Resolve] PASO2: ${unpairNo.toFixed(2)} NO sin par → $${unpairNoRefund}`);
-
-  // ══════════════════════════════════════════════════════════════════
-  // PASO 3 — Shares comprometidos del lado GANADOR → $0.98
-  // ══════════════════════════════════════════════════════════════════
-  const committedWin  = result==="YES" ? committedYes : committedNo;
-  const committedLose = result==="YES" ? committedNo  : committedYes;
-  const committedWinPayout = Math.round(committedWin * 0.98 * 100) / 100;
-
-  console.log(`[Resolve] PASO3: ${committedWin.toFixed(2)} comprometidos ganadores → $${committedWinPayout}`);
-
-  // ══════════════════════════════════════════════════════════════════
-  // PASO 4 — Shares comprometidos del lado PERDEDOR → $0
-  // ══════════════════════════════════════════════════════════════════
-  // (estos pagaron a los usuarios ganadores, no hay devolución)
-  console.log(`[Resolve] PASO4: ${committedLose.toFixed(2)} comprometidos perdedores → $0 (cubrieron usuarios ganadores)`);
-
-  // ══════════════════════════════════════════════════════════════════
-  // PASO 5 — Shares libres del lado perdedor sin par → devolver precio
-  // (ya incluido en PASO 2 — unpairYes o unpairNo según resultado)
-  // ══════════════════════════════════════════════════════════════════
-
-  // ── Acreditar todo al admin de una vez ──────────────────────────
-  const adminTotalPayout = pairedPayout + unpairYesRefund + unpairNoRefund + committedWinPayout;
-  console.log(`[Resolve] Admin total: $${adminTotalPayout.toFixed(2)}`);
+  console.log(`[Resolve] Pool disponible devuelto: $${mmPoolReturn}`);
+  console.log(`[Resolve] Shares MM ganadores: ${mmWinShares.toFixed(2)} × $0.98 = $${mmWinPayout}`);
+  console.log(`[Resolve] Shares MM perdedores: ${mmLoseShares.toFixed(2)} → $0`);
+  console.log(`[Resolve] Admin total: $${adminTotalPayout}`);
 
   if(adminTotalPayout > 0.001){
     const {data:admFresh} = await db.from("users").select("balance").eq("id",adminId).maybeSingle();
@@ -9875,7 +9892,7 @@ async function adminResolve(id,result){
         user_id: adminId, id: "tx_"+genId(), type: "deposit",
         amount: adminTotalPayout, network: "internal", status: "confirmed",
         created_at: resolvedAt,
-        description: `✅ Resolución MM · "${titleShort}" · ${pairedShares.toFixed(0)} pares $${pairedPayout} + sin par $${(unpairYesRefund+unpairNoRefund).toFixed(2)} + comprometidos $${committedWinPayout}`
+        description: `✅ Resolución MM · "${titleShort}" · Pool devuelto $${mmPoolReturn} + ${mmWinShares.toFixed(2)} shares ganadores $${mmWinPayout}`
       });
       const ai = STATE.users.findIndex(u=>String(u.id)===adminId);
       if(ai>=0) STATE.users[ai]={...STATE.users[ai], balance: admNewBal};
@@ -9902,18 +9919,19 @@ async function adminResolve(id,result){
 
     if(winShares > 0.001){
       totalWinners++;
-      const payout  = Math.round(winShares * 0.98 * 100) / 100;
+      // 2% comisión de resolución al admin, usuario recibe 98%
       const exitFee = Math.round(winShares * 0.02 * 100) / 100;
+      const payout  = Math.round(winShares * 0.98 * 100) / 100;
       const newBal  = Math.round(((uw.balance||0) + payout) * 100) / 100;
 
       await db.from("users").update({balance: newBal}).eq("id", uid);
       await db.from("transactions").insert({
         user_id: uid, id: "tx_"+genId(), type: "deposit", amount: payout,
         network: "internal", status: "confirmed", created_at: resolvedAt,
-        description: `✅ Ganaste · "${titleShort}" · ${winShares.toFixed(4)} shares × $0.98`
+        description: `✅ Ganaste · "${titleShort}" · ${winShares.toFixed(4)} shares × $0.98 (2% fee resolución)`
       });
 
-      // Exit spread (2%) al admin
+      // 2% comisión resolución → admin
       if(exitFee > 0.001){
         const {data:admE} = await db.from("users").select("balance").eq("id",adminId).maybeSingle();
         if(admE){
@@ -9922,7 +9940,7 @@ async function adminResolve(id,result){
           await db.from("transactions").insert({
             user_id: adminId, id: "tx_"+genId(), type: "deposit", amount: exitFee,
             network: "internal", status: "confirmed", created_at: resolvedAt,
-            description: `💰 Spread salida 2% · "${titleShort}" · ${winShares.toFixed(2)} shares @${uid.slice(0,6)}`
+            description: `💰 Fee resolución 2% · "${titleShort}" · ${winShares.toFixed(2)} shares ganadores @${uid.slice(0,6)}`
           });
           const ai = STATE.users.findIndex(u=>String(u.id)===adminId);
           if(ai>=0) STATE.users[ai]={...STATE.users[ai], balance: admEB};
@@ -9999,9 +10017,7 @@ async function adminResolve(id,result){
   // ── Notificación final ───────────────────────────────────────────
   notify(
     `✅ Resuelto ${result} · `+
-    `Pares admin: $${pairedPayout} · `+
-    `Sin par: $${(unpairYesRefund+unpairNoRefund).toFixed(2)} · `+
-    `Comprometidos ganadores: $${committedWinPayout} · `+
+    `Admin recibe: $${adminTotalPayout.toFixed(2)} · `+
     `${totalWinners} usuario${totalWinners!==1?"s":""} pagado${totalWinners!==1?"s":""}`+
     (spreadToCredit>0.001 ? ` · Spreads: $${spreadToCredit.toFixed(2)}` : "")
   );
