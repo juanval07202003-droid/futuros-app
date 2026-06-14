@@ -1221,6 +1221,8 @@ function dbRowToMarket(row){
     lpNo:  row.lp_no||0,
     qYes: row.q_yes||0,
     qNo:  row.q_no||0,
+    priceYes: row.price_yes||0.50,
+    tick:     row.tick||0.01,
     totalVolume: row.total_volume||0,
     spreadPool:  row.spread_pool||0,
     totalPaid:   row.total_paid||0,
@@ -1253,6 +1255,8 @@ function marketToDbRow(m){
     lp_no:        m.lpNo||0,
     q_yes:        m.qYes||0,
     q_no:         m.qNo||0,
+    price_yes:    m.priceYes||0.50,
+    tick:         m.tick||0.01,
     total_volume: m.totalVolume||0,
     spread_pool:  m.spreadPool||0,
     total_paid:   m.totalPaid||0,
@@ -1268,6 +1272,8 @@ function marketToDbRow(m){
     oracle_locked:m.oracleLocked||false,
     manual_paused:m.manualPaused||false,
     pause_reason: m.pauseReason||"",
+    tick:         m.tick||0.01,
+    price_yes:    m.priceYes||0.50,
   };
 }
 
@@ -1807,24 +1813,27 @@ function mkCatTag(category, color){
 
 // ── Precio del mercado ────────────────────────────────────────────
 function getPrice(mkt, side){
-  const pYes = Math.max(0.01, mkt.qYes || 1);
-  const pNo  = Math.max(0.01, mkt.qNo  || 1);
-  const total = pYes + pNo;
-  const p = Math.min(PRICE_MAX, Math.max(PRICE_MIN, pYes / total));
+  // Nuevo modelo: precio directo desde price_yes (movido por tick)
+  const p = Math.min(PRICE_MAX, Math.max(PRICE_MIN, mkt.priceYes || 0.50));
   return side === "YES" ? p : 1 - p;
 }
 
-// ── Spread dinámico: 3% si el lado comprado ≥ 75%, 2% si no ──────
+// ── Spread: 2% entrada, 2% salida, 3% venta anticipada — siempre USD
 function getDynamicSpread(mkt, side){
-  const price = getPrice(mkt, side);
-  return price >= 0.78 ? 0.03 : 0.02;
+  return 0.02; // siempre 2% entrada, todo en USD
 }
 function spreadInShares(mkt, side){
-  return getPrice(mkt, side) >= 0.78;
+  return false; // nunca en shares, siempre USD
 }
 
 // ── Shares recibidos al comprar ───────────────────────────────────
 function sharesFromCost(mkt, side, dollars){
+  if(dollars <= 0) return 0;
+  // Usar price_yes directamente (nuevo modelo tick-based)
+  const price = getPrice(mkt, side);
+  return Math.round(((dollars * 0.98) / Math.max(0.001, price)) * 10000) / 10000;
+}
+function sharesFromCost_OLD(mkt, side, dollars){
   if(dollars <= 0) return 0;
   const poolYes = Math.max(0.01, mkt.qYes || 1);
   const poolNo  = Math.max(0.01, mkt.qNo  || 1);
@@ -1868,12 +1877,12 @@ function getMaxBet(mkt){
 function checkSellCooldown(userId, marketId){ return {ok:true}; }
 function recordBuyTime(userId, marketId){}
 
-function mkMarket(id,title,category,emoji,description,alpha,seedLiquidity,daysLeft,yw=0.5,featured=false){
+function mkMarket(id,title,category,emoji,description,alpha,seedLiquidity,daysLeft,yw=0.5,featured=false,tick=0.01){
   const price = Math.min(PRICE_MAX, Math.max(PRICE_MIN, yw));
   const qYes = seedLiquidity * price;
   const qNo  = seedLiquidity * (1 - price);
   return{id,title,category,emoji,description,alpha:0.1,seedLiquidity,
-    lpYes:qYes,lpNo:qNo,qYes,qNo,
+    lpYes:qYes,lpNo:qNo,qYes,qNo,priceYes:yw,tick:tick,
     totalVolume:0,spreadPool:0,totalPaid:0,imageUrl:null,
     closesAt:new Date(Date.now()+daysLeft*86400000).toISOString(),
     resolved:false,resolution:null,priceHistory:[price],
@@ -1939,7 +1948,7 @@ const STATE={
   authForm:{username:"",email:"",password:"",confirmPassword:""},
   // admin forms
   newAcc:{username:"",email:"",role:"user",balance:"1000"},
-  mkForm:{title:"",title_en:"",category:"Deportes",emoji:"🎯",description:"",description_en:"",mmSharesYes:"500",mmSharesNo:"500",mmPrice:"0.50",closesAt:"",oracleType:"none",oracleConfig:"",imageUrl:null},
+  mkForm:{title:"",title_en:"",category:"Deportes",emoji:"🎯",description:"",description_en:"",mmSharesYes:"500",mmSharesNo:"500",mmPrice:"0.50",mmTick:"0.01",closesAt:"",oracleType:"none",oracleConfig:"",imageUrl:null},
   adjustOpen:null,adjustAmt:"",
   // deposit/withdraw modal
   depositOpen:false,
@@ -3219,7 +3228,7 @@ let _pricesStale        = false;
 async function refreshMarketPrices(){
   try{
     const {data, error} = await db.from("markets")
-      .select("id,q_yes,q_no,total_volume,price_history,oracle_locked,resolved")
+      .select("id,q_yes,q_no,price_yes,tick,lp_yes,lp_no,spread_pool,total_volume,price_history,oracle_locked,resolved,manual_paused")
       .eq("resolved", false);
     if(error || !data) return;
     let changed = false;
@@ -3227,11 +3236,16 @@ async function refreshMarketPrices(){
       const mi = STATE.markets.findIndex(m => m.id === row.id);
       if(mi < 0) return;
       const m = STATE.markets[mi];
-      if(m.qYes !== row.q_yes || m.qNo !== row.q_no || m.oracleLocked !== row.oracle_locked || m.manualPaused !== row.manual_paused){
+      if(m.qYes !== row.q_yes || m.qNo !== row.q_no || m.priceYes !== row.price_yes || m.oracleLocked !== row.oracle_locked || m.manualPaused !== row.manual_paused){
         STATE.markets[mi] = {
           ...m,
           qYes:        row.q_yes        ?? m.qYes,
           qNo:         row.q_no         ?? m.qNo,
+          priceYes:    row.price_yes    ?? m.priceYes,
+          tick:        row.tick         ?? m.tick,
+          lpYes:       row.lp_yes       ?? m.lpYes,
+          lpNo:        row.lp_no        ?? m.lpNo,
+          spreadPool:  row.spread_pool  ?? m.spreadPool,
           totalVolume: row.total_volume  ?? m.totalVolume,
           spreadPool:  row.spread_pool   ?? m.spreadPool,
           totalPaid:   row.total_paid    ?? m.totalPaid,
@@ -7552,14 +7566,13 @@ async function executeTrade(){
       }
 
       const netShares   = rpcData.shares_got || 0;
-      const newQYes     = rpcData.new_q_yes;
-      const newQNo      = rpcData.new_q_no;
-      const spreadEarned= rpcData.spread_earn;
+      const newPriceYes = rpcData.price_yes;
+      const spreadEarned= rpcData.spread_usd || 0;
       const newHistory  = Array.isArray(rpcData.new_history) ? rpcData.new_history : [];
 
       const nm={
         ...localM,
-        qYes: newQYes, qNo: newQNo,
+        priceYes:    newPriceYes ?? localM.priceYes,
         totalVolume: (localM.totalVolume||0)+dollars,
         totalPaid:   (localM.totalPaid||0)+dollars,
         spreadPool:  (localM.spreadPool||0)+spreadEarned,
@@ -7600,10 +7613,7 @@ async function executeTrade(){
       setTimeout(()=>loadPendingOrders(marketId), 400);
 
       const orderId = rpcData.order_id;
-      const inShares = rpcData.spread_in_shares;
-      const spreadInfo = inShares
-        ? `· spread 3% en shares al MM`
-        : `· spread 2% en USD al pool`;
+      const spreadInfo = `· spread 2% en USD`;
       if(netShares > 0 && !orderId){
         notify(`✅ ${netShares.toFixed(2)} shares ${side} · pagaste ${usd(dollars)} ${spreadInfo}`);
       } else if(netShares > 0 && orderId){
@@ -7656,8 +7666,7 @@ async function executeTrade(){
       }
 
       const netReturn = sellData.matched || 0;
-      const newQYes   = sellData.new_q_yes;
-      const newQNo    = sellData.new_q_no;
+      const newPriceYesSell = sellData.price_yes;
       const newHistory= Array.isArray(sellData.new_history) ? sellData.new_history : [];
 
       const nm={...localM, qYes:newQYes, qNo:newQNo,
@@ -7697,7 +7706,7 @@ async function executeTrade(){
       setTimeout(()=>loadPendingOrders(marketId), 400);
 
       const sellOrderId = sellData.order_id;
-      const sellInShares = sellData.spread_in_shares;
+      const sellInShares = false;
       const sellSpreadInfo = sellInShares
         ? `· spread 3% en shares al MM`
         : `· spread 2% en USD al pool`;
@@ -8163,6 +8172,15 @@ function renderAdminMarkets(){
           </div>
           <div class="hint">NO = ${Math.round((1-(parseFloat(f.mmPrice||0.50)))*100)}%</div>
         </div>
+        <div>
+          <label class="lbl">Movimiento por trade (tick)</label>
+          <select class="inp" onchange="STATE.mkForm.mmTick=this.value;document.getElementById('mk-prev').innerHTML=getMkPreview()">
+            ${["0.010","0.009","0.008","0.007","0.006","0.005","0.004","0.003","0.002","0.001"].map(v=>
+              `<option value="${v}"${(f.mmTick||"0.010")===v?" selected":""}>${v} (${(parseFloat(v)*100).toFixed(1)}% por trade)</option>`
+            ).join("")}
+          </select>
+          <div class="hint">Cuánto mueve el precio cada orden de compra/venta</div>
+        </div>
       </div>
       ${(()=>{
         const poolYes   = parseFloat(f.mmSharesYes)||500;
@@ -8302,6 +8320,7 @@ function getMkPreview(){
   const f        = STATE.mkForm;
   const poolYes  = parseFloat(f.mmSharesYes)||500;
   const poolNo   = parseFloat(f.mmSharesNo)||500;
+  const mmTick   = parseFloat(f.mmTick||"0.01");
   const price    = Math.min(0.99, Math.max(0.01, parseFloat(f.mmPrice)||0.50));
   const priceNo  = 1 - price;
   const total    = Math.round((poolYes + poolNo) * 100) / 100;
@@ -8328,6 +8347,7 @@ function getMkPreview(){
   const rows = [
     ["Precio SÍ / NO",       `${pct(price)} / ${pct(priceNo)}`],
     ["Pool SÍ depositado",   usd(poolYes)],
+    ["Tick por trade",        `${mmTick} (${(mmTick*100).toFixed(2)}% de movimiento)`],
     ["Pool NO depositado",   usd(poolNo)],
     ["Total invertido",      usd(total)],
     ["P\u00e9rd. m\u00e1x. si gana S\u00cd", `-${usd(maxLossIfYes)} (pool NO comprometido)`],
@@ -8426,19 +8446,22 @@ function renderAdminResolve(){
     // ── Datos MM en tiempo real ──────────────────────────────────
     // ── Datos del nuevo modelo MM ────────────────────────────────
     const spreads   = m.spreadPool || 0;
-    const poolYes   = m.qYes || 0;
-    const poolNo    = m.qNo  || 0;
+    const poolYes   = m.qYes || 0;   // acumulado compras usuarios SÍ
+    const poolNo    = m.qNo  || 0;   // acumulado compras usuarios NO
     const poolTotal = Math.round((poolYes + poolNo) * 100) / 100;
     const lpYes     = m.lpYes || 0;
     const lpNo      = m.lpNo  || 0;
     const lpTotal   = Math.round((lpYes + lpNo) * 100) / 100;
     const invested  = m.seedLiquidity || 0;
+    const pYesCurrent  = m.priceYes || 0.50;
+    const tickSize     = m.tick || 0.01;
+    // Capital comprometido = lo que el MM tiene en órdenes de venta activas
+    // = pool inicial - pool disponible actual
     const mmCommittedYes   = Math.max(0, Math.round((invested/2 - lpYes) * 100)/100);
     const mmCommittedNo    = Math.max(0, Math.round((invested/2 - lpNo)  * 100)/100);
     const mmCommittedTotal = Math.round((mmCommittedYes + mmCommittedNo) * 100)/100;
     const maxLossIfYes  = mmCommittedNo;
     const maxLossIfNo   = mmCommittedYes;
-    const netIfYes = Math.round((lpTotal + spreads - maxLossIfYes) * 100)/100;
     const netIfNo  = Math.round((lpTotal + spreads - maxLossIfNo)  * 100)/100;
 
     return `<div class="card" style="margin-bottom:16px${borderStyle}">
@@ -8448,9 +8471,10 @@ function renderAdminResolve(){
           <!-- Título y meta -->
           <div style="font-weight:700;font-size:15px;margin-bottom:4px">${escHtml(m.title)}</div>
           <div class="market-meta" style="margin-bottom:10px">
-            <span>SÍ: <strong style="color:var(--yes)">${pct(pYes)}</strong></span>
-            <span>NO: <strong style="color:var(--no)">${pct(pNo)}</strong></span>
+            <span>SÍ: <strong style="color:var(--yes)">${pct(pYesCurrent)}</strong></span>
+            <span>NO: <strong style="color:var(--no)">${pct(1-pYesCurrent)}</strong></span>
             <span>Vol: ${fmtVol(m.totalVolume)}</span>
+            <span>Tick: ${tickSize}</span>
             <span>${timeLeft(m.closesAt)}</span>
             ${oracleTag}
           </div>
@@ -9616,16 +9640,15 @@ async function adminCreateMarket(){
   const sharesYes = parseFloat(f.mmSharesYes)||500;
   const sharesNo  = parseFloat(f.mmSharesNo)||500;
   const mmPrice   = Math.min(0.99, Math.max(0.01, parseFloat(f.mmPrice)||0.50));
-  if(sharesYes < 10) return notify("Mínimo 10 shares en SÍ","error");
-  if(sharesNo  < 10) return notify("Mínimo 10 shares en NO","error");
+  const mmTick    = Math.min(0.01, Math.max(0.001, parseFloat(f.mmTick||"0.01")));
+  if(sharesYes < 10) return notify("Mínimo $10 en pool SÍ","error");
+  if(sharesNo  < 10) return notify("Mínimo $10 en pool NO","error");
 
-  const costYes = sharesYes * mmPrice;
-  const costNo  = sharesNo  * (1 - mmPrice);
-  const totalCost = costYes + costNo;
+  const totalCost = sharesYes + sharesNo;
 
   const u = getUser();
   if((u?.balance||0) < totalCost)
-    return notify(`Saldo insuficiente. Necesitas ${usd(totalCost)} — tienes ${usd(u?.balance||0)}`,"error");
+    return notify(`Saldo insuficiente. Necesitas ${usd(totalCost)} — tienes ${usd(u?.balance||0)}`, "error");
 
   // El precio inicial del mercado = mmPrice
   // qYes/qNo iniciales = costo MM de cada lado (representan el inventario en el pool)
@@ -9644,6 +9667,8 @@ async function adminCreateMarket(){
     title_en:f.title_en||null, description_en:f.description_en||null, oracleLocked:false,
     imageUrl:f.imageUrl||null,
     priceHistory:[parseFloat(mmPrice.toFixed(4))],
+    priceYes: mmPrice,
+    tick:     mmTick,
     createdAt:new Date().toISOString(), featured:false
   };
 
