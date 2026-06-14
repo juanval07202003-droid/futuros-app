@@ -2700,7 +2700,15 @@ function render(){
       break;
     case"auth":     app.innerHTML=renderAuth();     bindAuth(); break;
     case"market":   app.innerHTML=renderMarket();
-      (()=>{const mu=getUser(),mm=getMarket(STATE.selectedMarket);if(mu&&mm)setTimeout(()=>loadPendingOrders(mm.id),100);})();
+      (()=>{
+        const mu=getUser(), mm=getMarket(STATE.selectedMarket);
+        if(mm){
+          setTimeout(()=>{
+            if(mu) loadPendingOrders(mm.id);
+            startObRefresh(mm.id);
+          }, 150);
+        }
+      })();
       break;
     case"portfolio":app.innerHTML=renderPortfolio();break;
     case"wallet":   app.innerHTML=renderWallet();   break;
@@ -4571,78 +4579,40 @@ function renderMarket(){
         ${chartHtml}
       </div>
 
-      <!-- Order Book — Trades reales por precio -->
+      <!-- Order Book en tiempo real -->
       <div class="card" style="margin-bottom:16px">
-        <div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:12px">📖 Order Book — Trades reales</div>
-        ${(()=>{
-          // Agrupar posiciones reales por precio de entrada estimado
-          const positions = STATE.users.flatMap(u=>{
-            const pos = (u.positions||{})[m.id];
-            if(!pos) return [];
-            const entries = [];
-            if((pos.YES||0)>0) entries.push({side:"YES", shares:pos.YES, user:u.username});
-            if((pos.NO||0)>0)  entries.push({side:"NO",  shares:pos.NO,  user:u.username});
-            return entries;
-          });
-
-          const yesPositions = positions.filter(p=>p.side==="YES").sort((a,b)=>b.shares-a.shares);
-          const noPositions  = positions.filter(p=>p.side==="NO" ).sort((a,b)=>b.shares-a.shares);
-          const totalYes = yesPositions.reduce((s,p)=>s+p.shares,0)||1;
-          const totalNo  = noPositions.reduce((s,p)=>s+p.shares,0)||1;
-          const maxShares = Math.max(...[...yesPositions,...noPositions].map(p=>p.shares),1);
-
-          const renderSide = (positions, side, total, color, bg) => {
-            if(!positions.length) return `<div style="color:var(--muted);font-size:12px;text-align:center;padding:20px 0">Sin posiciones</div>`;
-            return positions.slice(0,8).map(p=>{
-              const pct_bar = Math.round((p.shares/maxShares)*100);
-              const pct_total = ((p.shares/total)*100).toFixed(1);
-              return `<div style="display:grid;grid-template-columns:80px 1fr 70px;gap:6px;align-items:center;margin-bottom:5px">
-                <div style="font-size:11px;font-weight:700;color:${color}">${p.shares.toFixed(2)}</div>
-                <div style="position:relative;height:16px;background:var(--card2);border-radius:3px;overflow:hidden">
-                  <div style="position:absolute;top:0;left:0;height:100%;width:${pct_bar}%;background:${bg};opacity:.5;border-radius:3px"></div>
-                  <div style="position:absolute;top:0;left:4px;line-height:16px;font-size:10px;color:var(--muted)">@${escHtml(p.user)}</div>
-                </div>
-                <div style="font-size:11px;color:var(--muted);text-align:right">${pct_total}%</div>
-              </div>`;
-            }).join("");
-          };
-
-          return `<div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
-            <div>
-              <div style="display:flex;justify-content:space-between;margin-bottom:8px">
-                <span style="font-size:11px;font-weight:700;color:var(--yes);text-transform:uppercase;letter-spacing:.5px">SÍ — ${pct(pYes)}</span>
-                <span style="font-size:10px;color:var(--muted)">${yesPositions.length} traders · ${totalYes.toFixed(0)} shares</span>
-              </div>
-              <div style="display:grid;grid-template-columns:80px 1fr 70px;gap:6px;margin-bottom:6px">
-                <span style="font-size:9px;color:var(--muted);text-transform:uppercase">SHARES</span>
-                <span style="font-size:9px;color:var(--muted);text-transform:uppercase">TRADER</span>
-                <span style="font-size:9px;color:var(--muted);text-transform:uppercase;text-align:right">% POOL</span>
-              </div>
-              <div style="border-top:2px solid var(--yes);padding-top:8px">
-                ${renderSide(yesPositions,"YES",totalYes,"var(--yes)","rgba(0,168,112,.3)")}
-              </div>
-            </div>
-            <div>
-              <div style="display:flex;justify-content:space-between;margin-bottom:8px">
-                <span style="font-size:11px;font-weight:700;color:var(--no);text-transform:uppercase;letter-spacing:.5px">NO — ${pct(1-pYes)}</span>
-                <span style="font-size:10px;color:var(--muted)">${noPositions.length} traders · ${totalNo.toFixed(0)} shares</span>
-              </div>
-              <div style="display:grid;grid-template-columns:80px 1fr 70px;gap:6px;margin-bottom:6px">
-                <span style="font-size:9px;color:var(--muted);text-transform:uppercase">SHARES</span>
-                <span style="font-size:9px;color:var(--muted);text-transform:uppercase">TRADER</span>
-                <span style="font-size:9px;color:var(--muted);text-transform:uppercase;text-align:right">% POOL</span>
-              </div>
-              <div style="border-top:2px solid var(--no);padding-top:8px">
-                ${renderSide(noPositions,"NO",totalNo,"var(--no)","rgba(224,40,74,.3)")}
-              </div>
-            </div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+          <div style="font-size:13px;font-weight:700;color:var(--text)">📖 Order Book</div>
+          <div style="display:flex;gap:6px">
+            <button onclick="setObTab('${m.id}','book')"
+              id="ob-btn-book-${m.id}"
+              style="font-size:11px;padding:3px 10px;border-radius:20px;border:1px solid var(--border);
+                background:var(--accent);color:#fff;cursor:pointer;font-weight:600">
+              Libro
+            </button>
+            <button onclick="setObTab('${m.id}','trades')"
+              id="ob-btn-trades-${m.id}"
+              style="font-size:11px;padding:3px 10px;border-radius:20px;border:1px solid var(--border);
+                background:transparent;color:var(--muted);cursor:pointer">
+              Trades
+            </button>
+            <button onclick="setObTab('${m.id}','positions')"
+              id="ob-btn-positions-${m.id}"
+              style="font-size:11px;padding:3px 10px;border-radius:20px;border:1px solid var(--border);
+                background:transparent;color:var(--muted);cursor:pointer">
+              Posiciones
+            </button>
           </div>
-          <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);display:flex;justify-content:space-between;font-size:11px;color:var(--muted)">
-            
-            <span>Pool total: ${usd((m.qYes||0)+(m.qNo||0))}</span>
-            <span>Fee acumulado: ${usd(m.spreadPool||0)}</span>
-          </div>`;
-        })()}
+        </div>
+        <div id="ob-content-${m.id}">
+          <div style="text-align:center;padding:20px;color:var(--muted);font-size:12px">Cargando...</div>
+        </div>
+        <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);
+            display:flex;justify-content:space-between;font-size:11px;color:var(--muted)">
+          <span>Vol: ${usd((m.qYes||0)+(m.qNo||0))}</span>
+          <span>Spreads: ${usd(m.spreadPool||0)}</span>
+          <span>Precio: SÍ ${pct(pYes)} / NO ${pct(1-pYes)}</span>
+        </div>
       </div>
 
       <!-- Descripción -->
@@ -4733,6 +4703,262 @@ function renderMarket(){
 // ═══════════════════════════════════════════════════════════════════
 // PENDING ORDERS — órdenes del usuario esperando contraparte
 // ═══════════════════════════════════════════════════════════════════
+// ── Order Book functions ─────────────────────────────────────────
+const OB_STATE = {}; // { marketId: { tab, interval } }
+
+function setObTab(marketId, tab){
+  if(!OB_STATE[marketId]) OB_STATE[marketId] = {};
+  OB_STATE[marketId].tab = tab;
+
+  // Update button styles
+  ["book","trades","positions"].forEach(t=>{
+    const btn = document.getElementById(`ob-btn-${t}-${marketId}`);
+    if(!btn) return;
+    if(t===tab){
+      btn.style.background="var(--accent)";
+      btn.style.color="#fff";
+      btn.style.fontWeight="600";
+    } else {
+      btn.style.background="transparent";
+      btn.style.color="var(--muted)";
+      btn.style.fontWeight="400";
+    }
+  });
+  loadOrderBook(marketId);
+}
+
+async function loadOrderBook(marketId){
+  const el = document.getElementById("ob-content-"+marketId);
+  if(!el) return;
+  const tab = OB_STATE[marketId]?.tab || "book";
+
+  if(tab==="book"){
+    await renderObBook(marketId, el);
+  } else if(tab==="trades"){
+    await renderObTrades(marketId, el);
+  } else {
+    renderObPositions(marketId, el);
+  }
+}
+
+async function renderObBook(marketId, el){
+  // Órdenes activas en el libro (open/partial)
+  const {data:orders} = await db.from("orders")
+    .select("side,price,shares,filled,is_mm,order_type,user_id")
+    .eq("market_id", marketId)
+    .in("status", ["open","partial"])
+    .order("created_at", {ascending:true});
+
+  const bidsYes = (orders||[]).filter(o=>o.side==="YES" && !o.is_mm);
+  const bidsNo  = (orders||[]).filter(o=>o.side==="NO"  && !o.is_mm);
+  const mmYes   = (orders||[]).filter(o=>o.side==="YES" &&  o.is_mm);
+  const mmNo    = (orders||[]).filter(o=>o.side==="NO"  &&  o.is_mm);
+
+  const aggOrders = (list) => {
+    const map = {};
+    list.forEach(o=>{
+      const k = (o.price||0).toFixed(3);
+      if(!map[k]) map[k]={price:o.price,shares:0,isMM:false};
+      map[k].shares += (o.shares||0)-(o.filled||0);
+      if(o.is_mm) map[k].isMM=true;
+    });
+    return Object.values(map).filter(x=>x.shares>0.001).sort((a,b)=>b.price-a.price);
+  };
+
+  const allYes = aggOrders([...bidsYes,...mmYes]);
+  const allNo  = aggOrders([...bidsNo, ...mmNo]);
+  const maxSh  = Math.max(...[...allYes,...allNo].map(x=>x.shares), 1);
+
+  const renderRows = (rows, color, bg) => {
+    if(!rows.length) return `<div style="color:var(--muted);font-size:11px;text-align:center;padding:12px 0">Sin órdenes</div>`;
+    return rows.slice(0,12).map(r=>{
+      const w = Math.round(r.shares/maxSh*100);
+      return `<div style="display:grid;grid-template-columns:55px 1fr 65px;gap:4px;
+          align-items:center;margin-bottom:3px;position:relative">
+        <div style="font-size:11px;font-weight:700;color:${color}">${pct(r.price)}</div>
+        <div style="position:relative;height:14px;border-radius:2px;overflow:hidden;background:var(--card2)">
+          <div style="position:absolute;top:0;left:0;height:100%;width:${w}%;background:${bg};opacity:.4"></div>
+          ${r.isMM?`<div style="position:absolute;top:0;left:3px;line-height:14px;font-size:9px;color:var(--muted)">MM</div>`:""}
+        </div>
+        <div style="font-size:10px;color:var(--muted);text-align:right">${r.shares.toFixed(1)}</div>
+      </div>`;
+    }).join("");
+  };
+
+  el.innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div>
+        <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+          <span style="font-size:10px;font-weight:700;color:var(--yes);text-transform:uppercase">SÍ — órdenes</span>
+          <span style="font-size:10px;color:var(--muted)">${allYes.length} niveles</span>
+        </div>
+        <div style="display:grid;grid-template-columns:55px 1fr 65px;gap:4px;margin-bottom:4px">
+          <span style="font-size:9px;color:var(--muted)">PRECIO</span>
+          <span style="font-size:9px;color:var(--muted)">PROFUNDIDAD</span>
+          <span style="font-size:9px;color:var(--muted);text-align:right">SHARES</span>
+        </div>
+        <div style="border-top:2px solid var(--yes);padding-top:6px">
+          ${renderRows(allYes,"var(--yes)","rgba(0,168,112,.5)")}
+        </div>
+      </div>
+      <div>
+        <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+          <span style="font-size:10px;font-weight:700;color:var(--no);text-transform:uppercase">NO — órdenes</span>
+          <span style="font-size:10px;color:var(--muted)">${allNo.length} niveles</span>
+        </div>
+        <div style="display:grid;grid-template-columns:55px 1fr 65px;gap:4px;margin-bottom:4px">
+          <span style="font-size:9px;color:var(--muted)">PRECIO</span>
+          <span style="font-size:9px;color:var(--muted)">PROFUNDIDAD</span>
+          <span style="font-size:9px;color:var(--muted);text-align:right">SHARES</span>
+        </div>
+        <div style="border-top:2px solid var(--no);padding-top:6px">
+          ${renderRows(allNo,"var(--no)","rgba(224,40,74,.5)")}
+        </div>
+      </div>
+    </div>`;
+}
+
+async function renderObTrades(marketId, el){
+  // Últimos 40 trades ejecutados — muestra emparejamientos reales entre usuarios
+  const {data:trades} = await db.from("orders")
+    .select("id,side,price,shares,filled,is_mm,order_type,user_id,created_at,status")
+    .eq("market_id", marketId)
+    .in("status", ["filled","partial"])
+    .gt("filled", 0)
+    .order("created_at", {ascending:false})
+    .limit(40);
+
+  if(!trades || !trades.length){
+    el.innerHTML=`<div style="color:var(--muted);font-size:12px;text-align:center;padding:20px 0">Sin trades ejecutados aún</div>`;
+    return;
+  }
+
+  const rows = trades.map(t=>{
+    const u = STATE.users.find(x=>String(x.id)===String(t.user_id));
+    const name = t.is_mm ? "MM" : (u?.username ? "@"+u.username : "Usuario");
+    const isMM = t.is_mm;
+    const isSell = t.order_type==="sell";
+    const color = t.side==="YES" ? "var(--yes)" : "var(--no)";
+    const sideLabel = t.side==="YES" ? "SÍ" : "NO";
+    const typeLabel = isMM ? "🏦" : isSell ? "↩️" : "↗️";
+    const ago = timeAgo(t.created_at);
+
+    return `<div style="display:grid;grid-template-columns:20px 40px 55px 70px 1fr 50px;
+        gap:4px;align-items:center;padding:4px 0;border-bottom:1px solid var(--border);font-size:11px">
+      <span>${typeLabel}</span>
+      <span style="color:${color};font-weight:700">${sideLabel}</span>
+      <span style="color:${color}">${pct(t.price||0)}</span>
+      <span style="color:var(--muted)">${(t.filled||0).toFixed(2)} sh</span>
+      <span style="color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(name)}</span>
+      <span style="color:var(--muted);text-align:right;font-size:10px">${ago}</span>
+    </div>`;
+  }).join("");
+
+  el.innerHTML = `
+    <div style="display:grid;grid-template-columns:20px 40px 55px 70px 1fr 50px;
+        gap:4px;margin-bottom:4px;padding-bottom:4px;border-bottom:2px solid var(--border)">
+      <span style="font-size:9px;color:var(--muted)"></span>
+      <span style="font-size:9px;color:var(--muted)">LADO</span>
+      <span style="font-size:9px;color:var(--muted)">PRECIO</span>
+      <span style="font-size:9px;color:var(--muted)">SHARES</span>
+      <span style="font-size:9px;color:var(--muted)">TRADER</span>
+      <span style="font-size:9px;color:var(--muted);text-align:right">HACE</span>
+    </div>
+    <div style="max-height:280px;overflow-y:auto;scrollbar-width:thin">${rows}</div>
+    <div style="margin-top:6px;font-size:10px;color:var(--muted)">
+      ↗️ Compra &nbsp;↩️ Venta anticipada &nbsp;🏦 Market Maker
+    </div>`;
+}
+
+function renderObPositions(marketId, el){
+  const m = STATE.markets.find(x=>x.id===marketId);
+  if(!m){ el.innerHTML=""; return; }
+
+  const positions = STATE.users.flatMap(u=>{
+    const pos=(u.positions||{})[marketId];
+    if(!pos) return [];
+    const entries=[];
+    if((pos.YES||0)>0.001) entries.push({side:"YES",shares:pos.YES,user:u.username,isAdmin:u.role==="admin"});
+    if((pos.NO||0)>0.001)  entries.push({side:"NO", shares:pos.NO, user:u.username,isAdmin:u.role==="admin"});
+    return entries;
+  });
+
+  const yesPos = positions.filter(p=>p.side==="YES").sort((a,b)=>b.shares-a.shares);
+  const noPos  = positions.filter(p=>p.side==="NO" ).sort((a,b)=>b.shares-a.shares);
+  const totalY = yesPos.reduce((s,p)=>s+p.shares,0)||1;
+  const totalN = noPos.reduce((s,p)=>s+p.shares,0)||1;
+  const maxSh  = Math.max(...positions.map(p=>p.shares),1);
+
+  const renderPos = (list,total,color,bg) => {
+    if(!list.length) return `<div style="color:var(--muted);font-size:11px;text-align:center;padding:12px 0">Sin posiciones</div>`;
+    return list.slice(0,10).map(p=>{
+      const w=Math.round(p.shares/maxSh*100);
+      const pctPool=((p.shares/total)*100).toFixed(1);
+      return `<div style="display:grid;grid-template-columns:1fr 70px 45px;gap:4px;
+          align-items:center;margin-bottom:4px">
+        <div style="position:relative;height:18px;border-radius:3px;overflow:hidden;background:var(--card2)">
+          <div style="position:absolute;top:0;left:0;height:100%;width:${w}%;background:${bg};opacity:.35"></div>
+          <div style="position:absolute;top:0;left:5px;line-height:18px;font-size:11px;
+              color:var(--text);font-weight:${p.isAdmin?"700":"400"}">
+            ${p.isAdmin?"🏦 ":""}@${escHtml(p.user)}
+          </div>
+        </div>
+        <div style="font-size:11px;font-weight:700;color:${color};text-align:right">${p.shares.toFixed(2)}</div>
+        <div style="font-size:10px;color:var(--muted);text-align:right">${pctPool}%</div>
+      </div>`;
+    }).join("");
+  };
+
+  el.innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div>
+        <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+          <span style="font-size:10px;font-weight:700;color:var(--yes);text-transform:uppercase">SÍ</span>
+          <span style="font-size:10px;color:var(--muted)">${yesPos.length} holders · ${totalY.toFixed(0)} sh</span>
+        </div>
+        <div style="border-top:2px solid var(--yes);padding-top:6px">
+          ${renderPos(yesPos,totalY,"var(--yes)","rgba(0,168,112,.5)")}
+        </div>
+      </div>
+      <div>
+        <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+          <span style="font-size:10px;font-weight:700;color:var(--no);text-transform:uppercase">NO</span>
+          <span style="font-size:10px;color:var(--muted)">${noPos.length} holders · ${totalN.toFixed(0)} sh</span>
+        </div>
+        <div style="border-top:2px solid var(--no);padding-top:6px">
+          ${renderPos(noPos,totalN,"var(--no)","rgba(224,40,74,.5)")}
+        </div>
+      </div>
+    </div>`;
+}
+
+function timeAgo(ts){
+  if(!ts) return "";
+  const s = Math.floor((Date.now()-new Date(ts).getTime())/1000);
+  if(s<60) return s+"s";
+  if(s<3600) return Math.floor(s/60)+"m";
+  if(s<86400) return Math.floor(s/3600)+"h";
+  return Math.floor(s/86400)+"d";
+}
+
+function startObRefresh(marketId){
+  if(!OB_STATE[marketId]) OB_STATE[marketId]={};
+  if(OB_STATE[marketId].interval) clearInterval(OB_STATE[marketId].interval);
+  // Cargar inmediatamente
+  setObTab(marketId, "book");
+  // Refrescar cada 8 segundos
+  OB_STATE[marketId].interval = setInterval(()=>{
+    loadOrderBook(marketId);
+  }, 8000);
+}
+
+function stopObRefresh(marketId){
+  if(OB_STATE[marketId]?.interval){
+    clearInterval(OB_STATE[marketId].interval);
+    OB_STATE[marketId].interval = null;
+  }
+}
+
 async function loadPendingOrders(marketId){
   const u = getUser();
   if(!u) return;
