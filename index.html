@@ -101,6 +101,8 @@ body{
 }
 .nav-btn:hover{background:var(--card2);color:var(--text);}
 .nav-btn.active{background:var(--yes-bg);color:var(--yes);}
+.nav-btn-stw{color:#f59e0b!important;font-weight:700;}
+.nav-btn-stw.active{background:rgba(245,158,11,.12)!important;color:#f59e0b!important;}
 .nav-btn.admin-btn.active{background:var(--gold-bg);color:var(--gold);}
 .nav-right{display:flex;align-items:center;gap:8px;}
 .balance-pill{
@@ -1275,7 +1277,7 @@ function marketToDbRow(m){
     pause_reason: m.pauseReason||"",
     tick:         m.tick||0.01,
     price_yes:    m.priceYes||0.50,
-    similar_markets: m.similarMarkets||[],
+    ...(m.similarMarkets !== undefined ? {similar_markets: m.similarMarkets||[]} : {}),
   };
 }
 
@@ -1938,6 +1940,7 @@ const STATE={
     // Admin user loaded exclusively from DB — never hardcoded here
   ],
   session:null,
+  stwLaunchDate: (()=>{ try{return localStorage.getItem('stw_launch_date')||null;}catch(e){return null;} })(),   // ISO string, configurable from admin
   view:"home",
   authMode:"login",
   selectedMarket:null,
@@ -2013,7 +2016,7 @@ const getMarket =id=>STATE.markets.find(m=>m.id===id);
 const LANG={
   es:{
     // Nav
-    nav_home:"Inicio", nav_markets:"Mercados", nav_portfolio:"Portfolio", nav_feed:"Feed",
+    nav_home:"Inicio", nav_markets:"Mercados", nav_portfolio:"Portfolio", nav_feed:"Feed", nav_bemm:"Ser MM",
     nav_wallet:"Billetera", nav_admin:"Admin", nav_login:"Iniciar sesión",
     nav_logout:"Cerrar sesión",
     // Home
@@ -2268,7 +2271,7 @@ const LANG={
   },
   en:{
     // Nav
-    nav_home:"Home", nav_markets:"Markets", nav_portfolio:"Portfolio", nav_feed:"Feed",
+    nav_home:"Home", nav_markets:"Markets", nav_portfolio:"Portfolio", nav_feed:"Feed", nav_bemm:"Be MM",
     nav_wallet:"Wallet", nav_admin:"Admin", nav_login:"Sign in",
     nav_logout:"Sign out",
     // Home
@@ -2737,6 +2740,7 @@ function render(){
     case"portfolio":app.innerHTML=renderPortfolio();break;
     case"wallet":   app.innerHTML=renderWallet();   break;
     case"admin":    app.innerHTML=renderAdmin();    break;
+    case"bemm":     app.innerHTML=renderBeMM();     startBeMMCountdown(); break;
     case"terms":    app.innerHTML=renderPolicy("terms");    break;
     case"privacy":  app.innerHTML=renderPolicy("privacy");  break;
     case"cookies":  app.innerHTML=renderPolicy("cookies");  break;
@@ -2785,6 +2789,7 @@ function renderNav(){
     (u?'<button class="nav-btn'+(vw==="feed"?' active':'')+'" onclick="navigate(\'feed\')">'+t("nav_feed")+'</button>':'')+
     '<button class="nav-btn'+(vw==="portfolio"?' active':'')+'" onclick="navigate(\'portfolio\')">'+t("nav_portfolio")+'</button>'+
     (u?'<button class="nav-btn'+(vw==="wallet"?' active':'')+'" onclick="navigate(\'wallet\')">'+t("nav_wallet")+'</button>':'')+
+    '<button class="nav-btn'+(vw==="bemm"?' active':'')+' nav-btn-stw" onclick="navigate(\'bemm\')">🪙 '+t("nav_bemm")+'</button>'+
     (admin?'<button class="nav-btn admin-btn'+(vw==="admin"?' active':'')+'" onclick="navigate(\'admin\')">⚙️ '+t("nav_admin")+'</button>':'');
 
   const searchBtn='<button onclick="openSearchPanel()" style="padding:6px 8px;border-radius:10px;border:none;background:transparent;cursor:pointer;color:var(--muted);display:flex;align-items:center;justify-content:center;transition:color .15s" onmouseover="this.style.color=\'var(--yes)\'" onmouseout="this.style.color=\'var(--muted)\'" title="Buscar mercados"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg></button>';
@@ -2808,12 +2813,14 @@ function renderNav(){
         {icon:`<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>`,label:t("nav_feed"),    view:"feed",     fn:"navigate('feed')"},
         {icon:`<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="15" rx="2"/><path d="M16 7V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v2"/><line x1="12" y1="12" x2="12" y2="16"/><line x1="10" y1="14" x2="14" y2="14"/></svg>`,label:t("nav_portfolio"), view:"portfolio",fn:"navigate('portfolio')"},
         {icon:`<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="15" rx="2"/><path d="M2 10h20"/><circle cx="17" cy="15" r="1.5" fill="currentColor" stroke="none"/></svg>`,label:t("nav_wallet"),    view:"wallet",   fn:"navigate('wallet')"},
+        {icon:`<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="5"/><path d="M12 3v2m0 6v2m-4.33-7l1 1.73m4.66 2.54l1 1.73M7.67 8H5.5m13 0h-2.17M7.67 13l1-1.73m4.66-2.54l1-1.73"/><path d="M9 18h6l1 3H8l1-3z"/></svg>`,label:t("nav_bemm"), view:"bemm", fn:"navigate('bemm')"},
         {icon:`<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>`,label:usd(u.balance),     view:"__dep__",  fn:"openDeposit()"},
         ...(admin?[{icon:`<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>`,label:t("nav_admin"),view:"admin",fn:"navigate('admin')",isAdmin:true}]:[])
       ]
     :[
         {icon:`<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9.5L12 3l9 6.5V20a1 1 0 01-1 1H4a1 1 0 01-1-1V9.5z"/><path d="M9 21V12h6v9"/></svg>`,label:t("nav_home"),     view:"home",     fn:"navigate('home')"},
         {icon:`<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="15" rx="2"/><path d="M16 7V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v2"/><line x1="12" y1="12" x2="12" y2="16"/><line x1="10" y1="14" x2="14" y2="14"/></svg>`,label:t("nav_portfolio"),view:"portfolio", fn:"navigate('portfolio')"},
+        {icon:`<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="5"/><path d="M12 3v2m0 6v2m-4.33-7l1 1.73m4.66 2.54l1 1.73M7.67 8H5.5m13 0h-2.17M7.67 13l1-1.73m4.66-2.54l1-1.73"/><path d="M9 18h6l1 3H8l1-3z"/></svg>`,label:t("nav_bemm"), view:"bemm", fn:"navigate('bemm')"},
         {icon:`<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/></svg>`,label:langFlag,           view:"__lang__", fn:"toggleLang()"},
         {icon:`<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h4a2 2 0 012 2v14a2 2 0 01-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>`,label:t("nav_login"),     view:"auth",     fn:"navigate('auth')"},
       ];
@@ -5156,20 +5163,28 @@ function renderSimilarMarkets(m){
   if(!markets.length) return "";
   const pYes = x => Math.min(0.99,Math.max(0.01,x.priceYes||0.50));
   const cards = markets.map(x=>`
-    <div onclick="navigate('market',{id:'${x.id}'})" style="cursor:pointer;
+    <div onclick="navigate('market',{marketId:'${x.id}'})" style="cursor:pointer;
         background:var(--card);border:1px solid var(--border);border-radius:10px;
         padding:10px 12px;display:flex;justify-content:space-between;align-items:center;
         gap:10px;transition:border-color .15s;min-width:0"
       onmouseover="this.style.borderColor='var(--accent)'"
       onmouseout="this.style.borderColor='var(--border)'">
+      <!-- Izquierda: título + precio -->
       <div style="flex:1;min-width:0">
-        <div style="font-size:12px;font-weight:700;color:var(--text);
-            white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escHtml(x.title)}</div>
-        <div style="font-size:11px;color:var(--muted);margin-top:2px">${x.emoji||"🎯"} ${escHtml(x.category)}</div>
+        <div style="font-size:13px;font-weight:700;color:var(--yes);margin-bottom:2px">
+          ${pct(pYes(x))}
+          <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:2px">▲0.0%</span>
+        </div>
+        <div style="font-size:12px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:500">
+          ${escHtml(x.title)}
+        </div>
       </div>
-      <div style="text-align:right;flex-shrink:0">
-        <div style="font-size:14px;font-weight:800;color:var(--yes)">${pct(pYes(x))}</div>
-        <div style="font-size:10px;color:var(--muted)">SÍ</div>
+      <!-- Derecha: badges YES / NO -->
+      <div style="display:flex;gap:4px;flex-shrink:0">
+        <span style="font-size:11px;font-weight:700;padding:3px 8px;border-radius:6px;
+            background:rgba(0,168,112,.12);color:var(--yes)">YES</span>
+        <span style="font-size:11px;font-weight:700;padding:3px 8px;border-radius:6px;
+            background:rgba(224,40,74,.12);color:var(--no)">NO</span>
       </div>
     </div>`).join("");
   return `<div style="margin-bottom:20px">
@@ -6182,6 +6197,214 @@ function renderCopyTraderView(){
 
 
 // ─── SOCIAL FEED ──────────────────────────────────────────────────
+
+
+// ══════════════════════════════════════════════════════════════════════
+// RENDER BE MM — Página "Ser Market Maker" / Token STW
+// ══════════════════════════════════════════════════════════════════════
+function renderBeMM(){
+  const en = STATE.lang === "en";
+  const launchDate = STATE.stwLaunchDate ? new Date(STATE.stwLaunchDate) : null;
+  const now = new Date();
+  const launched = launchDate && now >= launchDate;
+
+  const ideas = [
+    {id:1, title: en?"Will Shakira headline Coachella 2027?":"¿Shakira encabezará Coachella 2027?", cat:"Cultura", emoji:"🎤", notifs:4821, author:"@CryptoWave", stw:40000},
+    {id:2, title: en?"Will Colombia qualify for the 2026 World Cup?":"¿Colombia clasificará al Mundial 2026?", cat:"Deportes", emoji:"⚽", notifs:3944, author:"@GoalMaster", stw:55000},
+    {id:3, title: en?"Will Bitcoin break $200k before 2027?":"¿Bitcoin romperá $200k antes de 2027?", cat:"Economía", emoji:"₿", notifs:3102, author:"@BTCFan99", stw:41000},
+    {id:4, title: en?"Will GPT-6 launch before December 2026?":"¿GPT-6 se lanzará antes de diciembre 2026?", cat:"Tecnología", emoji:"🤖", notifs:2890, author:"@AIPredictor", stw:48000},
+    {id:5, title: en?"Will Real Madrid win Champions 2026?":"¿Real Madrid ganará la Champions 2026?", cat:"Deportes", emoji:"🏆", notifs:2451, author:"@MadridFan", stw:40000},
+    {id:6, title: en?"Will the Colombian peso strengthen vs USD?":"¿El peso colombiano se fortalecerá vs USD?", cat:"Economía", emoji:"💵", notifs:1920, author:"@EconWatch", stw:62000},
+    {id:7, title: en?"Will Apple release a foldable iPhone in 2026?":"¿Apple lanzará iPhone plegable en 2026?", cat:"Tecnología", emoji:"📱", notifs:1703, author:"@TechSpy", stw:40000},
+  ];
+
+  const stepIcon  = ["🪙","💡","🔥","🏦","💸"];
+  const stepTitle = en
+    ? ["Buy & hold 40,000 STW","Submit a market idea","Make the daily top 3","Fund both liquidity pools","Collect 70% of spreads"]
+    : ["Compra y holdea 40,000 STW","Postula una idea de mercado","Entra al top 3 diario","Fondea ambos pools de liquidez","Cobra el 70% de los spreads"];
+  const stepDesc = en
+    ? ["Acquire the STW token once it launches. Keep 40k to maintain MM eligibility.",
+       "Propose a prediction question with clear resolution criteria.",
+       "The 3 ideas with the most daily 'notify me' subscriptions launch automatically.",
+       "As MM, you deposit initial capital for YES and NO pools and set the initial price.",
+       "Every trade generates a spread. After Statwaves' 30%, 70% goes straight to you."]
+    : ["Adquiere el token STW cuando se lance. Mantén 40k para ser elegible como MM.",
+       "Propone una pregunta de predicción con criterios claros de resolución.",
+       "Las 3 ideas con más suscripciones diarias de 'notifícame' se lanzan automáticamente.",
+       "Como MM depositas el capital inicial de los pools SÍ y NO y defines el precio.",
+       "Cada trade genera un spread. Después del 30% de Statwaves, el 70% va para ti."];
+
+  const faqQ = en
+    ? ["Why 40,000 STW?","What are net spreads?","Can I propose any market?","What if my idea doesn't reach top 3?","When does STW launch?"]
+    : ["¿Por qué 40,000 STW?","¿Qué son spreads netos?","¿Puedo proponer cualquier mercado?","¿Qué pasa si no llego al top 3?","¿Cuándo se lanza STW?"];
+  const faqA = en
+    ? ["This threshold ensures MM have real skin in the game and are committed to quality markets.",
+       "Statwaves deducts transaction costs first. Then 70% of net spreads go to you, 30% to the platform.",
+       "Yes — sports, economics, politics, culture, tech. Must have a clear verifiable outcome by a specific date.",
+       "Your idea stays in the ranking accumulating votes. Great ideas can win on any given day.",
+       "Subscribe via Telegram above to be notified the exact moment it goes live."]
+    : ["Este umbral asegura que los MM tengan intereses reales y estén comprometidos con mercados de calidad.",
+       "Statwaves deduce costos primero. Luego el 70% de spreads netos va para ti y el 30% a la plataforma.",
+       "Sí — deportes, economía, política, cultura, tecnología. Con resultado claro y verificable.",
+       "Permanece en el ranking acumulando votos. Una buena idea puede ganar cualquier día.",
+       "Suscríbete vía Telegram arriba para ser notificado en el momento exacto."];
+
+  let cdHTML = "";
+  if(launchDate && !launched){
+    cdHTML = `<div style="margin-bottom:20px">
+      <div style="font-size:11px;font-weight:700;color:rgba(255,255,255,.4);letter-spacing:1px;text-transform:uppercase;margin-bottom:10px">${en?"Token launch in":"Lanzamiento del token en"}</div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        ${["days","hours","mins","secs"].map((u,i)=>`<div style="text-align:center;background:rgba(255,255,255,.06);border:1px solid rgba(245,158,11,.25);border-radius:12px;padding:12px 16px;min-width:60px"><div id="cd-${u}" style="font-size:26px;font-weight:900;color:#f59e0b;font-variant-numeric:tabular-nums;line-height:1">--</div><div style="font-size:10px;color:rgba(255,255,255,.4);margin-top:4px;text-transform:uppercase">${en?["Days","Hours","Min","Sec"][i]:["Días","Horas","Min","Seg"][i]}</div></div>`).join("")}
+      </div></div>`;
+  } else if(launched){
+    cdHTML = `<div style="display:inline-flex;align-items:center;gap:8px;background:rgba(0,229,160,.1);border:1px solid rgba(0,229,160,.3);border-radius:12px;padding:10px 20px;margin-bottom:20px"><span style="font-size:20px">🚀</span><span style="font-size:16px;font-weight:700;color:var(--yes)">${en?"STW Token is LIVE!":"¡El token STW está en VIVO!"}</span></div>`;
+  } else {
+    cdHTML = `<div style="background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:10px;padding:12px 16px;margin-bottom:20px;display:inline-block"><span style="color:rgba(255,255,255,.5);font-size:13px">${en?"Launch date coming soon — subscribe to be notified.":"Fecha de lanzamiento próximamente — suscríbete para ser notificado."}</span></div>`;
+  }
+
+  return `<div style="max-width:860px;margin:0 auto;padding:24px 16px 80px">
+    <style>@keyframes twinkle{from{opacity:.1}to{opacity:.6}}</style>
+
+    <!-- HERO -->
+    <div style="background:linear-gradient(135deg,#060d1a 0%,#0c1829 60%,#06121e 100%);border-radius:20px;padding:clamp(24px,5vw,48px);margin-bottom:24px;position:relative;overflow:hidden;border:1px solid rgba(245,158,11,.2)">
+      <div style="position:absolute;inset:0;pointer-events:none">
+        ${Array.from({length:25},(_,i)=>`<div style="position:absolute;width:${1+Math.random()*2}px;height:${1+Math.random()*2}px;background:#fff;border-radius:50%;opacity:.3;top:${Math.random()*100}%;left:${Math.random()*100}%;animation:twinkle ${2+Math.random()*3}s ease-in-out infinite alternate"></div>`).join("")}
+      </div>
+      <div style="position:relative">
+        <div style="display:inline-flex;align-items:center;gap:6px;background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.35);border-radius:20px;padding:4px 14px;font-size:11px;font-weight:700;color:#f59e0b;letter-spacing:.5px;margin-bottom:16px">✦ ${en?"COMING SOON":"PRÓXIMAMENTE"}</div>
+        <h1 style="font-size:clamp(34px,8vw,68px);font-weight:900;color:#fff;letter-spacing:-2px;line-height:1;margin-bottom:8px">
+          <span style="background:linear-gradient(90deg,#f59e0b,#fcd34d,#f59e0b);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text">STW</span>
+          <span style="color:rgba(255,255,255,.85);font-size:clamp(18px,4vw,32px);font-weight:400;letter-spacing:0;margin-left:10px">Token</span>
+        </h1>
+        <p style="color:rgba(255,255,255,.55);font-size:clamp(13px,2vw,16px);max-width:520px;line-height:1.6;margin-bottom:24px">${en?"The Statwaves governance token — giving holders the power to create markets, act as Market Makers, and earn 70% of commissions.":"El token de gobernanza de Statwaves — otorga a los holders el poder de crear mercados, actuar como Market Makers y ganar el 70% de las comisiones."}</p>
+        ${cdHTML}
+        <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center">
+          ${getUser() ? `
+          <a href="https://t.me/statwaves_bot?start=stw_notify" target="_blank" rel="noopener"
+             style="display:inline-flex;align-items:center;gap:8px;padding:12px 22px;
+                    background:linear-gradient(135deg,#0088cc,#00aaff);border-radius:12px;
+                    color:#fff;font-weight:700;font-size:14px;text-decoration:none;
+                    box-shadow:0 4px 20px rgba(0,136,204,.4)">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.562 8.248l-2.014 9.488c-.145.658-.537.818-1.084.508l-3-2.21-1.447 1.394c-.16.16-.295.295-.605.295l.213-3.053 5.56-5.023c.242-.213-.054-.333-.373-.12l-6.871 4.326-2.962-.924c-.643-.204-.657-.643.136-.953l11.57-4.461c.537-.194 1.006.131.877.733z"/></svg>
+            ${en?"Notify me on Telegram":"Notifícame en Telegram"}
+          </a>
+          <span style="color:rgba(255,255,255,.3);font-size:12px">${en?"Free · No spam · Just the launch alert":"Gratis · Sin spam · Solo la alerta de lanzamiento"}</span>
+          ` : `
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <button onclick="navigate('auth')"
+              style="display:inline-flex;align-items:center;gap:8px;padding:12px 22px;
+                     background:linear-gradient(135deg,#0088cc,#00aaff);border-radius:12px;
+                     color:#fff;font-weight:700;font-size:14px;border:none;cursor:pointer;
+                     box-shadow:0 4px 20px rgba(0,136,204,.4)">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.562 8.248l-2.014 9.488c-.145.658-.537.818-1.084.508l-3-2.21-1.447 1.394c-.16.16-.295.295-.605.295l.213-3.053 5.56-5.023c.242-.213-.054-.333-.373-.12l-6.871 4.326-2.962-.924c-.643-.204-.657-.643.136-.953l11.57-4.461c.537-.194 1.006.131.877.733z"/></svg>
+              ${en?"Notify me on Telegram":"Notifícame en Telegram"}
+            </button>
+            <div style="display:flex;align-items:center;gap:6px;background:rgba(255,255,255,.06);
+                border:1px solid rgba(255,255,255,.1);border-radius:10px;padding:8px 12px">
+              <span style="font-size:14px">🔒</span>
+              <span style="color:rgba(255,255,255,.5);font-size:12px">
+                ${en?"You need an account to subscribe · ":"Necesitas una cuenta para suscribirte · "}
+                <span onclick="navigate('auth')"
+                  style="color:#60c8f5;cursor:pointer;font-weight:700;text-decoration:underline">
+                  ${en?"Sign in / Register":"Iniciar sesión / Registrarse"}
+                </span>
+              </span>
+            </div>
+          </div>
+          `}
+        </div>
+      </div>
+    </div>
+
+    <!-- PILLARS -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px;margin-bottom:24px">
+      ${[
+        {icon:"🪙",color:"#f59e0b",t:en?"Hold 40,000 STW":"Holdea 40,000 STW",d:en?"Unlock your role as Market Maker and proposal rights.":"Desbloquea tu rol como Market Maker y derechos de propuesta."},
+        {icon:"📊",color:"#6366f1",t:en?"Propose & rank":"Propone y rankea",d:en?"Ideas compete daily. Top 3 launch automatically.":"Ideas compiten a diario. Las top 3 se lanzan automáticamente."},
+        {icon:"💰",color:"var(--yes)",t:en?"Earn 70%":"Gana el 70%",d:en?"You fund the pools. After fees, 70% of spreads are yours.":"Tú fondeas. Después de gastos, el 70% de los spreads son tuyos."},
+      ].map(p=>`<div style="background:var(--card);border:1px solid var(--border);border-radius:14px;padding:18px;border-top:3px solid ${p.color}"><div style="font-size:26px;margin-bottom:10px">${p.icon}</div><div style="font-size:13px;font-weight:800;color:var(--text);margin-bottom:5px">${p.t}</div><div style="font-size:12px;color:var(--muted);line-height:1.5">${p.d}</div></div>`).join("")}
+    </div>
+
+    <!-- HOW IT WORKS -->
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:16px;padding:22px;margin-bottom:24px">
+      <h2 style="font-size:15px;font-weight:800;margin-bottom:18px">⚡ ${en?"How it works":"Cómo funciona"}</h2>
+      <div style="position:relative">
+        <div style="position:absolute;left:18px;top:20px;bottom:20px;width:2px;background:linear-gradient(to bottom,#f59e0b,#6366f1,var(--yes));border-radius:2px"></div>
+        <div style="display:flex;flex-direction:column;gap:18px">
+          ${stepIcon.map((ic,i)=>`<div style="display:flex;gap:14px;align-items:flex-start"><div style="width:38px;height:38px;border-radius:50%;background:var(--card2);border:2px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0;z-index:1">${ic}</div><div style="padding-top:8px"><div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:3px">${stepTitle[i]}</div><div style="font-size:12px;color:var(--muted);line-height:1.5">${stepDesc[i]}</div></div></div>`).join("")}
+        </div>
+      </div>
+    </div>
+
+    <!-- COMMISSION SPLIT -->
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:16px;padding:22px;margin-bottom:24px">
+      <h2 style="font-size:15px;font-weight:800;margin-bottom:14px">📈 ${en?"Commission split":"Distribución de comisiones"}</h2>
+      <div style="display:flex;gap:3px;height:44px;border-radius:10px;overflow:hidden;margin-bottom:12px">
+        <div style="flex:70;background:linear-gradient(90deg,#f59e0b,#fcd34d);display:flex;align-items:center;justify-content:center;font-weight:900;font-size:17px;color:#000">70%</div>
+        <div style="flex:30;background:var(--accent);display:flex;align-items:center;justify-content:center;font-weight:900;font-size:17px;color:#fff">30%</div>
+      </div>
+      <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:10px">
+        <div style="display:flex;align-items:center;gap:7px"><div style="width:11px;height:11px;border-radius:3px;background:#f59e0b"></div><span style="font-size:13px;font-weight:600;color:var(--text)">${en?"70% → Market Maker (you)":"70% → Market Maker (tú)"}</span></div>
+        <div style="display:flex;align-items:center;gap:7px"><div style="width:11px;height:11px;border-radius:3px;background:var(--accent)"></div><span style="font-size:13px;font-weight:600;color:var(--text)">${en?"30% → Statwaves platform":"30% → Plataforma Statwaves"}</span></div>
+      </div>
+      <div style="font-size:12px;color:var(--muted);background:var(--card2);border-radius:8px;padding:10px 12px">💡 ${en?"Applies to net spreads after transaction costs. You fund the pools — you earn the majority.":"Aplica sobre spreads netos después de costos. Tú fondeas los pools — tú te llevas la mayoría."}</div>
+    </div>
+
+    <!-- RANKING IDEAS -->
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:16px;padding:22px;margin-bottom:24px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px;flex-wrap:wrap;gap:8px">
+        <div><h2 style="font-size:15px;font-weight:800;margin-bottom:2px">🏆 ${en?"Market ideas ranking":"Ranking de ideas"}</h2><div style="font-size:12px;color:var(--muted)">${en?"Top 3 daily ideas launch automatically":"Las 3 ideas del día con más votos se lanzan"}</div></div>
+        <div style="background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.3);border-radius:8px;padding:5px 10px;font-size:11px;color:#f59e0b;font-weight:700">🔒 ${en?"After STW launch":"Tras el lanzamiento STW"}</div>
+      </div>
+      <div style="background:linear-gradient(90deg,rgba(245,158,11,.08),rgba(245,158,11,.03));border:1px solid rgba(245,158,11,.2);border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:12px;color:#f59e0b;font-weight:600">
+        🚀 ${en?"Top 3 ideas with most notifications each day become real markets":"Las 3 ideas con más notificaciones del día se convierten en mercados reales"}
+      </div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        ${ideas.map((idea,i)=>`<div style="display:flex;align-items:center;gap:10px;padding:11px 13px;background:${i<3?"linear-gradient(90deg,rgba(245,158,11,.05),var(--card2))":"var(--card2)"};border:1px solid ${i<3?"rgba(245,158,11,.18)":"var(--border)"};border-radius:10px;opacity:.72;cursor:not-allowed">
+          <div style="width:28px;height:28px;border-radius:8px;flex-shrink:0;background:${i===0?"linear-gradient(135deg,#f59e0b,#fcd34d)":i===1?"linear-gradient(135deg,#9ca3af,#e5e7eb)":i===2?"linear-gradient(135deg,#b45309,#d97706)":"var(--border)"};display:flex;align-items:center;justify-content:center;font-size:${i<3?13:12}px;font-weight:900;color:${i<3?"#000":"var(--muted)"}">
+            ${i<3?["🥇","🥈","🥉"][i]:i+1}
+          </div>
+          <div style="flex:1;min-width:0">
+            <div style="font-size:13px;font-weight:700;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${idea.emoji} ${idea.title}</div>
+            <div style="font-size:11px;color:var(--muted);margin-top:2px">${idea.author} · ${idea.cat} <span style="background:rgba(245,158,11,.1);color:#f59e0b;padding:1px 6px;border-radius:10px;margin-left:4px;font-weight:700">${(idea.stw/1000).toFixed(0)}k STW</span></div>
+          </div>
+          <div style="text-align:right;flex-shrink:0;margin-right:4px">
+            <div style="font-size:14px;font-weight:800;color:${i<3?"#f59e0b":"var(--text)"}">${idea.notifs.toLocaleString()}</div>
+            <div style="font-size:10px;color:var(--muted)">🔔 ${en?"notified":"notificados"}</div>
+          </div>
+          <button disabled style="padding:5px 10px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--muted);font-size:11px;cursor:not-allowed;white-space:nowrap;flex-shrink:0">🔔 ${en?"Notify me":"Notifícame"}</button>
+        </div>`).join("")}
+      </div>
+      <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border);text-align:center">
+        <button disabled style="padding:11px 24px;border-radius:12px;background:rgba(245,158,11,.08);border:1px dashed rgba(245,158,11,.35);color:#f59e0b;font-size:13px;font-weight:700;cursor:not-allowed">🔒 ${en?"Post your market idea (requires 40,000 STW)":"Postula tu idea de mercado (requiere 40,000 STW)"}</button>
+        <div style="font-size:12px;color:var(--muted);margin-top:8px">${en?"Available when the STW token launches":"Disponible cuando se lance el token STW"}</div>
+      </div>
+    </div>
+
+    <!-- FAQ -->
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:16px;padding:22px">
+      <h2 style="font-size:15px;font-weight:800;margin-bottom:14px">❓ ${en?"FAQ":"Preguntas frecuentes"}</h2>
+      ${faqQ.map((q,i)=>`<div style="${i>0?"border-top:1px solid var(--border);margin-top:12px;padding-top:12px":""}"><div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:4px">${q}</div><div style="font-size:13px;color:var(--muted);line-height:1.5">${faqA[i]}</div></div>`).join("")}
+    </div>
+
+  </div>`;
+}
+
+// ── Countdown tick ────────────────────────────────────────────────────
+let _beMMInterval = null;
+function startBeMMCountdown(){
+  if(_beMMInterval) clearInterval(_beMMInterval);
+  const launch = STATE.stwLaunchDate ? new Date(STATE.stwLaunchDate) : null;
+  if(!launch) return;
+  function tick(){
+    const diff = launch - new Date();
+    if(diff <= 0){ clearInterval(_beMMInterval); return; }
+    const vals = [Math.floor(diff/86400000), Math.floor((diff%86400000)/3600000), Math.floor((diff%3600000)/60000), Math.floor((diff%60000)/1000)];
+    ["days","hours","mins","secs"].forEach((id,i)=>{ const el=document.getElementById("cd-"+id); if(el) el.textContent=String(vals[i]).padStart(2,"0"); });
+  }
+  tick();
+  _beMMInterval = setInterval(tick, 1000);
+}
 
 function renderFeed(){
   const u = getUser();
@@ -8100,6 +8323,88 @@ async function executeTrade(){
 // ═══════════════════════════════════════════════════════════════════
 // ADMIN
 // ═══════════════════════════════════════════════════════════════════
+
+// ── Admin STW Config ──────────────────────────────────────────────────
+function renderAdminSTW(){
+  const cur = STATE.stwLaunchDate ? new Date(STATE.stwLaunchDate).toISOString().slice(0,16) : "";
+  return `<div style="max-width:600px">
+    <div style="background:linear-gradient(135deg,#060d1a,#0c1829);border:1px solid rgba(245,158,11,.25);
+        border-radius:16px;padding:24px;margin-bottom:20px">
+      <div style="font-size:24px;margin-bottom:8px">🪙</div>
+      <h3 style="color:#fff;font-weight:800;margin-bottom:4px">Token STW — Configuración</h3>
+      <p style="color:rgba(255,255,255,.5);font-size:13px;margin-bottom:0">
+        Configura la fecha y hora exacta del lanzamiento. La cuenta regresiva en la página "Ser MM" se actualiza en tiempo real.
+      </p>
+    </div>
+
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px;margin-bottom:16px">
+      <label class="lbl">📅 Fecha y hora de lanzamiento del token STW</label>
+      <input class="inp" type="datetime-local" id="stw-date-input"
+        value="${cur}"
+        style="margin-bottom:8px"/>
+      <div class="hint">Horario local del servidor. Los usuarios verán la cuenta regresiva en su zona horaria.</div>
+      <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+        <button class="btn-green" style="padding:10px 20px" onclick="saveSTWLaunchDate()">
+          ✅ Guardar fecha de lanzamiento
+        </button>
+        <button class="btn-ghost" style="padding:10px 16px" onclick="clearSTWLaunchDate()">
+          🗑 Borrar fecha
+        </button>
+      </div>
+    </div>
+
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px;margin-bottom:16px">
+      <div style="font-weight:700;font-size:13px;margin-bottom:10px">🤖 Bot de Telegram</div>
+      <div style="font-size:13px;color:var(--muted);margin-bottom:8px">
+        El bot <strong style="color:var(--text)">@statwaves_bot</strong> enviará una notificación automática a todos los suscriptores en el momento exacto del lanzamiento.
+      </div>
+      <div style="background:rgba(0,136,204,.08);border:1px solid rgba(0,136,204,.2);border-radius:8px;padding:10px 12px;font-size:12px;color:#60c8f5">
+        Los usuarios se suscriben desde la página "Ser MM" → botón "Notifícame en Telegram".
+        El bot guarda el chat_id y dispara el mensaje en la fecha configurada arriba.
+      </div>
+    </div>
+
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px">
+      <div style="font-weight:700;font-size:13px;margin-bottom:10px">📊 Estado actual</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div style="background:var(--card2);border-radius:8px;padding:12px">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Fecha configurada</div>
+          <div style="font-size:13px;font-weight:700;color:${STATE.stwLaunchDate?"var(--yes)":"var(--muted)"}">
+            ${STATE.stwLaunchDate ? new Date(STATE.stwLaunchDate).toLocaleString() : "Sin configurar"}
+          </div>
+        </div>
+        <div style="background:var(--card2);border-radius:8px;padding:12px">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Estado</div>
+          <div style="font-size:13px;font-weight:700;color:${!STATE.stwLaunchDate?"var(--muted)":new Date()>=new Date(STATE.stwLaunchDate)?"var(--yes)":"#f59e0b"}">
+            ${!STATE.stwLaunchDate?"Sin fecha":new Date()>=new Date(STATE.stwLaunchDate)?"🚀 LANZADO":"⏳ Pendiente"}
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function saveSTWLaunchDate(){
+  const val = document.getElementById("stw-date-input")?.value;
+  if(!val){ notify("Selecciona una fecha","error"); return; }
+  const iso = new Date(val).toISOString();
+  // Save to Supabase as platform setting (we use markets table metadata or a settings table)
+  // For now, save in STATE and localStorage for persistence
+  STATE.stwLaunchDate = iso;
+  try{ localStorage.setItem("stw_launch_date", iso); }catch(e){}
+  notify("✅ Fecha STW guardada: " + new Date(iso).toLocaleString());
+  // Re-render STW tab
+  render();
+  startBeMMCountdown();
+}
+
+function clearSTWLaunchDate(){
+  STATE.stwLaunchDate = null;
+  try{ localStorage.removeItem("stw_launch_date"); }catch(e){}
+  notify("Fecha STW eliminada");
+  render();
+}
+
 function renderAdmin(){
   if(!isAdmin())return`<div class="container"><p>${t("admin_access_denied")}</p></div>`;
   const featuredCount=STATE.markets.filter(m=>m.featured&&!m.resolved).length;
@@ -8116,6 +8421,7 @@ function renderAdmin(){
     {k:"referrals",l:`<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block;vertical-align:middle;margin-right:4px"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>Referidos`,count:null},
     {k:"news",      l:`Última hora`,                    count:STATE.breakingIds.length||null},
     {k:"trending",  l:`Tendencias`,                     count:null},
+    {k:"stw",       l:`🪙 Token STW`,                       count:null},
   ];
   let content="";
   if(STATE.adminTab==="accounts")   content=renderAdminAccounts();
@@ -8128,6 +8434,7 @@ function renderAdmin(){
   if(STATE.adminTab==="referrals")  content=renderAdminReferrals();
   if(STATE.adminTab==="news")       content=renderAdminNews();
   if(STATE.adminTab==="trending")   content=renderAdminTrending();
+  if(STATE.adminTab==="stw")         content=renderAdminSTW();
   return`<div class="container">
   <div style="display:flex;align-items:center;gap:12px;margin-bottom:28px"><h2>${t("admin_title")}</h2>${mkTag("ADMIN","var(--gold)")}</div>
   <div class="admin-tabs">${tabs.map(tb=>`<button class="admin-tab${STATE.adminTab===tb.k?" active":""}" onclick="setAdminTab('${tb.k}')">${tb.l}${tb.count!=null?`<span class="tab-count">${tb.count}</span>`:""}</button>`).join("")}</div>
@@ -8599,7 +8906,7 @@ function renderAdminMarkets(){
       </div>
       <select class="inp" onchange="if(this.value&&!(STATE.mkForm.similarMarkets||[]).includes(this.value)){STATE.mkForm.similarMarkets=[...(STATE.mkForm.similarMarkets||[]),this.value];updateMkPreview();}this.value=''">
         <option value="">+ Agregar mercado relacionado...</option>
-        ${STATE.markets.filter(x=>!x.resolved&&String(x.id)!==STATE.mkForm?.id).map(x=>
+        ${STATE.markets.filter(x=>String(x.id)!==(STATE.mkForm?.id||'')).map(x=>
           `<option value="${x.id}">${escHtml(x.emoji||"🎯")} ${escHtml(x.title.slice(0,50))}</option>`
         ).join("")}
       </select>
@@ -9254,7 +9561,7 @@ async function loadAdminPositions(marketId){
         <select class="inp" style="font-size:11px;padding:4px 6px"
           onchange="addSimilarMarket('${marketId}',this.value);this.value=''">
           <option value="">+ Agregar relacionado...</option>
-          ${STATE.markets.filter(x=>!x.resolved&&x.id!==marketId&&String(x.id)!==String(marketId)).map(x=>
+          ${STATE.markets.filter(x=>x.id!==marketId&&String(x.id)!==String(marketId)).map(x=>
             `<option value="${x.id}">${escHtml(x.emoji||"🎯")} ${escHtml(x.title.slice(0,40))}</option>`
           ).join("")}
         </select>
@@ -10305,6 +10612,7 @@ async function adminCreateMarket(){
     priceHistory:[parseFloat(mmPrice.toFixed(4))],
     priceYes: mmPrice,
     tick:     mmTick,
+    similarMarkets:[],
     createdAt:new Date().toISOString(), featured:false
   };
 
