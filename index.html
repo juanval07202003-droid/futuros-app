@@ -8784,11 +8784,18 @@ function renderAdminResolve(){
     const invested     = m.seedLiquidity || 0;
     const pYesCurrent  = m.priceYes || 0.50;
     const tickSize     = m.tick || 0.01;
-    // Capital comprometido = dinero que salió del pool para ser contraparte
-    // seed_liquidity se deposita 50/50 en cada lado
-    const seedPerSide      = Math.round(invested/2 * 100)/100;
-    const mmCommittedYes   = Math.max(0, Math.round((seedPerSide - lpYes) * 100)/100);
-    const mmCommittedNo    = Math.max(0, Math.round((seedPerSide - lpNo)  * 100)/100);
+    // Capital comprometido = shares REALES del MM × precio opuesto
+    // Sin trades: MM no tiene shares → comprometido = $0 ✓
+    // El MM correcto es el admin con posición en este mercado
+    const mmAdminUser  = STATE.users.find(u=>u.role==="admin" &&
+      ((u.positions||{})[m.id]?.YES > 0 || (u.positions||{})[m.id]?.NO > 0))
+      || STATE.users.find(u=>u.role==="admin" && u.id===STATE.session)
+      || STATE.users.find(u=>u.role==="admin");
+    const mmPos2       = mmAdminUser ? ((mmAdminUser.positions||{})[m.id]||{}) : {};
+    const mmSharesYes  = mmPos2.YES || 0;
+    const mmSharesNo   = mmPos2.NO  || 0;
+    const mmCommittedYes   = Math.round(mmSharesYes * (1-pYesCurrent) * 100)/100;
+    const mmCommittedNo    = Math.round(mmSharesNo  * pYesCurrent     * 100)/100;
     const mmCommittedTotal = Math.round((mmCommittedYes + mmCommittedNo) * 100)/100;
     const maxLossIfYes  = Math.max(0, Math.round((mmCommittedNo  - spreads) * 100)/100);
     const maxLossIfNo   = Math.max(0, Math.round((mmCommittedYes - spreads) * 100)/100);
@@ -8947,11 +8954,20 @@ function renderAdminResolve(){
           <!-- Comprometidos en tiempo real (desde DB) -->
           <div id="mm-committed-${m.id}" style="margin-top:8px"></div>
 
-          <!-- Posiciones de usuarios en tiempo real -->
-          <div id="admin-pos-${m.id}" style="margin-top:0">
-            <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;
-                letter-spacing:.5px;margin-bottom:6px">👥 Posiciones de participantes</div>
-            <div style="font-size:11px;color:var(--muted)">Cargando...</div>
+          <!-- Posiciones de participantes — desplegable -->
+          <div style="margin-top:8px">
+            <button onclick="toggleAdminPos('${m.id}')"
+              style="width:100%;display:flex;justify-content:space-between;align-items:center;
+                padding:8px 10px;background:var(--card2);border:1px solid var(--border);
+                border-radius:8px;cursor:pointer;font-family:inherit">
+              <span style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">
+                👥 Posiciones de participantes
+              </span>
+              <span id="admin-pos-arrow-${m.id}" style="color:var(--muted);font-size:12px">▼</span>
+            </button>
+            <div id="admin-pos-${m.id}" style="display:none;margin-top:4px">
+              <div style="font-size:11px;color:var(--muted);padding:8px">Cargando...</div>
+            </div>
           </div>
         </div>
 
@@ -9074,9 +9090,18 @@ async function loadAdminPositions(marketId){
   const priceY  = mktFresh?.price_yes || 0.50;
 
   // Capital comprometido = seed/2 - pool disponible
-  const seedPS = Math.round(seed/2*100)/100;
-  const committedYes = Math.max(0, Math.round((seedPS - lpYes)*100)/100);
-  const committedNo  = Math.max(0, Math.round((seedPS - lpNo )*100)/100);
+  // Capital comprometido = shares reales del MM × precio opuesto
+  // Leer de positions del admin en este mercado
+  const priceYesNow = mktFresh?.price_yes || 0.50;
+  const {data:mmPosFresh} = await db.from("positions")
+    .select("yes_shares,no_shares")
+    .eq("market_id", marketId)
+    .eq("user_id", (STATE.users.find(u=>u.role==="admin")||{}).id||"")
+    .maybeSingle();
+  const mmSharesYesFresh = mmPosFresh?.yes_shares || 0;
+  const mmSharesNoFresh  = mmPosFresh?.no_shares  || 0;
+  const committedYes = Math.round(mmSharesYesFresh * (1-priceYesNow) * 100)/100;
+  const committedNo  = Math.round(mmSharesNoFresh  * priceYesNow     * 100)/100;
 
   // Break-even: cuánto volumen necesita para cubrir la pérdida máxima con spreads
   // La pérdida máxima es el menor pool comprometido (el lado perdedor en peor caso)
@@ -9199,6 +9224,22 @@ async function loadAdminPositions(marketId){
     <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;
         letter-spacing:.5px;margin-bottom:6px">👥 Posiciones de participantes (${positions.length})</div>
     <div style="max-height:120px;overflow-y:auto;scrollbar-width:thin">${rows}</div>`;
+}
+
+function toggleAdminPos(marketId){
+  const el    = document.getElementById("admin-pos-"+marketId);
+  const arrow = document.getElementById("admin-pos-arrow-"+marketId);
+  if(!el) return;
+  const isOpen = el.style.display !== "none";
+  if(isOpen){
+    el.style.display = "none";
+    if(arrow) arrow.textContent = "▼";
+  } else {
+    el.style.display = "block";
+    if(arrow) arrow.textContent = "▲";
+    // Cargar posiciones solo cuando se abre
+    loadAdminPositions(marketId);
+  }
 }
 
 async function adminUpdateTick(marketId){
@@ -10202,8 +10243,9 @@ async function adminResolve(id,result){
 
   const resolvedAt = new Date().toISOString();
   const titleShort = m.title.slice(0,25)+(m.title.length>25?"…":"");
-  // Usar el usuario logueado (quien creó y resuelve el mercado)
-  // No buscar "el primer admin" — puede haber múltiples admins
+  // El MM que recibe el pago es el usuario logueado que resuelve
+  // que debe ser el mismo admin que creó el mercado
+  if(!isAdmin()) return notify("Sin permisos para resolver","error");
   const adminId    = String(STATE.session);
 
   // Marcar mercado como resuelto en DB primero
