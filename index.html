@@ -4860,8 +4860,13 @@ async function renderObTrades(marketId, el){
 
   // Contar totales
   const totalShares = contracts.reduce((s,c)=>s+c.shares,0);
-  const adminUser   = STATE.users.find(u=>u.role==="admin");
-  const adminId     = adminUser ? String(adminUser.id) : "";
+  // MM = admin que creó el mercado (tiene posición en ambos lados)
+  // Detectar por los IDs que aparecen en contratos de ambos lados
+  const allUserIds = contracts.flatMap(c=>[String(c.yes_user_id),String(c.no_user_id)]);
+  const adminUsers = STATE.users.filter(u=>u.role==="admin");
+  // El MM real es el admin que aparece en los contratos de este mercado
+  const mmUser = adminUsers.find(u=>allUserIds.includes(String(u.id)));
+  const adminId = mmUser ? String(mmUser.id) : (adminUsers[0] ? String(adminUsers[0].id) : "");
   const mmContracts = contracts.filter(c=>
     String(c.yes_user_id)===adminId || String(c.no_user_id)===adminId
   );
@@ -4935,12 +4940,21 @@ function renderObPositions(marketId, el){
   const m = STATE.markets.find(x=>x.id===marketId);
   if(!m){ el.innerHTML=""; return; }
 
+  // Detectar qué admin es el MM de este mercado
+  // El MM es el admin que tiene posición en AMBOS lados del mercado
+  const adminUsers2 = STATE.users.filter(u=>u.role==="admin");
+  const mmUserId2 = (adminUsers2.find(u=>{
+    const pos=(u.positions||{})[marketId];
+    return pos && (pos.YES||0)>0 && (pos.NO||0)>0;
+  }) || adminUsers2[0])?.id || "";
+
   const positions = STATE.users.flatMap(u=>{
     const pos=(u.positions||{})[marketId];
     if(!pos) return [];
     const entries=[];
-    if((pos.YES||0)>0.001) entries.push({side:"YES",shares:pos.YES,user:u.username,isAdmin:u.role==="admin"});
-    if((pos.NO||0)>0.001)  entries.push({side:"NO", shares:pos.NO, user:u.username,isAdmin:u.role==="admin"});
+    const isMM = u.id===mmUserId2 && u.role==="admin";
+    if((pos.YES||0)>0.001) entries.push({side:"YES",shares:pos.YES,user:u.username,isAdmin:isMM});
+    if((pos.NO||0)>0.001)  entries.push({side:"NO", shares:pos.NO, user:u.username,isAdmin:isMM});
     return entries;
   });
 
@@ -8767,21 +8781,17 @@ function renderAdminResolve(){
     const lpYes     = m.lpYes || 0;
     const lpNo      = m.lpNo  || 0;
     const lpTotal   = Math.round((lpYes + lpNo) * 100) / 100;
-    const invested  = m.seedLiquidity || 0;
+    const invested     = m.seedLiquidity || 0;
     const pYesCurrent  = m.priceYes || 0.50;
     const tickSize     = m.tick || 0.01;
-    // Capital comprometido = lo que el MM tiene en órdenes de venta activas
-    // = pool inicial - pool disponible actual
-    const mmCommittedYes   = Math.max(0, Math.round((invested/2 - lpYes) * 100)/100);
-    const mmCommittedNo    = Math.max(0, Math.round((invested/2 - lpNo)  * 100)/100);
+    // Capital comprometido = dinero que salió del pool para ser contraparte
+    // seed_liquidity se deposita 50/50 en cada lado
+    const seedPerSide      = Math.round(invested/2 * 100)/100;
+    const mmCommittedYes   = Math.max(0, Math.round((seedPerSide - lpYes) * 100)/100);
+    const mmCommittedNo    = Math.max(0, Math.round((seedPerSide - lpNo)  * 100)/100);
     const mmCommittedTotal = Math.round((mmCommittedYes + mmCommittedNo) * 100)/100;
-
-    // Pérdida máxima = exposición comprometida del lado perdedor - spread pool acumulado
-    // (el spread pool cubre parte de la pérdida)
-    const maxLossIfYes = Math.max(0, Math.round((mmCommittedNo  - spreads) * 100)/100);
-    const maxLossIfNo  = Math.max(0, Math.round((mmCommittedYes - spreads) * 100)/100);
-
-    // Neto al resolver = pool disponible devuelto + shares ganadores×$0.98 - pérdida real
+    const maxLossIfYes  = Math.max(0, Math.round((mmCommittedNo  - spreads) * 100)/100);
+    const maxLossIfNo   = Math.max(0, Math.round((mmCommittedYes - spreads) * 100)/100);
     const netIfYes = Math.round((lpTotal + spreads - mmCommittedNo)  * 100)/100;
     const netIfNo  = Math.round((lpTotal + spreads - mmCommittedYes) * 100)/100;
 
@@ -9064,8 +9074,9 @@ async function loadAdminPositions(marketId){
   const priceY  = mktFresh?.price_yes || 0.50;
 
   // Capital comprometido = seed/2 - pool disponible
-  const committedYes = Math.max(0, Math.round((seed/2 - lpYes)*100)/100);
-  const committedNo  = Math.max(0, Math.round((seed/2 - lpNo )*100)/100);
+  const seedPS = Math.round(seed/2*100)/100;
+  const committedYes = Math.max(0, Math.round((seedPS - lpYes)*100)/100);
+  const committedNo  = Math.max(0, Math.round((seedPS - lpNo )*100)/100);
 
   // Break-even: cuánto volumen necesita para cubrir la pérdida máxima con spreads
   // La pérdida máxima es el menor pool comprometido (el lado perdedor en peor caso)
