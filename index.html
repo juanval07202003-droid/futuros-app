@@ -3629,7 +3629,8 @@ function renderAuth(){
       <span class="wallet-btn-arrow">›</span>
     </button>`;
 
-      // 5. Desktop o wallet desconocida → todos los botones
+      // 5. Desktop → siempre mostrar todos los botones disponibles
+      // "desktop" o "unknown" → el usuario elige con cuál conectar
       return `
     <button class="wallet-btn" onclick="authConnectMetaMask()">
       <div class="wallet-btn-icon" style="background:#f6851b1a"><svg width="30" height="30" viewBox="0 0 35 33" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M32.9 1L19.4 10.7l2.4-5.7z" fill="#E17726" stroke="#E17726" stroke-width=".25"/><path d="M2.1 1l13.4 9.8-2.3-5.8z" fill="#E27625" stroke="#E27625" stroke-width=".25"/><path d="M28.1 23.5l-3.6 5.5 7.7 2.1 2.2-7.5z" fill="#E27625" stroke="#E27625" stroke-width=".25"/><path d="M1.6 23.6l2.2 7.5 7.7-2.1-3.6-5.5z" fill="#E27625" stroke="#E27625" stroke-width=".25"/><path d="M11 14.8l-2.1 3.2 7.6.3-.3-8.1z" fill="#E27625" stroke="#E27625" stroke-width=".25"/><path d="M24 14.8l-5.3-4.7-.2 8.2 7.6-.3z" fill="#E27625" stroke="#E27625" stroke-width=".25"/><path d="M11.4 29l4.6-2.2-3.9-3.1z" fill="#E27625" stroke="#E27625" stroke-width=".25"/><path d="M19 26.8l4.6 2.2-.8-5.3z" fill="#E27625" stroke="#E27625" stroke-width=".25"/><path d="M23.6 29l-4.6-2.2.4 3-.1 1.1z" fill="#D5BFB2" stroke="#D5BFB2" stroke-width=".25"/><path d="M11.4 29l4.3 1.9-.1-1.1.4-3z" fill="#D5BFB2" stroke="#D5BFB2" stroke-width=".25"/><path d="M15.8 21.8l-3.8-1.1 2.7-1.2z" fill="#233447" stroke="#233447" stroke-width=".25"/><path d="M19.2 21.8l1.1-2.3 2.7 1.2z" fill="#233447" stroke="#233447" stroke-width=".25"/><path d="M11.4 29l.7-5.5-6.3.1z" fill="#CC6228" stroke="#CC6228" stroke-width=".25"/><path d="M23.9 23.5l.7 5.5 5.6-5.4z" fill="#CC6228" stroke="#CC6228" stroke-width=".25"/><path d="M26.6 18l-7.6.3.7 4 1.1-2.3 2.7 1.2z" fill="#CC6228" stroke="#CC6228" stroke-width=".25"/><path d="M12 20.7l2.7-1.2 1.1 2.3.7-4-7.6-.3z" fill="#CC6228" stroke="#CC6228" stroke-width=".25"/><path d="M8.9 18l3.2 6.2-.1-3z" fill="#E27525" stroke="#E27525" stroke-width=".25"/><path d="M23 21.2l-.2 3 3.2-6.2z" fill="#E27525" stroke="#E27525" stroke-width=".25"/><path d="M16.5 18.3l-.7 4 .8 4.3.2-5.7z" fill="#E27525" stroke="#E27525" stroke-width=".25"/><path d="M18.5 18.3l-.2 2.5.1 5.8.9-4.3z" fill="#E27525" stroke="#E27525" stroke-width=".25"/><path d="M19.2 22.3l-.9 4.3.7.5 3.8-3.1.2-3z" fill="#F5841F" stroke="#F5841F" stroke-width=".25"/><path d="M12 20.7l.1 3 3.8 3.1.7-.5-.8-4.3z" fill="#F5841F" stroke="#F5841F" stroke-width=".25"/><path d="M19.3 30.9l.1-1.1-.3-.3h-4.2l-.3.3.1 1.1-4.3-1.9 1.5 1.2 3 2.1h5.2l3-2.1 1.5-1.2z" fill="#C0AC9D" stroke="#C0AC9D" stroke-width=".25"/><path d="M19 26.8l-.7-.5h-3.6l-.7.5-.4 3 .3-.3h4.2l.3.3z" fill="#161616" stroke="#161616" stroke-width=".25"/><path d="M33.5 11.3l1.1-5.4L32.9 1 19 10.3l5 4.2 7.1 2.1 1.6-1.8-.7-.5 1.1-1-.8-.6 1.1-.8z" fill="#763E1A" stroke="#763E1A" stroke-width=".25"/><path d="M.4 5.9l1.1 5.4-.7.5 1.1.8-.8.6 1.1 1-.7.5 1.6 1.8 7.1-2.1 5-4.2L2.1 1z" fill="#763E1A" stroke="#763E1A" stroke-width=".25"/><path d="M31.1 16.6l-7.1-2.1 2.1 3.2-3.1 6.2 4.1-.1h6.1z" fill="#F5841F" stroke="#F5841F" stroke-width=".25"/><path d="M11 14.5L3.9 16.6l-2.1 7.2h6.1l4.1.1-3.1-6.2z" fill="#F5841F" stroke="#F5841F" stroke-width=".25"/><path d="M18.5 18.3l.5-8.1 2.4-6.5h-10.8l2.4 6.5.5 8.1.2 2.6v5.7h3.6l.1-5.7z" fill="#F5841F" stroke="#F5841F" stroke-width=".25"/></svg></div>
@@ -3825,11 +3826,16 @@ function isInsideWalletBrowser(){
 
 function whichWalletBrowser(){
   const ua = navigator.userAgent.toLowerCase();
-  if(ua.includes("phantom") || window.phantom?.ethereum || window.ethereum?.isPhantom) return "phantom";
-  if(ua.includes("metamask") || window.ethereum?.isMetaMask) return "metamask";
-  if(ua.includes("trust") || window.trustwallet || window.ethereum?.isTrust) return "trust";
-  if(window.ethereum) return "unknown"; // alguna wallet desconocida
-  return null;
+  // En móvil detectar el browser de la wallet específica
+  if(isMobile()){
+    if(ua.includes("phantom") || window.phantom?.solana) return "phantom";
+    if(ua.includes("metamask")) return "metamask";
+    if(ua.includes("trust")) return "trust";
+    return null; // móvil sin wallet → mostrar links de descarga
+  }
+  // En desktop: siempre mostrar todos los botones disponibles
+  // para que el usuario elija aunque haya múltiples extensiones
+  return "desktop";
 }
 
 // Safari en iOS bloquea window.location.href en funciones async
