@@ -8516,53 +8516,35 @@ function renderAdminMarkets(){
           </select>
           <div class="hint">Cuánto mueve el precio cada orden de compra/venta</div>
         </div>
-      </div>
       ${(()=>{
-        const poolYes   = parseFloat(f.mmSharesYes)||500;
-        const poolNo    = parseFloat(f.mmSharesNo)||500;
-        const total     = poolYes + poolNo;
-        const u         = getUser();
-        const balance   = u?.balance||0;
-        const canAfford = balance >= total;
-        return `<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:12px;font-size:12px">
-          <div style="background:var(--yes-bg);border-radius:8px;padding:8px 10px;text-align:center">
-            <div style="color:var(--muted);margin-bottom:2px">Pool SÍ</div>
-            <div style="font-weight:800;color:var(--yes)">${usd(poolYes)}</div>
-            <div style="font-size:10px;color:var(--muted)">pérdida máx. si gana NO</div>
-          </div>
-          <div style="background:var(--no-bg);border-radius:8px;padding:8px 10px;text-align:center">
-            <div style="color:var(--muted);margin-bottom:2px">Pool NO</div>
-            <div style="font-weight:800;color:var(--no)">${usd(poolNo)}</div>
-            <div style="font-size:10px;color:var(--muted)">pérdida máx. si gana SÍ</div>
-          </div>
-          <div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:8px 10px;text-align:center">
-            <div style="color:var(--muted);margin-bottom:2px">Total · tu balance</div>
-            <div style="font-weight:800;color:${canAfford?"var(--yes)":"var(--no)}"}>${usd(total)} / ${usd(balance)}</div>
-          </div>
-        </div>
-        ${!canAfford?`<div style="color:var(--no);font-size:11px;margin-top:6px;font-weight:600">⚠️ Saldo insuficiente — reduce los pools o recarga tu balance</div>`:""}`;
+        const poolYes = parseFloat(f.mmSharesYes)||500;
+        const poolNo  = parseFloat(f.mmSharesNo)||500;
+        const total   = poolYes + poolNo;
+        const u       = getUser();
+        const balance = u?.balance||0;
+        if(balance < total) return `<div style="color:var(--no);font-size:11px;margin-top:6px;font-weight:600">⚠️ Saldo insuficiente — necesitas ${usd(total)} · tienes ${usd(balance)}</div>`;
+        return "";
       })()}
-    </div>
-    <div class="full" style="background:var(--accent-bg);border:1px solid var(--accent);border-radius:10px;padding:14px;margin-top:4px">
-      <div style="font-weight:700;font-size:13px;color:var(--accent);margin-bottom:10px">🔮 Oracle — Cierre automático de transacciones</div>
-      <div style="display:grid;grid-template-columns:1fr 2fr;gap:10px">
+    <div class="full" style="background:var(--accent-bg);border:1px solid var(--accent);border-radius:8px;padding:10px;margin-top:4px">
+      <div style="font-weight:700;font-size:12px;color:var(--accent);margin-bottom:8px">🔮 Oracle — Cierre automático</div>
+      <div style="display:grid;grid-template-columns:140px 1fr;gap:8px;align-items:start">
         <div>
-          <label class="lbl">Tipo de oracle</label>
-          <select class="inp" onchange="STATE.mkForm.oracleType=this.value;renderOracleConfigHint()">
+          <label class="lbl" style="font-size:10px">Tipo</label>
+          <select class="inp" style="font-size:12px;padding:6px 8px" onchange="STATE.mkForm.oracleType=this.value;renderOracleConfigHint()">
             <option value="none"${f.oracleType==="none"?" selected":""}>Sin oracle</option>
-            <option value="sports"${f.oracleType==="sports"?" selected":""}>⚽ Deportes (API-Sports)</option>
-            <option value="crypto"${f.oracleType==="crypto"?" selected":""}>💰 Crypto (CoinGecko)</option>
-            <option value="news"${f.oracleType==="news"?" selected":""}>📰 Noticias (NewsAPI)</option>
+            <option value="sports"${f.oracleType==="sports"?" selected":""}>⚽ Deportes</option>
+            <option value="crypto"${f.oracleType==="crypto"?" selected":""}>💰 Crypto</option>
+            <option value="news"${f.oracleType==="news"?" selected":""}>📰 Noticias</option>
           </select>
         </div>
         <div>
-          <label class="lbl">Configuración <span id="oracle-hint" style="color:var(--muted);font-weight:400"></span></label>
-          <input class="inp" id="oracle-config-input" value="${escHtml(f.oracleConfig)}"
-            placeholder="Según el tipo seleccionado..."
+          <label class="lbl" style="font-size:10px">Configuración <span id="oracle-hint" style="color:var(--muted);font-weight:400"></span></label>
+          <input class="inp" style="font-size:12px;padding:6px 8px" id="oracle-config-input" value="${escHtml(f.oracleConfig)}"
+            placeholder="Según el tipo..."
             oninput="STATE.mkForm.oracleConfig=this.value"/>
         </div>
       </div>
-      <div id="oracle-example" style="font-size:11px;color:var(--muted);margin-top:8px"></div>
+      <div id="oracle-example" style="font-size:10px;color:var(--muted);margin-top:4px"></div>
     </div>
     <div class="full"><label class="lbl">${t("admin_description")}</label><input class="inp" value="${escHtml(f.description)}" placeholder="${t("admin_description_ph")}" oninput="STATE.mkForm.description=this.value"/></div>
     <div class="full"><label class="lbl">Descripción en inglés <span style="color:var(--muted);font-weight:400">(opcional)</span></label><input class="inp" value="${escHtml(f.description_en||'')}" placeholder="English description..." oninput="STATE.mkForm.description_en=this.value"/></div>
