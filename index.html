@@ -8797,10 +8797,29 @@ function renderAdminResolve(){
     const mmCommittedYes   = Math.round(mmSharesYes * (1-pYesCurrent) * 100)/100;
     const mmCommittedNo    = Math.round(mmSharesNo  * pYesCurrent     * 100)/100;
     const mmCommittedTotal = Math.round((mmCommittedYes + mmCommittedNo) * 100)/100;
-    const maxLossIfYes  = Math.max(0, Math.round((mmCommittedNo  - spreads) * 100)/100);
-    const maxLossIfNo   = Math.max(0, Math.round((mmCommittedYes - spreads) * 100)/100);
-    const netIfYes = Math.round((lpTotal + spreads - mmCommittedNo)  * 100)/100;
-    const netIfNo  = Math.round((lpTotal + spreads - mmCommittedYes) * 100)/100;
+
+    // Ganancia MM de sus shares comprometidos al resolver (cobran $0.98)
+    const mmWinSharesIfYes = Math.round(mmSharesYes * 0.98 * 100)/100; // MM tiene SÍ comprometidos
+    const mmWinSharesIfNo  = Math.round(mmSharesNo  * 0.98 * 100)/100; // MM tiene NO comprometidos
+
+    // 2% del total cobrado por usuarios ganadores (estimado)
+    // Usuarios con SÍ = poolYes invertido / precio promedio ≈ totalVolume * ratio
+    // Aproximación: 2% sobre el pool del lado ganador (lo que pagaron usuarios)
+    const userWinAmtIfYes = poolYes; // lo que pusieron usuarios en SÍ
+    const userWinAmtIfNo  = poolNo;  // lo que pusieron usuarios en NO
+    const fee2pctIfYes = Math.round(userWinAmtIfYes * 0.02 * 100)/100;
+    const fee2pctIfNo  = Math.round(userWinAmtIfNo  * 0.02 * 100)/100;
+
+    // Fórmula pérdida máxima real:
+    // Si gana SÍ: (spread + shares_SÍ×0.98 + 2%_ganadores_SÍ) - comprometido_NO
+    // Si gana NO: (spread + shares_NO×0.98 + 2%_ganadores_NO) - comprometido_SÍ
+    const incomeSi = Math.round((spreads + mmWinSharesIfYes + fee2pctIfYes) * 100)/100;
+    const incomeNo = Math.round((spreads + mmWinSharesIfNo  + fee2pctIfNo)  * 100)/100;
+    const netIfYes = Math.round((lpTotal + incomeSi - mmCommittedNo)  * 100)/100;
+    const netIfNo  = Math.round((lpTotal + incomeNo - mmCommittedYes) * 100)/100;
+    // Pérd. máx. real = qué falta para cubrir (negativo = pérdida, positivo = ganancia)
+    const maxLossIfYes = Math.round((incomeSi - mmCommittedNo)  * 100)/100;
+    const maxLossIfNo  = Math.round((incomeNo - mmCommittedYes) * 100)/100;
 
     return `<div class="card" style="margin-bottom:16px${borderStyle}">
       <div style="display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap">
@@ -8882,31 +8901,36 @@ function renderAdminResolve(){
 
           <!-- Bloque 3: Escenarios al resolver -->
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:11px;margin-bottom:8px">
+            <!-- Si gana SÍ -->
             <div style="background:var(--yes-bg);border:1px solid rgba(0,168,112,.25);border-radius:10px;padding:10px">
               <div style="font-weight:700;color:var(--yes);margin-bottom:8px;font-size:12px">✅ Si gana SÍ</div>
-              <div style="display:flex;justify-content:space-between;margin-bottom:4px">
-                <span style="color:var(--muted)">Pool SÍ disponible devuelto</span>
-                <span>+${usd(lpYes)}</span>
+              <div style="display:flex;justify-content:space-between;margin-bottom:3px">
+                <span style="color:var(--muted)">Pool disponible devuelto</span>
+                <span>+${usd(lpTotal)}</span>
               </div>
-              <div style="display:flex;justify-content:space-between;margin-bottom:4px">
-                <span style="color:var(--muted)">Pool NO disponible devuelto</span>
-                <span>+${usd(lpNo)}</span>
-              </div>
-              <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+              <div style="display:flex;justify-content:space-between;margin-bottom:3px">
                 <span style="color:var(--muted)">Spreads acumulados</span>
                 <span style="color:#b8860b">+${usd(spreads)}</span>
               </div>
-              <div style="display:flex;justify-content:space-between;margin-bottom:4px">
-                <span style="color:var(--no)">Comprometido NO → pierde (gana SÍ)</span>
+              <div style="display:flex;justify-content:space-between;margin-bottom:3px">
+                <span style="color:var(--yes)">Shares SÍ comprometidos × $0.98</span>
+                <span style="color:var(--yes)">+${usd(mmWinSharesIfYes)}</span>
+              </div>
+              <div style="display:flex;justify-content:space-between;margin-bottom:3px">
+                <span style="color:var(--muted)">2% fee ganadores SÍ</span>
+                <span style="color:var(--yes)">+${usd(fee2pctIfYes)}</span>
+              </div>
+              <div style="display:flex;justify-content:space-between;margin-bottom:3px">
+                <span style="color:var(--no)">Comprometido NO → pierde</span>
                 <span style="color:var(--no)">-${usd(mmCommittedNo)}</span>
               </div>
-              <div style="display:flex;justify-content:space-between;margin-bottom:4px">
-                <span style="color:var(--muted);font-size:10px">Pérd. máx. real = comprometido NO - spreads</span>
-                <span style="color:${maxLossIfYes<=0?'var(--yes)':'var(--no)'};font-size:11px;font-weight:700">
-                  ${maxLossIfYes<=0?'✅ cubierto':'-'+usd(maxLossIfYes)}
+              <div style="display:flex;justify-content:space-between;margin-bottom:3px;padding-top:4px;border-top:1px dashed rgba(0,168,112,.3)">
+                <span style="font-size:10px;color:var(--muted)">Pérd. máx. real (sin pool devuelto)</span>
+                <span style="font-weight:700;font-size:11px;color:${maxLossIfYes>=0?'var(--yes)':'var(--no)'}">
+                  ${maxLossIfYes>=0?'✅ +'+usd(maxLossIfYes):'-'+usd(Math.abs(maxLossIfYes))}
                 </span>
               </div>
-              <div style="height:1px;background:rgba(0,168,112,.3);margin:6px 0"></div>
+              <div style="height:1px;background:rgba(0,168,112,.3);margin:5px 0"></div>
               <div style="display:flex;justify-content:space-between">
                 <span style="font-weight:700">Neto MM</span>
                 <span style="font-weight:800;font-size:13px;color:${netIfYes>=0?'var(--yes)':'var(--no)'}">
@@ -8914,31 +8938,36 @@ function renderAdminResolve(){
                 </span>
               </div>
             </div>
+            <!-- Si gana NO -->
             <div style="background:var(--no-bg);border:1px solid rgba(224,40,74,.25);border-radius:10px;padding:10px">
               <div style="font-weight:700;color:var(--no);margin-bottom:8px;font-size:12px">❌ Si gana NO</div>
-              <div style="display:flex;justify-content:space-between;margin-bottom:4px">
-                <span style="color:var(--muted)">Pool SÍ disponible devuelto</span>
-                <span>+${usd(lpYes)}</span>
+              <div style="display:flex;justify-content:space-between;margin-bottom:3px">
+                <span style="color:var(--muted)">Pool disponible devuelto</span>
+                <span>+${usd(lpTotal)}</span>
               </div>
-              <div style="display:flex;justify-content:space-between;margin-bottom:4px">
-                <span style="color:var(--muted)">Pool NO disponible devuelto</span>
-                <span>+${usd(lpNo)}</span>
-              </div>
-              <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+              <div style="display:flex;justify-content:space-between;margin-bottom:3px">
                 <span style="color:var(--muted)">Spreads acumulados</span>
                 <span style="color:#b8860b">+${usd(spreads)}</span>
               </div>
-              <div style="display:flex;justify-content:space-between;margin-bottom:4px">
-                <span style="color:var(--yes)">Comprometido SÍ → pierde (gana NO)</span>
+              <div style="display:flex;justify-content:space-between;margin-bottom:3px">
+                <span style="color:var(--no)">Shares NO comprometidos × $0.98</span>
+                <span style="color:var(--no)">+${usd(mmWinSharesIfNo)}</span>
+              </div>
+              <div style="display:flex;justify-content:space-between;margin-bottom:3px">
+                <span style="color:var(--muted)">2% fee ganadores NO</span>
+                <span style="color:var(--no)">+${usd(fee2pctIfNo)}</span>
+              </div>
+              <div style="display:flex;justify-content:space-between;margin-bottom:3px">
+                <span style="color:var(--yes)">Comprometido SÍ → pierde</span>
                 <span style="color:var(--yes)">-${usd(mmCommittedYes)}</span>
               </div>
-              <div style="display:flex;justify-content:space-between;margin-bottom:4px">
-                <span style="color:var(--muted);font-size:10px">Pérd. máx. real = comprometido SÍ - spreads</span>
-                <span style="color:${maxLossIfNo<=0?'var(--yes)':'var(--no)'};font-size:11px;font-weight:700">
-                  ${maxLossIfNo<=0?'✅ cubierto':'-'+usd(maxLossIfNo)}
+              <div style="display:flex;justify-content:space-between;margin-bottom:3px;padding-top:4px;border-top:1px dashed rgba(224,40,74,.3)">
+                <span style="font-size:10px;color:var(--muted)">Pérd. máx. real (sin pool devuelto)</span>
+                <span style="font-weight:700;font-size:11px;color:${maxLossIfNo>=0?'var(--yes)':'var(--no)'}">
+                  ${maxLossIfNo>=0?'✅ +'+usd(maxLossIfNo):'-'+usd(Math.abs(maxLossIfNo))}
                 </span>
               </div>
-              <div style="height:1px;background:rgba(224,40,74,.3);margin:6px 0"></div>
+              <div style="height:1px;background:rgba(224,40,74,.3);margin:5px 0"></div>
               <div style="display:flex;justify-content:space-between">
                 <span style="font-weight:700">Neto MM</span>
                 <span style="font-weight:800;font-size:13px;color:${netIfNo>=0?'var(--yes)':'var(--no)'}">
