@@ -7881,19 +7881,15 @@ function calcTradePreview(){
     const dollars = parseFloat(STATE.tradeDollars);
     if(!dollars || dollars <= 0) return null;
 
-    const poolYes = Math.max(0.01, m.qYes || 1);
-    const poolNo  = Math.max(0.01, m.qNo  || 1);
-    const total   = poolYes + poolNo;
-    const poolSide = side==="YES" ? poolYes : poolNo;
+    // Usar price_yes directamente (igual que la RPC) — no los pools q_yes/q_no
+    const currentPrice   = getPrice(m, side);            // 0.40 para YES al 40%
+    const impact         = getPriceImpact(m, side, dollars);
+    const effectivePrice = getEffectivePrice(m, side, dollars);
 
-    // Spread dinámico: 2% normal, 3% si precio ≥ 75%
-    const entrySpread    = getDynamicSpread(m, side);
+    const entrySpread    = getDynamicSpread(m, side);    // 2%
     const entrySpreadAmt = dollars * entrySpread;
     const net            = dollars * (1 - entrySpread);
-
-    // CLOB puro: precio fijo al momento de compra, sin price impact AMM
-    const currentPrice = Math.min(PRICE_MAX, Math.max(PRICE_MIN, poolSide / total));
-    const netShares    = net / currentPrice;
+    const netShares      = Math.round((net / Math.max(0.001, effectivePrice)) * 10000) / 10000;
 
     // Ganancia potencial: shares × $1 - 2% exit spread al resolver
     const exitSpreadAmt   = netShares * EXIT_SPREAD;
@@ -7905,9 +7901,11 @@ function calcTradePreview(){
       dollars,
       shares:        netShares,
       rawShares:     netShares,
-      price:         currentPrice,
-      entryPrice:    currentPrice,
-      avgPrice:      currentPrice,
+      price:         effectivePrice,   // precio efectivo (con impacto si aplica)
+      basePrice:     currentPrice,     // precio de mercado sin impacto
+      entryPrice:    effectivePrice,
+      avgPrice:      effectivePrice,
+      impact,
       potentialProfit,
       potentialWin,
       entrySpreadAmt,
