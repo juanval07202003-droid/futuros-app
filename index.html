@@ -4769,72 +4769,51 @@ async function loadMyTrades(marketId){
 
   const m = getMarket(marketId);
   const pYes = m ? (m.priceYes||0.5) : 0.5;
+  const mTitle = m ? (m.title||"").slice(0,20) : "";
 
-  // Traer TODAS las órdenes sin ningún filtro para diagnóstico
-  const {data:allOrders, error} = await db.from("orders")
-    .select("id,side,price,shares,filled,created_at,order_type,status,is_mm,user_id")
-    .eq("market_id", marketId)
+  // Las compras se guardan en transactions con:
+  // - network = marketId (nuevas) o "internal" (antiguas)
+  // - description: "Compra YES $X.XX → Y.YY shares · título"
+  const {data:txs, error} = await db.from("transactions")
+    .select("id,type,amount,description,created_at,status,network")
     .eq("user_id", userId)
+    .eq("type", "trade")
     .order("created_at", {ascending: true});
 
   if(error){
-    el.innerHTML = `<div style="color:var(--no);font-size:11px;padding:8px">⚠️ Error DB: ${error.message}</div>`;
+    el.innerHTML = `<div style="color:var(--no);font-size:11px;padding:8px">⚠️ Error: ${error.message}</div>`;
     return;
   }
 
-  // DEBUG TEMPORAL: mostrar todos los campos de todas las órdenes encontradas
-  if(!allOrders || allOrders.length === 0){
-    el.innerHTML = `<div style="font-size:11px;color:var(--muted);padding:8px">
-      ⚠️ <strong>DEBUG:</strong> No se encontraron órdenes en DB para user_id=${userId.slice(0,8)}… en market_id=${String(marketId).slice(0,8)}…
-    </div>`;
-    return;
+  const reBuy = /Compra\s+(YES|NO|SÍ|SI)\s+\$([\d.]+)\s*→\s*([\d.]+)\s*shares/i;
+  const marketIdStr = String(marketId);
+
+  const trades = [];
+  for(const tx of (txs||[])){
+    const desc = tx.description || "";
+    const match = desc.match(reBuy);
+    if(!match) continue;
+
+    // Filtrar por mercado: network=marketId (nuevo) o título en descripción (viejo)
+    const byId    = tx.network && tx.network === marketIdStr;
+    const byTitle = !tx.network || tx.network === "internal"
+      ? (mTitle.length >= 5 && desc.toLowerCase().includes(mTitle.toLowerCase().slice(0,10)))
+      : false;
+    if(!byId && !byTitle) continue;
+
+    const sideRaw = match[1].toUpperCase();
+    const side    = (sideRaw==="SI"||sideRaw==="SÍ") ? "YES" : sideRaw;
+    const dollars = parseFloat(match[2]) || 0;
+    const shares  = parseFloat(match[3]) || 0;
+    const price   = shares > 0 ? dollars / shares : 0;
+
+    trades.push({ side, dollars, shares, price, date: tx.created_at });
   }
 
-  // Mostrar debug de todas las órdenes encontradas antes de filtrar
-  const debugRows = allOrders.map(o=>`
-    <tr style="font-size:9px;border-bottom:1px solid var(--border)">
-      <td style="padding:2px 4px;color:${o.side==="YES"?"var(--yes)":"var(--no)"}">${o.side}</td>
-      <td style="padding:2px 4px">${(o.price*100).toFixed(1)}%</td>
-      <td style="padding:2px 4px">${(o.shares||0).toFixed(2)}</td>
-      <td style="padding:2px 4px">${(o.filled||0).toFixed(2)}</td>
-      <td style="padding:2px 4px">${o.status||"?"}</td>
-      <td style="padding:2px 4px">${o.order_type||"?"}</td>
-      <td style="padding:2px 4px">${o.is_mm===true?"MM":o.is_mm===false?"user":"null"}</td>
-    </tr>`).join("");
+  const yesTrades = trades.filter(t => t.side==="YES");
+  const noTrades  = trades.filter(t => t.side==="NO");
 
-  el.innerHTML = `
-    <div style="font-size:10px;font-weight:700;color:#f59e0b;margin-bottom:6px">🔍 DEBUG — ${allOrders.length} orden(es) encontrada(s)</div>
-    <div style="overflow-x:auto">
-      <table style="width:100%;border-collapse:collapse;font-size:9px">
-        <thead>
-          <tr style="color:var(--muted);border-bottom:1px solid var(--border)">
-            <th style="padding:2px 4px;text-align:left">Side</th>
-            <th style="padding:2px 4px;text-align:left">Precio</th>
-            <th style="padding:2px 4px;text-align:left">Shares</th>
-            <th style="padding:2px 4px;text-align:left">Filled</th>
-            <th style="padding:2px 4px;text-align:left">Status</th>
-            <th style="padding:2px 4px;text-align:left">Type</th>
-            <th style="padding:2px 4px;text-align:left">is_mm</th>
-          </tr>
-        </thead>
-        <tbody>${debugRows}</tbody>
-      </table>
-    </div>
-    <div style="font-size:9px;color:var(--muted);margin-top:6px">Comparte esta tabla para terminar el fix ↑</div>`;
-  return;
-
-  // --- CÓDIGO REAL (se activa después del debug) ---
-  // Filtrar: excluir órdenes del MM y solo quedarnos con compras ejecutadas
-  const orders = (allOrders||[]).filter(o =>
-    !o.is_mm &&
-    (o.status === "filled" || o.status === "partial") &&
-    (o.filled || o.shares || 0) > 0
-  );
-
-  const yesOrders = orders.filter(o => o.side==="YES");
-  const noOrders  = orders.filter(o => o.side==="NO");
-
-  if(!yesOrders.length && !noOrders.length){
+  if(!yesTrades.length && !noTrades.length){
     el.innerHTML = `<div style="text-align:center;padding:14px;color:var(--muted);font-size:12px">Sin posiciones abiertas en este mercado</div>`;
     return;
   }
@@ -4844,70 +4823,73 @@ async function loadMyTrades(marketId){
 
   const renderSide = (list, side) => {
     if(!list.length) return "";
-    const color   = side==="YES" ? "var(--yes)" : "var(--no)";
-    const bg      = side==="YES" ? "rgba(0,168,112,.06)" : "rgba(224,40,74,.06)";
-    const border  = side==="YES" ? "rgba(0,168,112,.25)" : "rgba(224,40,74,.25)";
-    const label   = side==="YES" ? "SÍ" : "NO";
-    const pWin    = side==="YES" ? pYes : (1-pYes);
-    const totalSh = list.reduce((s,o)=>s+((o.filled&&o.filled>0)?o.filled:(o.shares||0)),0);
-    const totalCost = list.reduce((s,o)=>{const sh=(o.filled&&o.filled>0)?o.filled:(o.shares||0); return s+sh*(o.price||0);},0);
-    const avgBuy  = totalSh>0 ? totalCost/totalSh : 0;
+    const color  = side==="YES" ? "var(--yes)" : "var(--no)";
+    const bg     = side==="YES" ? "rgba(0,168,112,.06)" : "rgba(224,40,74,.06)";
+    const border = side==="YES" ? "rgba(0,168,112,.25)" : "rgba(224,40,74,.25)";
+    const label  = side==="YES" ? "SÍ" : "NO";
+    const pWin   = side==="YES" ? pYes : (1-pYes);
 
-    const rows = list.map(o=>{
-      // filled = shares realmente ejecutados. Si es 0, usar shares (market orders)
-      const sh    = (o.filled && o.filled > 0) ? o.filled : (o.shares || 0);
-      const cost  = sh * (o.price || 0);
-      const valNow = sh * pWin;
-      const pnl   = valNow - cost;
-      const date  = o.created_at ? new Date(o.created_at).toLocaleDateString("es-CO",{day:"2-digit",month:"short"}) : "";
-      return `<div style="display:grid;grid-template-columns:auto 1fr 1fr 1fr;gap:4px;align-items:center;
-          padding:5px 8px;border-radius:6px;margin-bottom:3px;background:var(--card);border:1px solid var(--border)">
-        <div style="font-size:9px;color:var(--muted);white-space:nowrap">${date}</div>
-        <div style="text-align:right">
-          <div style="font-size:12px;font-weight:800;color:${color}">${sh.toFixed(2)}</div>
-          <div style="font-size:9px;color:var(--muted)">shares</div>
+    const totalSh   = list.reduce((s,t)=>s+t.shares, 0);
+    const totalCost = list.reduce((s,t)=>s+t.dollars, 0);
+    const avgPrice  = totalSh > 0 ? totalCost/totalSh : 0;
+
+    const rows = list.map(t => {
+      const valNow = t.shares * pWin;
+      const pnl    = valNow - t.dollars;
+      const date   = t.date ? new Date(t.date).toLocaleDateString("es-CO",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"}) : "";
+      return `<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:4px;align-items:center;
+          padding:6px 8px;border-radius:6px;margin-bottom:3px;background:var(--card);border:1px solid var(--border)">
+        <div>
+          <div style="font-size:11px;font-weight:800;color:${color}">${t.shares.toFixed(2)} sh</div>
+          <div style="font-size:9px;color:var(--muted)">${date}</div>
         </div>
-        <div style="text-align:right">
-          <div style="font-size:12px;font-weight:700;color:var(--text)">${pct(o.price)}</div>
+        <div style="text-align:center">
+          <div style="font-size:12px;font-weight:700;color:var(--text)">${pct(t.price)}</div>
           <div style="font-size:9px;color:var(--muted)">precio</div>
+        </div>
+        <div style="text-align:center">
+          <div style="font-size:11px;color:var(--muted)">${fmt(t.dollars)}</div>
+          <div style="font-size:9px;color:var(--muted)">pagado</div>
         </div>
         <div style="text-align:right">
           <div style="font-size:12px;font-weight:700;color:${pnl>=0?"var(--yes)":"var(--no)"}">${pnl>=0?"+":""}${fmt(pnl)}</div>
-          <div style="font-size:9px;color:var(--muted)">P&L est.</div>
+          <div style="font-size:9px;color:var(--muted)">P&L</div>
         </div>
       </div>`;
     }).join("");
 
     return `<div style="margin-bottom:10px">
+      <!-- Header del lado -->
       <div style="display:flex;justify-content:space-between;align-items:center;
           padding:5px 8px;border-radius:8px;background:${bg};border:1px solid ${border};margin-bottom:5px">
         <div style="display:flex;align-items:center;gap:6px">
-          <span style="font-size:11px;font-weight:800;color:${color}">${label}</span>
-          <span style="font-size:10px;color:var(--muted)">${list.length} entrada${list.length!==1?"s":""} · ${totalSh.toFixed(2)} sh total</span>
+          <span style="font-size:12px;font-weight:800;color:${color}">${label}</span>
+          <span style="font-size:10px;color:var(--muted)">${list.length} entrada${list.length!==1?"s":""} · ${totalSh.toFixed(2)} sh</span>
         </div>
-        <div style="text-align:right">
+        <div>
           <span style="font-size:10px;color:var(--muted)">prom. </span>
-          <span style="font-size:11px;font-weight:700;color:${color}">${pct(avgBuy)}</span>
+          <span style="font-size:11px;font-weight:700;color:${color}">${pct(avgPrice)}</span>
         </div>
       </div>
-      <!-- Header columnas -->
-      <div style="display:grid;grid-template-columns:auto 1fr 1fr 1fr;gap:4px;
+      <!-- Columnas header -->
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:4px;
           font-size:9px;font-weight:700;color:var(--muted);text-transform:uppercase;
           letter-spacing:.3px;padding:2px 8px;margin-bottom:3px">
-        <div>Fecha</div>
-        <div style="text-align:right">Shares</div>
-        <div style="text-align:right">Precio</div>
-        <div style="text-align:right">P&L</div>
+        <div>Shares / Fecha</div>
+        <div style="text-align:center">Precio</div>
+        <div style="text-align:center">Pagado</div>
+        <div style="text-align:right">P&L est.</div>
       </div>
       ${rows}
     </div>`;
   };
 
-  el.innerHTML = renderSide(yesOrders,"YES") + renderSide(noOrders,"NO") +
-    `<div style="font-size:9px;color:var(--muted);text-align:right;margin-top:2px">
-      * P&L estimado al precio actual del mercado
-    </div>`;
+  el.innerHTML =
+    renderSide(yesTrades,"YES") +
+    renderSide(noTrades,"NO") +
+    `<div style="font-size:9px;color:var(--muted);text-align:right;margin-top:2px">* P&L al precio actual</div>`;
 }
+
 
 // ═══════════════════════════════════════════════════════════════════
 // PENDING ORDERS — órdenes del usuario esperando contraparte
@@ -8368,7 +8350,7 @@ async function executeTrade(){
       if(idx>=0) STATE.markets[idx]=nm;
 
       // ── Sincronizar desde DB (evitar doble descuento) ─────────────
-      const tx={id:"tx_"+genId(),type:"trade",amount:dollars,network:"internal",
+      const tx={id:"tx_"+genId(),type:"trade",amount:dollars,network:marketId,
         description:`Compra ${side} ${usd(dollars)} → ${netShares.toFixed(2)} shares · ${localM.title.slice(0,28)}…`,
         date:new Date().toISOString(),status:"confirmed"};
       await dbSaveTransaction(u.id, tx);
