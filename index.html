@@ -4769,6 +4769,8 @@ function renderMyPosSummary(pos, pYes, marketId, userId){
   }
   return html;
 }
+
+async function loadMyPositionDetail(marketId, userId){
   const el = document.getElementById("my-positions-detail-"+marketId);
   if(!el || !userId) return;
   el.innerHTML = `<div style="font-size:11px;color:var(--muted);padding:6px 0">⏳ Cargando…</div>`;
