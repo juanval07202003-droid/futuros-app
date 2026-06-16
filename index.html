@@ -2052,6 +2052,7 @@ const LANG={
     detail_liquidity:"Liquidez del mercado",
     detail_positions:"Mis posiciones",
     detail_price_history:"Historial de precio",
+    chart_yes_prob:"probabilidad SÍ",
     detail_comments:"Comentarios",
     detail_comment_placeholder:"Escribe un comentario…",
     detail_comment_send:"Publicar",
@@ -2307,6 +2308,7 @@ const LANG={
     detail_liquidity:"Market liquidity",
     detail_positions:"My positions",
     detail_price_history:"Price history",
+    chart_yes_prob:"YES probability",
     detail_comments:"Comments",
     detail_comment_placeholder:"Write a comment…",
     detail_comment_send:"Post",
@@ -4448,7 +4450,7 @@ function renderMarket(){
     <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;flex-wrap:wrap;gap:6px">
       <div>
         <div id="${chartId}_hdr_price" style="font-size:28px;font-weight:900;color:var(--yes);line-height:1">${Math.round(curYes*100)}%</div>
-        <div id="${chartId}_hdr_label" style="font-size:11px;color:var(--muted);margin-top:2px">probabilidad SÍ</div>
+        <div id="${chartId}_hdr_label" style="font-size:11px;color:var(--muted);margin-top:2px">${t("chart_yes_prob")}</div>
       </div>
       <div style="text-align:right;font-size:12px;color:var(--muted)">
         <div><strong style="color:var(--text)">${fmtVol(m.totalVolume)}</strong> Vol.</div>
@@ -4472,19 +4474,23 @@ function renderMarket(){
     </div>
 
     <!-- SVG Chart -->
-    <div style="position:relative;overflow:hidden" id="${chartId}_wrap">
+    <div style="position:relative;overflow:visible" id="${chartId}_wrap">
 
       <!-- Fecha flotante en la parte superior (estilo Polymarket) -->
       <div id="${chartId}_tip_top" style="display:none;position:absolute;top:0;left:50%;
-        transform:translateX(-50%);font-size:11px;color:var(--muted);
+        transform:translateX(-50%);font-size:11px;font-weight:600;color:var(--muted);
+        background:var(--card2);border:1px solid var(--border);border-radius:6px;
+        padding:2px 8px;
         pointer-events:none;z-index:10;white-space:nowrap;text-align:center">
       </div>
 
       <!-- Etiqueta pegada al punto (estilo Polymarket) -->
       <div id="${chartId}_tip" style="display:none;position:absolute;
-        background:var(--text);color:var(--card);
-        border-radius:6px;padding:4px 8px;font-size:12px;font-weight:700;
+        background:var(--card);color:var(--text);
+        border:1px solid var(--border-strong);
+        border-radius:8px;padding:5px 10px;font-size:12px;font-weight:700;
         pointer-events:none;z-index:10;white-space:nowrap;
+        box-shadow:0 2px 12px rgba(0,0,0,.15);
         transform:translateY(-50%)">
       </div>
 
@@ -4494,7 +4500,9 @@ function renderMarket(){
         style="display:block;overflow:visible;cursor:crosshair"
         data-pts="${tooltipData}"
         onmousemove="chartMouseMove(event,this,'${chartId}')"
-        onmouseleave="chartMouseLeave('${chartId}')">
+        onmouseleave="chartMouseLeave('${chartId}')"
+        ontouchmove="chartMouseMove(event,this,'${chartId}');event.preventDefault()"
+        ontouchend="chartMouseLeave('${chartId}')">
         <defs>
           <linearGradient id="gYes_${chartId}" x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%"   stop-color="#00e5a0" stop-opacity=".18"/>
@@ -9389,6 +9397,20 @@ function renderAdminResolve(){
           <!-- Comprometidos en tiempo real (desde DB) -->
           <div id="mm-committed-${m.id}" style="margin-top:8px"></div>
 
+          <!-- Órdenes MM — desplegable -->
+          <div style="margin-top:8px">
+            <button onclick="toggleMMOrders('${m.id}')"
+              style="width:100%;display:flex;justify-content:space-between;align-items:center;
+                padding:8px 10px;background:var(--card2);border:1px solid var(--border);
+                border-radius:8px;cursor:pointer;font-family:inherit">
+              <span style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">
+                🏦 Posiciones & órdenes del MM
+              </span>
+              <span id="mm-orders-arrow-${m.id}" style="color:var(--muted);font-size:12px">▼</span>
+            </button>
+            <div id="mm-orders-${m.id}" style="display:none;margin-top:4px"></div>
+          </div>
+
           <!-- Posiciones de participantes — desplegable -->
           <div style="margin-top:8px">
             <button onclick="toggleAdminPos('${m.id}')"
@@ -9748,6 +9770,146 @@ async function removeSimilarMarket(marketId, relatedId){
     }).join("") || '<span style="font-size:10px;color:var(--muted)">Sin mercados relacionados</span>';
   }
   notify(`✅ Mercado relacionado eliminado`);
+}
+
+// ── MM Orders panel ─────────────────────────────────────────────────
+function toggleMMOrders(marketId){
+  const el    = document.getElementById("mm-orders-"+marketId);
+  const arrow = document.getElementById("mm-orders-arrow-"+marketId);
+  if(!el) return;
+  const isOpen = el.style.display !== "none";
+  if(isOpen){
+    el.style.display = "none";
+    if(arrow) arrow.textContent = "▼";
+    // Clear refresh interval if any
+    if(window._mmOrdersInterval) { clearInterval(window._mmOrdersInterval); window._mmOrdersInterval = null; }
+  } else {
+    el.style.display = "block";
+    if(arrow) arrow.textContent = "▲";
+    loadMMOrders(marketId);
+    // Auto-refresh every 8s while open
+    if(window._mmOrdersInterval) clearInterval(window._mmOrdersInterval);
+    window._mmOrdersInterval = setInterval(()=>{
+      if(document.getElementById("mm-orders-"+marketId)?.style.display !== "none"){
+        loadMMOrders(marketId);
+      } else {
+        clearInterval(window._mmOrdersInterval);
+        window._mmOrdersInterval = null;
+      }
+    }, 8000);
+  }
+}
+
+async function loadMMOrders(marketId){
+  const el = document.getElementById("mm-orders-"+marketId);
+  if(!el) return;
+
+  // Get admin user id
+  const adminUser = STATE.users.find(u=>u.role==='admin');
+  const adminId = adminUser?.id || '';
+
+  // Fetch MM positions
+  const {data: pos} = await db.from("positions")
+    .select("yes_shares,no_shares")
+    .eq("market_id", marketId)
+    .eq("user_id", adminId)
+    .maybeSingle();
+
+  // Fetch MM open sell orders (limit orders the MM placed to sell its shares)
+  const {data: orders} = await db.from("orders")
+    .select("side,price,shares,filled,status,mm_order_id,order_type,created_at")
+    .eq("market_id", marketId)
+    .eq("is_mm", true)
+    .eq("order_type", "limit")
+    .in("status", ["open","partial"])
+    .order("side", {ascending:true})
+    .order("price", {ascending:true});
+
+  const mmYes = pos?.yes_shares || 0;
+  const mmNo  = pos?.no_shares  || 0;
+  const m     = STATE.markets.find(x=>x.id===marketId);
+  const tick  = m?.tick || 0.01;
+  const pYes  = m?.priceYes || 0.5;
+
+  const pct = v => (Math.round(v*1000)/10).toFixed(1)+"%";
+  const usdF = v => "$"+(Math.round(v*100)/100).toFixed(2);
+
+  // Group orders by side+price
+  const yesOrders = (orders||[]).filter(o=>o.side==="YES");
+  const noOrders  = (orders||[]).filter(o=>o.side==="NO");
+
+  const renderOrders = (list, color, bg) => {
+    if(!list.length) return `<div style="font-size:11px;color:var(--muted);padding:4px 6px">Sin órdenes activas</div>`;
+    return list.map(o=>{
+      const rem = (o.shares||0)-(o.filled||0);
+      const val = rem * o.price;
+      const mkPrice = o.side==="YES" ? pYes : (1-pYes);
+      const isAtMarket = Math.abs(o.price - mkPrice) < tick*0.5;
+      return `<div style="display:flex;justify-content:space-between;align-items:center;
+          padding:5px 8px;background:${bg};border-radius:6px;margin-bottom:3px;gap:6px">
+        <div style="min-width:0">
+          <span style="font-size:12px;font-weight:700;color:${color}">${pct(o.price)}</span>
+          <span style="font-size:10px;color:var(--muted);margin-left:4px">${isAtMarket?"≈mercado":"límite"}</span>
+        </div>
+        <div style="text-align:right;flex-shrink:0">
+          <div style="font-size:11px;font-weight:600;color:var(--text)">${rem.toFixed(2)} sh · ${usdF(val)}</div>
+          ${o.status==="partial"?`<div style="font-size:10px;color:var(--muted)">parcial (${o.filled.toFixed(2)} ej.)</div>`:""}
+        </div>
+      </div>`;
+    }).join("");
+  };
+
+  el.innerHTML = `
+    <!-- Posición actual -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:8px 0 6px">
+      <div style="background:rgba(0,168,112,.08);border:1px solid rgba(0,168,112,.2);border-radius:8px;padding:8px 10px">
+        <div style="font-size:10px;color:var(--muted);margin-bottom:2px;font-weight:600">SHARES SÍ en cartera</div>
+        <div style="font-size:18px;font-weight:900;color:var(--yes)">${mmYes.toFixed(2)}</div>
+        <div style="font-size:10px;color:var(--muted)">val. mercado: ${usdF(mmYes * pYes)}</div>
+      </div>
+      <div style="background:rgba(224,40,74,.08);border:1px solid rgba(224,40,74,.2);border-radius:8px;padding:8px 10px">
+        <div style="font-size:10px;color:var(--muted);margin-bottom:2px;font-weight:600">SHARES NO en cartera</div>
+        <div style="font-size:18px;font-weight:900;color:var(--no)">${mmNo.toFixed(2)}</div>
+        <div style="font-size:10px;color:var(--muted)">val. mercado: ${usdF(mmNo * (1-pYes))}</div>
+      </div>
+    </div>
+
+    <!-- Órdenes de venta activas -->
+    <div style="margin-top:4px">
+      <div style="font-size:10px;font-weight:700;color:var(--muted);letter-spacing:.5px;text-transform:uppercase;margin-bottom:4px">
+        Órdenes de venta activas
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <div>
+          <div style="font-size:10px;font-weight:700;color:var(--yes);margin-bottom:4px">
+            SÍ — ${yesOrders.length} nivel${yesOrders.length!==1?"es":""}
+          </div>
+          ${renderOrders(yesOrders,"var(--yes)","rgba(0,168,112,.06)")}
+        </div>
+        <div>
+          <div style="font-size:10px;font-weight:700;color:var(--no);margin-bottom:4px">
+            NO — ${noOrders.length} nivel${noOrders.length!==1?"es":""}
+          </div>
+          ${renderOrders(noOrders,"var(--no)","rgba(224,40,74,.06)")}
+        </div>
+      </div>
+
+      <!-- Regla de precio mínimo -->
+      <div style="margin-top:8px;font-size:10px;color:var(--muted);background:var(--card2);
+          border-radius:6px;padding:6px 8px;line-height:1.5">
+        📌 Precio mínimo venta MM = max(precio_compra − 1 tick, precio_mercado_actual)<br>
+        <span style="color:var(--accent)">SÍ actual: ${pct(pYes)} · NO actual: ${pct(1-pYes)} · Tick: ${(tick*100).toFixed(2)}%</span>
+      </div>
+    </div>
+
+    <div style="text-align:right;margin-top:4px">
+      <button onclick="loadMMOrders('${marketId}')"
+        style="font-size:10px;color:var(--muted);background:none;border:none;cursor:pointer;padding:0">
+        🔄 Actualizar
+      </button>
+    </div>
+  `;
 }
 
 function toggleAdminPos(marketId){
@@ -11734,7 +11896,10 @@ function chartMouseMove(e, svgEl, chartId){
   if(!rect.width) return;
   const scaleX = svgEl.viewBox.baseVal.width / rect.width;
   const scaleY = svgEl.viewBox.baseVal.height / rect.height;
-  const mx = (e.clientX - rect.left) * scaleX;
+
+  // Support both mouse and touch events
+  const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+  const mx = (clientX - rect.left) * scaleX;
 
   // Find nearest point
   let nearest = pts[0], minDist = Infinity;
@@ -11759,12 +11924,16 @@ function chartMouseMove(e, svgEl, chartId){
     dot.removeAttribute("display");
   }
 
-  // Format date
-  const months = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
+  // Format date — i18n month names
+  const en = STATE.lang === "en";
+  const monthsEs = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
+  const monthsEn = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const months = en ? monthsEn : monthsEs;
   const d = new Date(nearest.ms);
   const dateStr = months[d.getMonth()]+" "+d.getDate()+
     ", "+String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0");
   const pctYes = Math.round(nearest.v * 100);
+  const pctNo  = 100 - pctYes;
 
   // Update header price live (like Polymarket)
   const hdrPrice = document.getElementById(chartId+"_hdr_price");
@@ -11772,11 +11941,10 @@ function chartMouseMove(e, svgEl, chartId){
   if(hdrPrice) hdrPrice.textContent = pctYes + "%";
   if(hdrLabel) hdrLabel.textContent = dateStr;
 
-  // Date at top of chart
+  // Date at top of chart (above crosshair)
   const tipTop = document.getElementById(chartId+"_tip_top");
   if(tipTop){
     tipTop.textContent = dateStr;
-    // Position above the crosshair
     const wrap = document.getElementById(chartId+"_wrap");
     if(wrap){
       const wRect = wrap.getBoundingClientRect();
@@ -11789,21 +11957,27 @@ function chartMouseMove(e, svgEl, chartId){
     tipTop.style.display = "block";
   }
 
-  // Label pinned to dot (Polymarket style)
+  // Label pinned to dot (Polymarket style) — shows YES% and NO%
   const tip = document.getElementById(chartId+"_tip");
   if(tip){
-    tip.textContent = "SÍ " + pctYes + "%";
+    const yesLabel = en ? "YES" : "SÍ";
+    const noLabel  = "NO";
+    tip.innerHTML = `<span style="color:#00e5a0">${yesLabel} ${pctYes}%</span> <span style="color:var(--card);opacity:.55">/ ${noLabel} ${pctNo}%</span>`;
     const wrap = document.getElementById(chartId+"_wrap");
     if(wrap){
       const wRect = wrap.getBoundingClientRect();
       const xPx = (nearest.x / svgEl.viewBox.baseVal.width) * wRect.width;
       const yPx = (nearest.y / svgEl.viewBox.baseVal.height) * wRect.height;
-      // Pin label to the right of the dot, flip left if near right edge
-      const labelW = 70;
-      let left = xPx + 10;
-      if(left + labelW > wRect.width) left = xPx - labelW - 10;
+      // Pin label: prefer right, flip left if near right edge
+      const labelW = 130;
+      let left = xPx + 12;
+      if(left + labelW > wRect.width) left = xPx - labelW - 12;
+      left = Math.max(0, left);
+      // Vertical: keep within chart area
+      let top = yPx - 14;
+      top = Math.max(0, Math.min(top, wRect.height - 32));
       tip.style.left = left + "px";
-      tip.style.top  = yPx + "px";
+      tip.style.top  = top + "px";
     }
     tip.style.display = "block";
   }
@@ -11819,8 +11993,8 @@ function chartMouseLeave(chartId){
   if(dot)      dot.setAttribute("display","none");
   if(tip)      tip.style.display    = "none";
   if(tipTop)   tipTop.style.display = "none";
-  // Restore header label
-  if(hdrLabel) hdrLabel.textContent = "probabilidad SÍ";
+  // Restore header label — i18n aware
+  if(hdrLabel) hdrLabel.textContent = t("chart_yes_prob");
   // Restore header price to current
   const hdrPrice = document.getElementById(chartId+"_hdr_price");
   if(hdrPrice){
