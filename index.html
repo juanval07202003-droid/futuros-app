@@ -9682,39 +9682,99 @@ async function loadAdminPositions(marketId){
       </div>`;
   }
 
+  // Cargar posiciones de todos los participantes (excl. admin)
   const {data:positions} = await db.from("positions")
     .select("user_id,yes_shares,no_shares")
     .eq("market_id", marketId)
     .or("yes_shares.gt.0,no_shares.gt.0");
 
-  if(!positions || positions.length===0){
-    el.innerHTML = `<div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">👥 Posiciones de participantes</div>
-      <div style="font-size:11px;color:var(--muted)">Sin posiciones registradas</div>`;
-    return;
+  // Cargar órdenes filled de participantes para calcular precio promedio de compra
+  const {data:filledOrders} = await db.from("orders")
+    .select("user_id,side,price,shares,filled")
+    .eq("market_id", marketId)
+    .eq("status", "filled")
+    .eq("is_mm", false);
+
+  // Función para calcular precio promedio de compra por usuario y lado
+  const calcUserAvgBuy = (userId, side) => {
+    const list = (filledOrders||[]).filter(o =>
+      String(o.user_id) === String(userId) && o.side === side
+    );
+    const totalShares = list.reduce((s,o) => s + (o.filled || o.shares || 0), 0);
+    const totalCost   = list.reduce((s,o) => s + (o.filled || o.shares || 0) * (o.price || 0), 0);
+    return totalShares > 0 ? totalCost / totalShares : null;
+  };
+
+  const adminId = (STATE.users.find(u=>u.role==="admin")||{}).id||"";
+  const nonAdminPositions = (positions||[]).filter(p => String(p.user_id) !== String(adminId));
+  const adminPos = (positions||[]).find(p => String(p.user_id) === String(adminId));
+
+  // ── Render sección MM (posición del admin) ──
+  const mmYesShares = adminPos?.yes_shares || 0;
+  const mmNoShares  = adminPos?.no_shares  || 0;
+  const mmAvgYes    = calcUserAvgBuy(adminId, "YES");
+  const mmAvgNo     = calcUserAvgBuy(adminId, "NO");
+  const pct = v => (Math.round(v*1000)/10).toFixed(1)+"%";
+
+  const mmSection = `
+    <div style="margin-bottom:10px">
+      <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">
+        🏦 Posición del MM
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+        <div style="background:rgba(0,168,112,.08);border:1px solid rgba(0,168,112,.2);border-radius:6px;padding:6px 8px">
+          <div style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;margin-bottom:2px">Shares SÍ</div>
+          <div style="font-size:16px;font-weight:900;color:var(--yes)">${mmYesShares.toFixed(2)}</div>
+          ${mmAvgYes!==null?`<div style="font-size:9px;color:var(--muted);margin-top:1px">precio compra prom: <strong style="color:var(--text)">${pct(mmAvgYes)}</strong></div>`:""}
+        </div>
+        <div style="background:rgba(224,40,74,.08);border:1px solid rgba(224,40,74,.2);border-radius:6px;padding:6px 8px">
+          <div style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;margin-bottom:2px">Shares NO</div>
+          <div style="font-size:16px;font-weight:900;color:var(--no)">${mmNoShares.toFixed(2)}</div>
+          ${mmAvgNo!==null?`<div style="font-size:9px;color:var(--muted);margin-top:1px">precio compra prom: <strong style="color:var(--text)">${pct(mmAvgNo)}</strong></div>`:""}
+        </div>
+      </div>
+    </div>`;
+
+  // ── Render sección participantes ──
+  let participantsSection = "";
+  if(!nonAdminPositions.length){
+    participantsSection = `<div style="font-size:11px;color:var(--muted);padding:4px 0">Sin posiciones de participantes</div>`;
+  } else {
+    const rows = nonAdminPositions.map(p => {
+      const u = STATE.users.find(x=>String(x.id)===String(p.user_id));
+      const name = u?.username || ("..."+String(p.user_id).slice(-6));
+      const yesShares = p.yes_shares || 0;
+      const noShares  = p.no_shares  || 0;
+      const avgY = calcUserAvgBuy(p.user_id, "YES");
+      const avgN = calcUserAvgBuy(p.user_id, "NO");
+
+      const yesBlock = yesShares > 0 ? `
+        <div style="display:flex;flex-direction:column;align-items:flex-end">
+          <span style="color:var(--yes);font-weight:700;font-size:12px">SÍ ${yesShares.toFixed(2)} sh</span>
+          ${avgY!==null?`<span style="font-size:9px;color:var(--muted)">@ ${pct(avgY)}</span>`:""}
+        </div>` : "";
+
+      const noBlock = noShares > 0 ? `
+        <div style="display:flex;flex-direction:column;align-items:flex-end">
+          <span style="color:var(--no);font-weight:700;font-size:12px">NO ${noShares.toFixed(2)} sh</span>
+          ${avgN!==null?`<span style="font-size:9px;color:var(--muted)">@ ${pct(avgN)}</span>`:""}
+        </div>` : "";
+
+      return `<div style="display:flex;justify-content:space-between;align-items:center;
+          padding:5px 0;border-bottom:1px solid var(--border)">
+        <span style="font-size:11px;color:var(--muted)">@${escHtml(name)}</span>
+        <span style="display:flex;gap:10px">${yesBlock}${noBlock}</span>
+      </div>`;
+    }).join("");
+
+    participantsSection = `
+      <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">
+        👥 Posiciones de participantes (${nonAdminPositions.length})
+      </div>
+      <div style="max-height:180px;overflow-y:auto;scrollbar-width:thin">${rows}</div>`;
   }
 
-  const rows = positions.map(p=>{
-    const u = STATE.users.find(x=>String(x.id)===String(p.user_id));
-    const name = u?.username || ("..."+String(p.user_id).slice(-6));
-    const isAdminUser = u?.role==="admin";
-    const yesShares = p.yes_shares||0;
-    const noShares  = p.no_shares||0;
-    return `<div style="display:flex;justify-content:space-between;align-items:center;
-        padding:4px 0;border-bottom:1px solid var(--border);font-size:11px">
-      <span style="color:var(--muted);font-weight:${isAdminUser?"700":"400"}">
-        @${name}${isAdminUser?" 🏦":""}
-      </span>
-      <span style="display:flex;gap:10px">
-        ${yesShares>0?`<span style="color:var(--yes);font-weight:700">SÍ ${yesShares.toFixed(2)}</span>`:""}
-        ${noShares>0 ?`<span style="color:var(--no);font-weight:700">NO ${noShares.toFixed(2)}</span>`:""}
-      </span>
-    </div>`;
-  }).join("");
-
-  el.innerHTML = `
-    <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;
-        letter-spacing:.5px;margin-bottom:6px">👥 Posiciones de participantes (${positions.length})</div>
-    <div style="max-height:120px;overflow-y:auto;scrollbar-width:thin">${rows}</div>`;
+  el.innerHTML = mmSection + participantsSection;
 }
 
 // ── Similar markets management ───────────────────────────────────
@@ -9979,8 +10039,9 @@ function toggleAdminPos(marketId){
   } else {
     el.style.display = "block";
     if(arrow) arrow.textContent = "▲";
-    // Cargar posiciones solo cuando se abre
-    loadAdminPositions(marketId);
+    // Solo recargar si aún no tiene contenido real (evitar doble carga con el setTimeout)
+    const hasContent = el.innerHTML && !el.innerHTML.includes("Cargando...");
+    if(!hasContent) loadAdminPositions(marketId);
   }
 }
 
