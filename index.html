@@ -4770,13 +4770,13 @@ async function loadMyTrades(marketId){
   const m = getMarket(marketId);
   const pYes = m ? (m.priceYes||0.5) : 0.5;
 
-  // Traer todas las órdenes filled de este usuario en este mercado (compras)
-  const {data:orders, error} = await db.from("orders")
-    .select("side,price,shares,filled,created_at,order_type")
+  // Traer todas las órdenes de compra del usuario en este mercado
+  // Buscamos status filled o partial, sin filtrar is_mm para no perder nada
+  const {data:allOrders, error} = await db.from("orders")
+    .select("side,price,shares,filled,created_at,order_type,status,is_mm")
     .eq("market_id", marketId)
     .eq("user_id", userId)
-    .eq("is_mm", false)
-    .eq("status", "filled")
+    .neq("order_type", "sell")
     .order("created_at", {ascending: true});
 
   if(error){
@@ -4784,12 +4784,23 @@ async function loadMyTrades(marketId){
     return;
   }
 
+  // Filtrar: excluir órdenes del MM y solo quedarnos con compras ejecutadas (filled o partial)
+  const orders = (allOrders||[]).filter(o =>
+    !o.is_mm &&
+    (o.status === "filled" || o.status === "partial") &&
+    (o.filled || o.shares || 0) > 0
+  );
+
   // Separar por lado
-  const yesOrders = (orders||[]).filter(o => o.side==="YES");
-  const noOrders  = (orders||[]).filter(o => o.side==="NO");
+  const yesOrders = orders.filter(o => o.side==="YES");
+  const noOrders  = orders.filter(o => o.side==="NO");
 
   if(!yesOrders.length && !noOrders.length){
-    el.innerHTML = `<div style="text-align:center;padding:14px;color:var(--muted);font-size:12px">Sin posiciones abiertas en este mercado</div>`;
+    // Debug: mostrar qué hay en la DB para ayudar a diagnosticar
+    const debugInfo = (allOrders||[]).length > 0
+      ? `${(allOrders||[]).length} orden(es) encontrada(s) pero sin ejecutar`
+      : "Sin órdenes en este mercado";
+    el.innerHTML = `<div style="text-align:center;padding:14px;color:var(--muted);font-size:12px">${debugInfo}</div>`;
     return;
   }
 
@@ -4803,13 +4814,14 @@ async function loadMyTrades(marketId){
     const border  = side==="YES" ? "rgba(0,168,112,.25)" : "rgba(224,40,74,.25)";
     const label   = side==="YES" ? "SÍ" : "NO";
     const pWin    = side==="YES" ? pYes : (1-pYes);
-    const totalSh = list.reduce((s,o)=>s+(o.filled||o.shares||0),0);
-    const totalCost = list.reduce((s,o)=>s+(o.filled||o.shares||0)*(o.price||0),0);
+    const totalSh = list.reduce((s,o)=>s+((o.filled&&o.filled>0)?o.filled:(o.shares||0)),0);
+    const totalCost = list.reduce((s,o)=>{const sh=(o.filled&&o.filled>0)?o.filled:(o.shares||0); return s+sh*(o.price||0);},0);
     const avgBuy  = totalSh>0 ? totalCost/totalSh : 0;
 
     const rows = list.map(o=>{
-      const sh    = o.filled || o.shares || 0;
-      const cost  = sh * o.price;
+      // filled = shares realmente ejecutados. Si es 0, usar shares (market orders)
+      const sh    = (o.filled && o.filled > 0) ? o.filled : (o.shares || 0);
+      const cost  = sh * (o.price || 0);
       const valNow = sh * pWin;
       const pnl   = valNow - cost;
       const date  = o.created_at ? new Date(o.created_at).toLocaleDateString("es-CO",{day:"2-digit",month:"short"}) : "";
