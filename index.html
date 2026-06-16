@@ -2052,7 +2052,6 @@ const LANG={
     detail_liquidity:"Liquidez del mercado",
     detail_positions:"Mis posiciones",
     detail_price_history:"Historial de precio",
-    chart_yes_prob:"probabilidad SÍ",
     detail_comments:"Comentarios",
     detail_comment_placeholder:"Escribe un comentario…",
     detail_comment_send:"Publicar",
@@ -2308,7 +2307,6 @@ const LANG={
     detail_liquidity:"Market liquidity",
     detail_positions:"My positions",
     detail_price_history:"Price history",
-    chart_yes_prob:"YES probability",
     detail_comments:"Comments",
     detail_comment_placeholder:"Write a comment…",
     detail_comment_send:"Post",
@@ -4450,7 +4448,7 @@ function renderMarket(){
     <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;flex-wrap:wrap;gap:6px">
       <div>
         <div id="${chartId}_hdr_price" style="font-size:28px;font-weight:900;color:var(--yes);line-height:1">${Math.round(curYes*100)}%</div>
-        <div id="${chartId}_hdr_label" style="font-size:11px;color:var(--muted);margin-top:2px">${t("chart_yes_prob")}</div>
+        <div id="${chartId}_hdr_label" style="font-size:11px;color:var(--muted);margin-top:2px">probabilidad SÍ</div>
       </div>
       <div style="text-align:right;font-size:12px;color:var(--muted)">
         <div><strong style="color:var(--text)">${fmtVol(m.totalVolume)}</strong> Vol.</div>
@@ -4474,23 +4472,19 @@ function renderMarket(){
     </div>
 
     <!-- SVG Chart -->
-    <div style="position:relative;overflow:visible" id="${chartId}_wrap">
+    <div style="position:relative;overflow:hidden" id="${chartId}_wrap">
 
       <!-- Fecha flotante en la parte superior (estilo Polymarket) -->
       <div id="${chartId}_tip_top" style="display:none;position:absolute;top:0;left:50%;
-        transform:translateX(-50%);font-size:11px;font-weight:600;color:var(--muted);
-        background:var(--card2);border:1px solid var(--border);border-radius:6px;
-        padding:2px 8px;
+        transform:translateX(-50%);font-size:11px;color:var(--muted);
         pointer-events:none;z-index:10;white-space:nowrap;text-align:center">
       </div>
 
       <!-- Etiqueta pegada al punto (estilo Polymarket) -->
       <div id="${chartId}_tip" style="display:none;position:absolute;
-        background:var(--card);color:var(--text);
-        border:1px solid var(--border-strong);
-        border-radius:8px;padding:5px 10px;font-size:12px;font-weight:700;
+        background:var(--text);color:var(--card);
+        border-radius:6px;padding:4px 8px;font-size:12px;font-weight:700;
         pointer-events:none;z-index:10;white-space:nowrap;
-        box-shadow:0 2px 12px rgba(0,0,0,.15);
         transform:translateY(-50%)">
       </div>
 
@@ -4500,9 +4494,7 @@ function renderMarket(){
         style="display:block;overflow:visible;cursor:crosshair"
         data-pts="${tooltipData}"
         onmousemove="chartMouseMove(event,this,'${chartId}')"
-        onmouseleave="chartMouseLeave('${chartId}')"
-        ontouchmove="chartMouseMove(event,this,'${chartId}');event.preventDefault()"
-        ontouchend="chartMouseLeave('${chartId}')">
+        onmouseleave="chartMouseLeave('${chartId}')">
         <defs>
           <linearGradient id="gYes_${chartId}" x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%"   stop-color="#00e5a0" stop-opacity=".18"/>
@@ -9803,14 +9795,10 @@ function toggleMMOrders(marketId){
 async function loadMMOrders(marketId){
   const el = document.getElementById("mm-orders-"+marketId);
   if(!el) return;
-  el.innerHTML = `<div style="font-size:11px;color:var(--muted);padding:8px">⏳ Cargando…</div>`;
+  el.innerHTML = `<div style="font-size:11px;color:var(--muted);padding:10px 4px">⏳ Cargando…</div>`;
 
-  const m    = STATE.markets.find(x=>x.id===marketId);
-  const tick = m?.tick || 0.01;
-  const pYes = m?.priceYes || 0.5;
-
-  // ── 1. Get admin user (try STATE first, fallback to DB)
-  let adminId = STATE.users?.find(u=>u.role==='admin')?.id || null;
+  // ── Obtener adminId: primero STATE, fallback a DB ──────────────────────
+  let adminId = STATE.users.find(u=>u.role==='admin')?.id || null;
   if(!adminId){
     const {data:admins} = await db.from("users").select("id").eq("role","admin").limit(1);
     adminId = admins?.[0]?.id || null;
@@ -9820,146 +9808,130 @@ async function loadMMOrders(marketId){
     return;
   }
 
-  // ── 2. Fetch MM position (shares in wallet)
-  const {data: pos} = await db.from("positions")
-    .select("yes_shares,no_shares")
-    .eq("market_id", marketId)
-    .eq("user_id", adminId)
-    .maybeSingle();
+  const m    = STATE.markets.find(x=>x.id===marketId);
+  const tick = m?.tick || 0.01;
+  const pYes = m?.priceYes || 0.5;
 
-  // ── 3. Fetch MM open/partial sell orders
-  const {data: sellOrders, error: sellErr} = await db.from("orders")
-    .select("side,price,shares,filled,status,created_at")
-    .eq("market_id", marketId)
-    .eq("is_mm", true)
-    .in("status", ["open","partial"])
-    .order("side", {ascending:true})
-    .order("price", {ascending:false});   // highest price first
+  // ── Queries en paralelo ────────────────────────────────────────────────
+  const [posRes, ordersRes, buyOrdersRes] = await Promise.all([
+    db.from("positions")
+      .select("yes_shares,no_shares")
+      .eq("market_id", marketId)
+      .eq("user_id", adminId)
+      .maybeSingle(),
 
-  // ── 4. Fetch MM executed BUY orders to compute avg buy price per side
-  // Buy orders for MM are market/limit buys that are now "filled"
-  const {data: buyOrders} = await db.from("orders")
-    .select("side,price,shares,filled")
-    .eq("market_id", marketId)
-    .eq("is_mm", true)
-    .eq("status", "filled")
-    .order("created_at", {ascending:true});
+    // Órdenes de venta activas del MM (sin filtro order_type — puede ser 'limit' o 'mm')
+    db.from("orders")
+      .select("id,side,price,shares,filled,status,mm_order_id,order_type,created_at")
+      .eq("market_id", marketId)
+      .eq("is_mm", true)
+      .in("status", ["open","partial"])
+      .order("side", {ascending:true})
+      .order("price", {ascending:false}),
 
-  // Compute avg buy price per side
-  const calcAvg = (side) => {
-    const list = (buyOrders||[]).filter(o=>o.side===side && (o.filled||o.shares)>0);
-    const totalShares = list.reduce((s,o)=>s+(o.filled||o.shares),0);
-    const totalCost   = list.reduce((s,o)=>s+(o.filled||o.shares)*o.price,0);
-    return totalShares > 0 ? totalCost/totalShares : null;
-  };
-  const avgBuyYes = calcAvg("YES");
-  const avgBuyNo  = calcAvg("NO");
+    // Órdenes de compra ejecutadas del MM para calcular precio promedio
+    db.from("orders")
+      .select("side,price,shares,filled")
+      .eq("market_id", marketId)
+      .eq("is_mm", true)
+      .eq("status", "filled")
+      .in("order_type", ["mm","limit"])
+  ]);
+
+  const pos        = posRes.data;
+  const orders     = ordersRes.data || [];
+  const buyOrders  = buyOrdersRes.data || [];
 
   const mmYes = pos?.yes_shares || 0;
   const mmNo  = pos?.no_shares  || 0;
 
+  // Precio promedio de compra por lado
+  const avgBuy = (side) => {
+    const list = buyOrders.filter(o => o.side === side);
+    const totalSh = list.reduce((s,o) => s + (o.filled||o.shares||0), 0);
+    const totalCost = list.reduce((s,o) => s + (o.filled||o.shares||0) * o.price, 0);
+    return totalSh > 0 ? totalCost / totalSh : null;
+  };
+  const avgYes = avgBuy("YES");
+  const avgNo  = avgBuy("NO");
+
+  const yesOrders = orders.filter(o=>o.side==="YES");
+  const noOrders  = orders.filter(o=>o.side==="NO");
+
   const pct  = v => (Math.round(v*1000)/10).toFixed(1)+"%";
   const usdF = v => "$"+(Math.round(v*100)/100).toFixed(2);
 
-  const yesOrders = (sellOrders||[]).filter(o=>o.side==="YES");
-  const noOrders  = (sellOrders||[]).filter(o=>o.side==="NO");
-
-  // ── Render an order row with buy price + min sell price
-  const renderOrderRow = (o, color, bg, avgBuy) => {
-    const rem = (o.shares||0) - (o.filled||0);
-    const val = rem * o.price;
-    const minSell = avgBuy !== null ? Math.max(avgBuy - tick, tick) : null;
-    const isProfitable = minSell !== null ? o.price >= minSell : true;
-    const profitPerShare = avgBuy !== null ? o.price - avgBuy : null;
-    return `<div style="padding:6px 8px;background:${bg};border-radius:6px;margin-bottom:4px;
-        border-left:3px solid ${isProfitable?"var(--yes)":"var(--no)"}">
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:6px">
-        <!-- Precio venta -->
-        <div>
-          <div style="font-size:11px;color:var(--muted);line-height:1">precio venta</div>
-          <div style="font-size:14px;font-weight:800;color:${color}">${pct(o.price)}</div>
-        </div>
-        <!-- Precio compra -->
-        <div style="text-align:center">
-          <div style="font-size:11px;color:var(--muted);line-height:1">precio compra</div>
-          <div style="font-size:13px;font-weight:700;color:var(--text)">${avgBuy!==null?pct(avgBuy):"—"}</div>
-        </div>
-        <!-- Mín. venta rentable -->
-        <div style="text-align:center">
-          <div style="font-size:11px;color:var(--muted);line-height:1">mín. venta</div>
-          <div style="font-size:13px;font-weight:700;color:${isProfitable?"var(--yes)":"var(--no)"}">${minSell!==null?pct(minSell):"—"}</div>
-        </div>
-        <!-- Shares y valor -->
-        <div style="text-align:right">
-          <div style="font-size:12px;font-weight:700;color:var(--text)">${rem.toFixed(2)} sh</div>
-          <div style="font-size:11px;color:var(--muted)">${usdF(val)}</div>
-        </div>
-      </div>
-      ${profitPerShare!==null?`
-      <div style="margin-top:4px;font-size:10px;color:${profitPerShare>=0?"var(--yes)":"var(--no)"}">
-        ${profitPerShare>=0?"✅":"⚠️"} ${profitPerShare>=0?"Ganancia":"Pérdida"} por share: ${profitPerShare>=0?"+":""}${pct(profitPerShare)}
-        ${o.status==="partial"?` · parcial (${(o.filled||0).toFixed(2)} ej.)`:""}
-      </div>`
-      :o.status==="partial"?`<div style="font-size:10px;color:var(--muted);margin-top:3px">parcial (${(o.filled||0).toFixed(2)} ej.)</div>`:""}
-    </div>`;
-  };
-
-  const renderSide = (list, color, bg, avgBuy, label) => {
+  const renderOrders = (list, color, bg, avg) => {
     if(!list.length) return `<div style="font-size:11px;color:var(--muted);padding:4px 6px;font-style:italic">Sin órdenes activas</div>`;
-    return list.map(o=>renderOrderRow(o, color, bg, avgBuy)).join("");
+    return list.map(o=>{
+      const rem = (o.shares||0)-(o.filled||0);
+      const minSell = avg !== null ? Math.max(avg - tick, tick) : null;
+      const profit  = avg !== null ? o.price - avg : null;
+      const ok      = profit === null || profit >= 0;
+      return `<div style="padding:6px 8px;background:${bg};border-radius:6px;
+          margin-bottom:4px;border-left:3px solid ${ok?"var(--yes)":"var(--no)"}">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start">
+          <div>
+            <div style="font-size:13px;font-weight:800;color:${color}">${pct(o.price)}</div>
+            <div style="font-size:10px;color:var(--muted)">venta</div>
+          </div>
+          ${avg!==null?`<div style="text-align:center">
+            <div style="font-size:12px;font-weight:700;color:var(--text)">${pct(avg)}</div>
+            <div style="font-size:10px;color:var(--muted)">compra prom</div>
+          </div>`:""}
+          ${minSell!==null?`<div style="text-align:center">
+            <div style="font-size:12px;font-weight:700;color:${ok?"var(--yes)":"var(--no)"}">${pct(minSell)}</div>
+            <div style="font-size:10px;color:var(--muted)">mín rentable</div>
+          </div>`:""}
+          <div style="text-align:right">
+            <div style="font-size:12px;font-weight:700">${rem.toFixed(2)} sh</div>
+            <div style="font-size:10px;color:var(--muted)">${usdF(rem*o.price)}</div>
+          </div>
+        </div>
+        ${profit!==null?`<div style="margin-top:3px;font-size:10px;color:${ok?"var(--yes)":"var(--no)"}">
+          ${ok?"✅":"⚠️"} ${profit>=0?"+":""}${pct(profit)} por share
+          ${o.status==="partial"?` · parcial (${(o.filled||0).toFixed(2)} ej.)`:""}
+        </div>`:""}
+      </div>`;
+    }).join("");
   };
 
   el.innerHTML = `
-    <!-- Posición actual del MM -->
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:8px 0 6px">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:6px 0">
       <div style="background:rgba(0,168,112,.08);border:1px solid rgba(0,168,112,.2);border-radius:8px;padding:8px 10px">
-        <div style="font-size:10px;color:var(--muted);margin-bottom:2px;font-weight:600;text-transform:uppercase;letter-spacing:.3px">Shares SÍ en cartera</div>
+        <div style="font-size:10px;color:var(--muted);font-weight:600;text-transform:uppercase;margin-bottom:2px">Shares SÍ</div>
         <div style="font-size:18px;font-weight:900;color:var(--yes)">${mmYes.toFixed(2)}</div>
-        <div style="font-size:10px;color:var(--muted)">val. mercado: ${usdF(mmYes * pYes)}</div>
-        ${avgBuyYes!==null?`<div style="font-size:10px;color:var(--muted);margin-top:2px">precio compra prom: <strong style="color:var(--text)">${pct(avgBuyYes)}</strong></div>`:""}
+        <div style="font-size:10px;color:var(--muted)">${usdF(mmYes*pYes)} val. mercado</div>
+        ${avgYes!==null?`<div style="font-size:10px;color:var(--muted);margin-top:2px">compra prom: <strong>${pct(avgYes)}</strong></div>`:""}
       </div>
       <div style="background:rgba(224,40,74,.08);border:1px solid rgba(224,40,74,.2);border-radius:8px;padding:8px 10px">
-        <div style="font-size:10px;color:var(--muted);margin-bottom:2px;font-weight:600;text-transform:uppercase;letter-spacing:.3px">Shares NO en cartera</div>
+        <div style="font-size:10px;color:var(--muted);font-weight:600;text-transform:uppercase;margin-bottom:2px">Shares NO</div>
         <div style="font-size:18px;font-weight:900;color:var(--no)">${mmNo.toFixed(2)}</div>
-        <div style="font-size:10px;color:var(--muted)">val. mercado: ${usdF(mmNo * (1-pYes))}</div>
-        ${avgBuyNo!==null?`<div style="font-size:10px;color:var(--muted);margin-top:2px">precio compra prom: <strong style="color:var(--text)">${pct(avgBuyNo)}</strong></div>`:""}
+        <div style="font-size:10px;color:var(--muted)">${usdF(mmNo*(1-pYes))} val. mercado</div>
+        ${avgNo!==null?`<div style="font-size:10px;color:var(--muted);margin-top:2px">compra prom: <strong>${pct(avgNo)}</strong></div>`:""}
       </div>
     </div>
 
-    <!-- Órdenes de venta activas -->
-    <div style="margin-top:4px">
-      <div style="font-size:10px;font-weight:700;color:var(--muted);letter-spacing:.5px;text-transform:uppercase;margin-bottom:6px">
-        📋 Órdenes de venta activas · precio compra · mín. rentable
+    <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin:8px 0 4px">
+      Órdenes de venta activas
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div>
+        <div style="font-size:10px;font-weight:700;color:var(--yes);margin-bottom:4px">SÍ · ${yesOrders.length} orden${yesOrders.length!==1?"es":""}</div>
+        ${renderOrders(yesOrders,"var(--yes)","rgba(0,168,112,.06)",avgYes)}
       </div>
-
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-        <div>
-          <div style="font-size:10px;font-weight:700;color:var(--yes);margin-bottom:4px">
-            SÍ — ${yesOrders.length} orden${yesOrders.length!==1?"es":""}
-          </div>
-          ${renderSide(yesOrders,"var(--yes)","rgba(0,168,112,.06)",avgBuyYes,"SÍ")}
-        </div>
-        <div>
-          <div style="font-size:10px;font-weight:700;color:var(--no);margin-bottom:4px">
-            NO — ${noOrders.length} orden${noOrders.length!==1?"es":""}
-          </div>
-          ${renderSide(noOrders,"var(--no)","rgba(224,40,74,.06)",avgBuyNo,"NO")}
-        </div>
-      </div>
-
-      <!-- Regla precio mínimo -->
-      <div style="margin-top:8px;font-size:10px;color:var(--muted);background:var(--card2);
-          border-radius:6px;padding:6px 8px;line-height:1.6">
-        📌 <strong>Mín. venta</strong> = max(precio_compra − 1 tick, tick)<br>
-        <span style="color:var(--accent)">SÍ actual: ${pct(pYes)} · NO actual: ${pct(1-pYes)} · Tick: ${(tick*100).toFixed(2)}%</span><br>
-        ${avgBuyYes!==null?`SÍ mín. rentable: <strong style="color:var(--yes)">${pct(Math.max(avgBuyYes-tick,tick))}</strong> · `:""}
-        ${avgBuyNo!==null?`NO mín. rentable: <strong style="color:var(--no)">${pct(Math.max(avgBuyNo-tick,tick))}</strong>`:""}
+      <div>
+        <div style="font-size:10px;font-weight:700;color:var(--no);margin-bottom:4px">NO · ${noOrders.length} orden${noOrders.length!==1?"es":""}</div>
+        ${renderOrders(noOrders,"var(--no)","rgba(224,40,74,.06)",avgNo)}
       </div>
     </div>
 
-    ${sellErr?`<div style="color:var(--no);font-size:10px;margin-top:4px">⚠️ Error cargando órdenes: ${sellErr.message}</div>`:""}
+    <div style="margin-top:8px;font-size:10px;color:var(--muted);background:var(--card2);border-radius:6px;padding:6px 8px;line-height:1.6">
+      📌 Mín. rentable = max(compra_prom − 1 tick, tick)<br>
+      <span style="color:var(--accent)">SÍ: ${pct(pYes)} · NO: ${pct(1-pYes)} · Tick: ${(tick*100).toFixed(2)}%</span>
+    </div>
 
-    <div style="text-align:right;margin-top:4px">
+    <div style="text-align:right;margin-top:6px">
       <button onclick="loadMMOrders('${marketId}')"
         style="font-size:10px;color:var(--muted);background:none;border:none;cursor:pointer;padding:0">
         🔄 Actualizar
@@ -11952,10 +11924,7 @@ function chartMouseMove(e, svgEl, chartId){
   if(!rect.width) return;
   const scaleX = svgEl.viewBox.baseVal.width / rect.width;
   const scaleY = svgEl.viewBox.baseVal.height / rect.height;
-
-  // Support both mouse and touch events
-  const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-  const mx = (clientX - rect.left) * scaleX;
+  const mx = (e.clientX - rect.left) * scaleX;
 
   // Find nearest point
   let nearest = pts[0], minDist = Infinity;
@@ -11980,16 +11949,12 @@ function chartMouseMove(e, svgEl, chartId){
     dot.removeAttribute("display");
   }
 
-  // Format date — i18n month names
-  const en = STATE.lang === "en";
-  const monthsEs = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
-  const monthsEn = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-  const months = en ? monthsEn : monthsEs;
+  // Format date
+  const months = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
   const d = new Date(nearest.ms);
   const dateStr = months[d.getMonth()]+" "+d.getDate()+
     ", "+String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0");
   const pctYes = Math.round(nearest.v * 100);
-  const pctNo  = 100 - pctYes;
 
   // Update header price live (like Polymarket)
   const hdrPrice = document.getElementById(chartId+"_hdr_price");
@@ -11997,10 +11962,11 @@ function chartMouseMove(e, svgEl, chartId){
   if(hdrPrice) hdrPrice.textContent = pctYes + "%";
   if(hdrLabel) hdrLabel.textContent = dateStr;
 
-  // Date at top of chart (above crosshair)
+  // Date at top of chart
   const tipTop = document.getElementById(chartId+"_tip_top");
   if(tipTop){
     tipTop.textContent = dateStr;
+    // Position above the crosshair
     const wrap = document.getElementById(chartId+"_wrap");
     if(wrap){
       const wRect = wrap.getBoundingClientRect();
@@ -12013,27 +11979,21 @@ function chartMouseMove(e, svgEl, chartId){
     tipTop.style.display = "block";
   }
 
-  // Label pinned to dot (Polymarket style) — shows YES% and NO%
+  // Label pinned to dot (Polymarket style)
   const tip = document.getElementById(chartId+"_tip");
   if(tip){
-    const yesLabel = en ? "YES" : "SÍ";
-    const noLabel  = "NO";
-    tip.innerHTML = `<span style="color:#00e5a0">${yesLabel} ${pctYes}%</span> <span style="color:var(--card);opacity:.55">/ ${noLabel} ${pctNo}%</span>`;
+    tip.textContent = "SÍ " + pctYes + "%";
     const wrap = document.getElementById(chartId+"_wrap");
     if(wrap){
       const wRect = wrap.getBoundingClientRect();
       const xPx = (nearest.x / svgEl.viewBox.baseVal.width) * wRect.width;
       const yPx = (nearest.y / svgEl.viewBox.baseVal.height) * wRect.height;
-      // Pin label: prefer right, flip left if near right edge
-      const labelW = 130;
-      let left = xPx + 12;
-      if(left + labelW > wRect.width) left = xPx - labelW - 12;
-      left = Math.max(0, left);
-      // Vertical: keep within chart area
-      let top = yPx - 14;
-      top = Math.max(0, Math.min(top, wRect.height - 32));
+      // Pin label to the right of the dot, flip left if near right edge
+      const labelW = 70;
+      let left = xPx + 10;
+      if(left + labelW > wRect.width) left = xPx - labelW - 10;
       tip.style.left = left + "px";
-      tip.style.top  = top + "px";
+      tip.style.top  = yPx + "px";
     }
     tip.style.display = "block";
   }
@@ -12049,8 +12009,8 @@ function chartMouseLeave(chartId){
   if(dot)      dot.setAttribute("display","none");
   if(tip)      tip.style.display    = "none";
   if(tipTop)   tipTop.style.display = "none";
-  // Restore header label — i18n aware
-  if(hdrLabel) hdrLabel.textContent = t("chart_yes_prob");
+  // Restore header label
+  if(hdrLabel) hdrLabel.textContent = "probabilidad SÍ";
   // Restore header price to current
   const hdrPrice = document.getElementById(chartId+"_hdr_price");
   if(hdrPrice){
