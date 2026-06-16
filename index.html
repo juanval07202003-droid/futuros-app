@@ -3267,8 +3267,7 @@ let _pricesStale        = false;
 async function refreshMarketPrices(){
   try{
     const {data, error} = await db.from("markets")
-      .select("id,q_yes,q_no,price_yes,tick,lp_yes,lp_no,spread_pool,total_volume,price_history,oracle_locked,resolved,manual_paused")
-      .eq("resolved", false);
+      .select("id,q_yes,q_no,price_yes,tick,lp_yes,lp_no,spread_pool,total_volume,price_history,oracle_locked,resolved,manual_paused");
     if(error || !data) return;
     let changed = false;
     data.forEach(row => {
@@ -3341,6 +3340,32 @@ document.addEventListener("visibilitychange", async () => {
 
 // Detectar cuando el modal de trade está abierto — refrescar precio antes de confirmar
 async function refreshPriceBeforeTrade(){
+  // Fuerza un refresh específico del mercado que se va a tradear
+  if(STATE.tradeMarketId){
+    try{
+      const {data} = await db.from("markets")
+        .select("id,price_yes,tick,lp_yes,lp_no,q_yes,q_no,spread_pool,total_volume,price_history,oracle_locked,resolved,manual_paused")
+        .eq("id", STATE.tradeMarketId)
+        .single();
+      if(data){
+        const mi = STATE.markets.findIndex(m=>m.id===data.id||String(m.id)===String(data.id));
+        if(mi>=0) STATE.markets[mi]={...STATE.markets[mi],
+          priceYes:data.price_yes??STATE.markets[mi].priceYes,
+          tick:data.tick??STATE.markets[mi].tick,
+          lpYes:data.lp_yes??STATE.markets[mi].lpYes,
+          lpNo:data.lp_no??STATE.markets[mi].lpNo,
+          qYes:data.q_yes??STATE.markets[mi].qYes,
+          qNo:data.q_no??STATE.markets[mi].qNo,
+          spreadPool:data.spread_pool??STATE.markets[mi].spreadPool,
+          totalVolume:data.total_volume??STATE.markets[mi].totalVolume,
+          priceHistory:Array.isArray(data.price_history)?data.price_history:STATE.markets[mi].priceHistory,
+          oracleLocked:data.oracle_locked??STATE.markets[mi].oracleLocked,
+          manualPaused:data.manual_paused??STATE.markets[mi].manualPaused,
+          resolved:data.resolved??STATE.markets[mi].resolved,
+        };
+      }
+    }catch(e){}
+  }
   const awayTime = Date.now() - _lastPriceRefresh;
   if(awayTime > 15000){ // más de 15s desde el último refresh
     await refreshMarketPrices();
