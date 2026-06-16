@@ -4728,44 +4728,122 @@ function renderMarket(){
       ${u&&((pos.YES||0)>0||(pos.NO||0)>0)?`
       <div class="card" style="padding:16px;margin-top:12px">
         <div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px">Mis posiciones</div>
-        ${(pos.YES||0)>0?`
-        <div style="margin-bottom:10px">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
-            <div style="display:flex;align-items:center;gap:6px">
-              <span style="color:var(--yes);font-weight:700">SÍ</span>
-              <span style="color:var(--muted);font-size:12px">${(pos.YES||0).toFixed(2)} shares</span>
-            </div>
-            <div style="font-weight:700;color:var(--yes)">${usd((pos.YES||0)*pYes)}</div>
-          </div>
-          <div style="display:flex;justify-content:space-between;align-items:center">
-            <span style="font-size:11px;color:var(--muted)">Si gana SÍ → $0.98/share</span>
-            <span style="font-size:12px;font-weight:700;color:var(--yes)">+${usd(Math.round((pos.YES||0)*0.98*100)/100)}</span>
-          </div>
-        </div>`:""}
-        ${(pos.NO||0)>0?`
-        <div style="${(pos.YES||0)>0?"border-top:1px solid var(--border);padding-top:10px":""}">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
-            <div style="display:flex;align-items:center;gap:6px">
-              <span style="color:var(--no);font-weight:700">NO</span>
-              <span style="color:var(--muted);font-size:12px">${(pos.NO||0).toFixed(2)} shares</span>
-            </div>
-            <div style="font-weight:700;color:var(--no)">${usd((pos.NO||0)*(1-pYes))}</div>
-          </div>
-          <div style="display:flex;justify-content:space-between;align-items:center">
-            <span style="font-size:11px;color:var(--muted)">Si gana NO → $0.98/share</span>
-            <span style="font-size:12px;font-weight:700;color:var(--no)">+${usd(Math.round((pos.NO||0)*0.98*100)/100)}</span>
-          </div>
-        </div>`:""}
+        <div id="my-positions-detail-${m.id}">
+          ${renderMyPosSummary(pos, pYes, m.id, u?.id||"")}
+        </div>
       </div>`:""}
       ${u?`<div id="pending-orders-${m.id}" style="margin-top:8px"></div>`:""}
     </div>
   </div>
 </div>`;
+// ═══════════════════════════════════════════════════════════════════
+// MIS POSICIONES — desglose por precio de entrada (desde contracts)
+// ═══════════════════════════════════════════════════════════════════
+function renderMyPosSummary(pos, pYes, marketId, userId){
+  let html = "";
+  if((pos.YES||0)>0){
+    html += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+      <span style="color:var(--yes);font-weight:700">SÍ <span style="color:var(--muted);font-weight:400;font-size:12px">${(pos.YES||0).toFixed(2)} sh</span></span>
+      <div style="text-align:right">
+        <div style="font-weight:700;color:var(--yes)">${usd((pos.YES||0)*pYes)}</div>
+        <div style="font-size:11px;color:var(--muted)">Si gana → +${usd(Math.round((pos.YES||0)*0.98*100)/100)}</div>
+      </div>
+    </div>`;
+  }
+  if((pos.NO||0)>0){
+    const sep = (pos.YES||0)>0 ? "border-top:1px solid var(--border);padding-top:8px;margin-top:2px;" : "";
+    html += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;${sep}">
+      <span style="color:var(--no);font-weight:700">NO <span style="color:var(--muted);font-weight:400;font-size:12px">${(pos.NO||0).toFixed(2)} sh</span></span>
+      <div style="text-align:right">
+        <div style="font-weight:700;color:var(--no)">${usd((pos.NO||0)*(1-pYes))}</div>
+        <div style="font-size:11px;color:var(--muted)">Si gana → +${usd(Math.round((pos.NO||0)*0.98*100)/100)}</div>
+      </div>
+    </div>`;
+  }
+  if(userId){
+    html += `<button onclick="loadMyPositionDetail('${marketId}','${userId}')"
+      style="width:100%;margin-top:4px;padding:5px;border-radius:6px;border:1px solid var(--border);
+      background:transparent;color:var(--muted);font-size:11px;cursor:pointer">
+      Ver desglose por precio de entrada ▼
+    </button>`;
+  }
+  return html;
+}
+  const el = document.getElementById("my-positions-detail-"+marketId);
+  if(!el || !userId) return;
+  el.innerHTML = `<div style="font-size:11px;color:var(--muted);padding:6px 0">⏳ Cargando…</div>`;
+
+  const m    = STATE.markets.find(x=>x.id===marketId);
+  const pYes = m?.priceYes || 0.5;
+
+  // Buscar contratos activos donde el usuario participa
+  const {data: contracts, error} = await db.from("contracts")
+    .select("id,yes_user_id,no_user_id,yes_price,no_price,shares,created_at")
+    .eq("market_id", marketId)
+    .eq("status", "active")
+    .or(`yes_user_id.eq.${userId},no_user_id.eq.${userId}`)
+    .order("created_at", {ascending:true});
+
+  if(error || !contracts?.length){
+    el.innerHTML = `<div style="font-size:11px;color:var(--muted)">Sin contratos activos</div>`;
+    return;
+  }
+
+  const pct  = v => (Math.round(v*1000)/10).toFixed(1)+"%";
+  const usdF = v => "$"+(Math.round(v*100)/100).toFixed(2);
+
+  const yesRows = contracts
+    .filter(c => c.yes_user_id === userId)
+    .map(c => ({side:"YES", entryPrice:c.yes_price, shares:c.shares, created_at:c.created_at}));
+
+  const noRows = contracts
+    .filter(c => c.no_user_id === userId)
+    .map(c => ({side:"NO", entryPrice:c.no_price, shares:c.shares, created_at:c.created_at}));
+
+  const renderRow = (r) => {
+    const color    = r.side==="YES" ? "var(--yes)" : "var(--no)";
+    const curPrice = r.side==="YES" ? pYes : (1-pYes);
+    const pnlPct   = ((curPrice - r.entryPrice) / r.entryPrice * 100);
+    const pnlSign  = pnlPct >= 0 ? "+" : "";
+    const payout   = r.shares * 0.98;
+    const d        = new Date(r.created_at);
+    const dateStr  = `${d.getDate()}/${d.getMonth()+1} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`;
+    return `<div style="display:flex;justify-content:space-between;align-items:center;
+        padding:6px 8px;border-radius:6px;background:var(--card2);margin-bottom:4px">
+      <div>
+        <div style="display:flex;align-items:center;gap:6px">
+          <span style="font-size:11px;font-weight:700;color:${color}">${r.side==="YES"?"SÍ":"NO"}</span>
+          <span style="font-size:12px;font-weight:700;color:var(--text)">${r.shares.toFixed(2)} sh</span>
+          <span style="font-size:10px;color:var(--muted)">@ ${pct(r.entryPrice)}</span>
+        </div>
+        <div style="font-size:10px;color:var(--muted);margin-top:2px">${dateStr}</div>
+      </div>
+      <div style="text-align:right">
+        <div style="font-size:11px;font-weight:700;color:${pnlPct>=0?"var(--yes)":"var(--no)"}">
+          ${pnlSign}${pnlPct.toFixed(1)}%
+        </div>
+        <div style="font-size:10px;color:var(--muted)">Si gana: ${usdF(payout)}</div>
+      </div>
+    </div>`;
+  };
+
+  const allRows = [...yesRows, ...noRows].sort((a,b)=>new Date(a.created_at)-new Date(b.created_at));
+
+  el.innerHTML = `
+    <div style="margin-bottom:6px">
+      ${allRows.map(renderRow).join("")}
+    </div>
+    <div style="font-size:10px;color:var(--muted);text-align:center;margin-top:4px">
+      ${allRows.length} posición${allRows.length!==1?"es":""} · precio actual SÍ ${pct(pYes)} / NO ${pct(1-pYes)}
+    </div>
+    <button onclick="document.getElementById('my-positions-detail-${marketId}').innerHTML=''"
+      style="width:100%;margin-top:6px;padding:4px;border-radius:6px;border:1px solid var(--border);
+      background:transparent;color:var(--muted);font-size:10px;cursor:pointer">
+      Ocultar ▲
+    </button>
+  `;
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// PENDING ORDERS — órdenes del usuario esperando contraparte
-// ═══════════════════════════════════════════════════════════════════
 // ── Order Book functions ─────────────────────────────────────────
 const OB_STATE = {}; // { marketId: { tab, interval } }
 
@@ -5062,15 +5140,6 @@ async function renderObPositions(marketId, el){
         </div>
       </div>
     </div>`;
-}
-
-function timeAgo(ts){
-  if(!ts) return "";
-  const s = Math.floor((Date.now()-new Date(ts).getTime())/1000);
-  if(s<60) return s+"s";
-  if(s<3600) return Math.floor(s/60)+"m";
-  if(s<86400) return Math.floor(s/3600)+"h";
-  return Math.floor(s/86400)+"d";
 }
 
 function startObRefresh(marketId){
@@ -9795,143 +9864,107 @@ function toggleMMOrders(marketId){
 async function loadMMOrders(marketId){
   const el = document.getElementById("mm-orders-"+marketId);
   if(!el) return;
-  el.innerHTML = `<div style="font-size:11px;color:var(--muted);padding:10px 4px">⏳ Cargando…</div>`;
 
-  // ── Obtener adminId: primero STATE, fallback a DB ──────────────────────
-  let adminId = STATE.users.find(u=>u.role==='admin')?.id || null;
-  if(!adminId){
-    const {data:admins} = await db.from("users").select("id").eq("role","admin").limit(1);
-    adminId = admins?.[0]?.id || null;
-  }
-  if(!adminId){
-    el.innerHTML = `<div style="color:var(--no);font-size:11px;padding:8px">⚠️ No se encontró usuario admin</div>`;
-    return;
-  }
+  // Get admin user id
+  const adminUser = STATE.users.find(u=>u.role==='admin');
+  const adminId = adminUser?.id || '';
 
-  const m    = STATE.markets.find(x=>x.id===marketId);
-  const tick = m?.tick || 0.01;
-  const pYes = m?.priceYes || 0.5;
+  // Fetch MM positions
+  const {data: pos} = await db.from("positions")
+    .select("yes_shares,no_shares")
+    .eq("market_id", marketId)
+    .eq("user_id", adminId)
+    .maybeSingle();
 
-  // ── Queries en paralelo ────────────────────────────────────────────────
-  const [posRes, ordersRes, buyOrdersRes] = await Promise.all([
-    db.from("positions")
-      .select("yes_shares,no_shares")
-      .eq("market_id", marketId)
-      .eq("user_id", adminId)
-      .maybeSingle(),
-
-    // Órdenes de venta activas del MM (sin filtro order_type — puede ser 'limit' o 'mm')
-    db.from("orders")
-      .select("id,side,price,shares,filled,status,mm_order_id,order_type,created_at")
-      .eq("market_id", marketId)
-      .eq("is_mm", true)
-      .in("status", ["open","partial"])
-      .order("side", {ascending:true})
-      .order("price", {ascending:false}),
-
-    // Órdenes de compra ejecutadas del MM para calcular precio promedio
-    db.from("orders")
-      .select("side,price,shares,filled")
-      .eq("market_id", marketId)
-      .eq("is_mm", true)
-      .eq("status", "filled")
-      .in("order_type", ["mm","limit"])
-  ]);
-
-  const pos        = posRes.data;
-  const orders     = ordersRes.data || [];
-  const buyOrders  = buyOrdersRes.data || [];
+  // Fetch MM open sell orders (limit orders the MM placed to sell its shares)
+  const {data: orders} = await db.from("orders")
+    .select("side,price,shares,filled,status,mm_order_id,order_type,created_at")
+    .eq("market_id", marketId)
+    .eq("is_mm", true)
+    .eq("order_type", "limit")
+    .in("status", ["open","partial"])
+    .order("side", {ascending:true})
+    .order("price", {ascending:true});
 
   const mmYes = pos?.yes_shares || 0;
   const mmNo  = pos?.no_shares  || 0;
+  const m     = STATE.markets.find(x=>x.id===marketId);
+  const tick  = m?.tick || 0.01;
+  const pYes  = m?.priceYes || 0.5;
 
-  // Precio promedio de compra por lado
-  const avgBuy = (side) => {
-    const list = buyOrders.filter(o => o.side === side);
-    const totalSh = list.reduce((s,o) => s + (o.filled||o.shares||0), 0);
-    const totalCost = list.reduce((s,o) => s + (o.filled||o.shares||0) * o.price, 0);
-    return totalSh > 0 ? totalCost / totalSh : null;
-  };
-  const avgYes = avgBuy("YES");
-  const avgNo  = avgBuy("NO");
-
-  const yesOrders = orders.filter(o=>o.side==="YES");
-  const noOrders  = orders.filter(o=>o.side==="NO");
-
-  const pct  = v => (Math.round(v*1000)/10).toFixed(1)+"%";
+  const pct = v => (Math.round(v*1000)/10).toFixed(1)+"%";
   const usdF = v => "$"+(Math.round(v*100)/100).toFixed(2);
 
-  const renderOrders = (list, color, bg, avg) => {
-    if(!list.length) return `<div style="font-size:11px;color:var(--muted);padding:4px 6px;font-style:italic">Sin órdenes activas</div>`;
+  // Group orders by side+price
+  const yesOrders = (orders||[]).filter(o=>o.side==="YES");
+  const noOrders  = (orders||[]).filter(o=>o.side==="NO");
+
+  const renderOrders = (list, color, bg) => {
+    if(!list.length) return `<div style="font-size:11px;color:var(--muted);padding:4px 6px">Sin órdenes activas</div>`;
     return list.map(o=>{
       const rem = (o.shares||0)-(o.filled||0);
-      const minSell = avg !== null ? Math.max(avg - tick, tick) : null;
-      const profit  = avg !== null ? o.price - avg : null;
-      const ok      = profit === null || profit >= 0;
-      return `<div style="padding:6px 8px;background:${bg};border-radius:6px;
-          margin-bottom:4px;border-left:3px solid ${ok?"var(--yes)":"var(--no)"}">
-        <div style="display:flex;justify-content:space-between;align-items:flex-start">
-          <div>
-            <div style="font-size:13px;font-weight:800;color:${color}">${pct(o.price)}</div>
-            <div style="font-size:10px;color:var(--muted)">venta</div>
-          </div>
-          ${avg!==null?`<div style="text-align:center">
-            <div style="font-size:12px;font-weight:700;color:var(--text)">${pct(avg)}</div>
-            <div style="font-size:10px;color:var(--muted)">compra prom</div>
-          </div>`:""}
-          ${minSell!==null?`<div style="text-align:center">
-            <div style="font-size:12px;font-weight:700;color:${ok?"var(--yes)":"var(--no)"}">${pct(minSell)}</div>
-            <div style="font-size:10px;color:var(--muted)">mín rentable</div>
-          </div>`:""}
-          <div style="text-align:right">
-            <div style="font-size:12px;font-weight:700">${rem.toFixed(2)} sh</div>
-            <div style="font-size:10px;color:var(--muted)">${usdF(rem*o.price)}</div>
-          </div>
+      const val = rem * o.price;
+      const mkPrice = o.side==="YES" ? pYes : (1-pYes);
+      const isAtMarket = Math.abs(o.price - mkPrice) < tick*0.5;
+      return `<div style="display:flex;justify-content:space-between;align-items:center;
+          padding:5px 8px;background:${bg};border-radius:6px;margin-bottom:3px;gap:6px">
+        <div style="min-width:0">
+          <span style="font-size:12px;font-weight:700;color:${color}">${pct(o.price)}</span>
+          <span style="font-size:10px;color:var(--muted);margin-left:4px">${isAtMarket?"≈mercado":"límite"}</span>
         </div>
-        ${profit!==null?`<div style="margin-top:3px;font-size:10px;color:${ok?"var(--yes)":"var(--no)"}">
-          ${ok?"✅":"⚠️"} ${profit>=0?"+":""}${pct(profit)} por share
-          ${o.status==="partial"?` · parcial (${(o.filled||0).toFixed(2)} ej.)`:""}
-        </div>`:""}
+        <div style="text-align:right;flex-shrink:0">
+          <div style="font-size:11px;font-weight:600;color:var(--text)">${rem.toFixed(2)} sh · ${usdF(val)}</div>
+          ${o.status==="partial"?`<div style="font-size:10px;color:var(--muted)">parcial (${o.filled.toFixed(2)} ej.)</div>`:""}
+        </div>
       </div>`;
     }).join("");
   };
 
   el.innerHTML = `
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:6px 0">
+    <!-- Posición actual -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:8px 0 6px">
       <div style="background:rgba(0,168,112,.08);border:1px solid rgba(0,168,112,.2);border-radius:8px;padding:8px 10px">
-        <div style="font-size:10px;color:var(--muted);font-weight:600;text-transform:uppercase;margin-bottom:2px">Shares SÍ</div>
+        <div style="font-size:10px;color:var(--muted);margin-bottom:2px;font-weight:600">SHARES SÍ en cartera</div>
         <div style="font-size:18px;font-weight:900;color:var(--yes)">${mmYes.toFixed(2)}</div>
-        <div style="font-size:10px;color:var(--muted)">${usdF(mmYes*pYes)} val. mercado</div>
-        ${avgYes!==null?`<div style="font-size:10px;color:var(--muted);margin-top:2px">compra prom: <strong>${pct(avgYes)}</strong></div>`:""}
+        <div style="font-size:10px;color:var(--muted)">val. mercado: ${usdF(mmYes * pYes)}</div>
       </div>
       <div style="background:rgba(224,40,74,.08);border:1px solid rgba(224,40,74,.2);border-radius:8px;padding:8px 10px">
-        <div style="font-size:10px;color:var(--muted);font-weight:600;text-transform:uppercase;margin-bottom:2px">Shares NO</div>
+        <div style="font-size:10px;color:var(--muted);margin-bottom:2px;font-weight:600">SHARES NO en cartera</div>
         <div style="font-size:18px;font-weight:900;color:var(--no)">${mmNo.toFixed(2)}</div>
-        <div style="font-size:10px;color:var(--muted)">${usdF(mmNo*(1-pYes))} val. mercado</div>
-        ${avgNo!==null?`<div style="font-size:10px;color:var(--muted);margin-top:2px">compra prom: <strong>${pct(avgNo)}</strong></div>`:""}
+        <div style="font-size:10px;color:var(--muted)">val. mercado: ${usdF(mmNo * (1-pYes))}</div>
       </div>
     </div>
 
-    <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin:8px 0 4px">
-      Órdenes de venta activas
-    </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-      <div>
-        <div style="font-size:10px;font-weight:700;color:var(--yes);margin-bottom:4px">SÍ · ${yesOrders.length} orden${yesOrders.length!==1?"es":""}</div>
-        ${renderOrders(yesOrders,"var(--yes)","rgba(0,168,112,.06)",avgYes)}
+    <!-- Órdenes de venta activas -->
+    <div style="margin-top:4px">
+      <div style="font-size:10px;font-weight:700;color:var(--muted);letter-spacing:.5px;text-transform:uppercase;margin-bottom:4px">
+        Órdenes de venta activas
       </div>
-      <div>
-        <div style="font-size:10px;font-weight:700;color:var(--no);margin-bottom:4px">NO · ${noOrders.length} orden${noOrders.length!==1?"es":""}</div>
-        ${renderOrders(noOrders,"var(--no)","rgba(224,40,74,.06)",avgNo)}
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <div>
+          <div style="font-size:10px;font-weight:700;color:var(--yes);margin-bottom:4px">
+            SÍ — ${yesOrders.length} nivel${yesOrders.length!==1?"es":""}
+          </div>
+          ${renderOrders(yesOrders,"var(--yes)","rgba(0,168,112,.06)")}
+        </div>
+        <div>
+          <div style="font-size:10px;font-weight:700;color:var(--no);margin-bottom:4px">
+            NO — ${noOrders.length} nivel${noOrders.length!==1?"es":""}
+          </div>
+          ${renderOrders(noOrders,"var(--no)","rgba(224,40,74,.06)")}
+        </div>
+      </div>
+
+      <!-- Regla de precio mínimo -->
+      <div style="margin-top:8px;font-size:10px;color:var(--muted);background:var(--card2);
+          border-radius:6px;padding:6px 8px;line-height:1.5">
+        📌 Precio mínimo venta MM = max(precio_compra − 1 tick, precio_mercado_actual)<br>
+        <span style="color:var(--accent)">SÍ actual: ${pct(pYes)} · NO actual: ${pct(1-pYes)} · Tick: ${(tick*100).toFixed(2)}%</span>
       </div>
     </div>
 
-    <div style="margin-top:8px;font-size:10px;color:var(--muted);background:var(--card2);border-radius:6px;padding:6px 8px;line-height:1.6">
-      📌 Mín. rentable = max(compra_prom − 1 tick, tick)<br>
-      <span style="color:var(--accent)">SÍ: ${pct(pYes)} · NO: ${pct(1-pYes)} · Tick: ${(tick*100).toFixed(2)}%</span>
-    </div>
-
-    <div style="text-align:right;margin-top:6px">
+    <div style="text-align:right;margin-top:4px">
       <button onclick="loadMMOrders('${marketId}')"
         style="font-size:10px;color:var(--muted);background:none;border:none;cursor:pointer;padding:0">
         🔄 Actualizar
@@ -11256,7 +11289,7 @@ function renderAdminMM(){
         <div style="font-size:13px;color:var(--muted)">Cargando órdenes…</div>
       </div>
       <button class="btn-ghost" style="margin-top:12px;font-size:13px"
-        onclick="loadMMOrders()">🔄 Actualizar</button>
+        onclick="loadBeMmOrders()">🔄 Actualizar</button>
     </div>
   </div>`;
 }
@@ -11304,10 +11337,10 @@ async function adminPlaceMMOrder(){
 
   notify(`✅ Orden MM creada · ${shares} shares ${f.side} a ${pct(price)} · costo ${usd(cost)}`);
   render();
-  await loadMMOrders();
+  await loadBeMmOrders();
 }
 
-async function loadMMOrders(){
+async function loadBeMmOrders(){
   const u = getUser();
   if(!u) return;
   const box = document.getElementById("mm-orders-list");
@@ -11373,7 +11406,7 @@ async function adminCancelMMOrder(orderId){
 
   notify(`✅ Orden cancelada · reembolso ${usd(refund)}`);
   render();
-  await loadMMOrders();
+  await loadBeMmOrders();
 }
 
 
