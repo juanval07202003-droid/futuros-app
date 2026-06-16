@@ -11101,7 +11101,28 @@ async function adminCreateMarket(){
     console.error("[MM NO Error]", errNo, mmNo);
   }
 
-  // 3. Sincronizar STATE desde DB (balance real + posiciones reales)
+  // 3. Guardar transacciones del MM para que aparezcan en "Mis posiciones"
+  const mmMarketId = String(m.id);
+  const saveMmTx = async (side, dollars, shares, price) => {
+    const txMm = {
+      user_id: adminUid,
+      type: "trade",
+      amount: dollars,
+      network: mmMarketId,
+      description: `Compra ${side} ${usd(dollars)} → ${shares.toFixed(2)} shares · ${m.title.slice(0,28)}…`,
+      status: "confirmed",
+      created_at: new Date().toISOString(),
+    };
+    await db.from("transactions").insert(txMm);
+  };
+  if(!errYes && !mmYes?.error && sharesYes > 0){
+    await saveMmTx("YES", sharesYes, sharesYes, mmPrice);
+  }
+  if(!errNo && !mmNo?.error && sharesNo > 0){
+    await saveMmTx("NO", sharesNo, sharesNo, 1 - mmPrice);
+  }
+
+  // 4. Sincronizar STATE desde DB (balance real + posiciones reales)
   const {data:freshUser} = await db.from("users").select("balance").eq("id", adminUid).maybeSingle();
   const {data:freshPos}  = await db.from("positions")
     .select("yes_shares,no_shares").eq("user_id", adminUid).eq("market_id", String(m.id)).maybeSingle();
@@ -11509,6 +11530,20 @@ async function adminPlaceMMOrder(){
       lpYes: f.side==="YES" ? (m.lpYes||0)+cost : m.lpYes,
       lpNo:  f.side==="NO"  ? (m.lpNo||0)+cost  : m.lpNo,
     };
+  }
+
+  // Guardar transacción del MM para que aparezca en "Mis posiciones"
+  const mktForTx = STATE.markets.find(x=>x.id===f.marketId);
+  if(mktForTx){
+    await db.from("transactions").insert({
+      user_id: u.id,
+      type: "trade",
+      amount: cost,
+      network: String(f.marketId),
+      description: `Compra ${f.side} ${usd(cost)} → ${shares.toFixed(2)} shares · ${(mktForTx.title||"").slice(0,28)}…`,
+      status: "confirmed",
+      created_at: new Date().toISOString(),
+    });
   }
 
   notify(`✅ Orden MM creada · ${shares} shares ${f.side} a ${pct(price)} · costo ${usd(cost)}`);
