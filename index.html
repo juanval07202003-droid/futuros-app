@@ -4774,13 +4774,17 @@ async function loadMyTrades(marketId){
   let trades = [];
 
   if(isAdm){
-    // ── ADMIN/MM: leer órdenes ejecutadas de la tabla orders (is_mm=true, filled)
-    // Estas son las contrapartes reales que el MM absorbió cuando usuarios compraron
+    // ── ADMIN/MM: mostrar solo contrapartes reales absorbidas (PRIORIDAD 3)
+    // Son las órdenes order_type='mm', status='filled', mm_order_id IS NULL
+    // Estas se crean en match_order cuando un usuario compra y el MM actúa de contraparte
+    // Las órdenes seed iniciales (place_mm_order) tienen status='open' y NO deben aparecer
     const {data:mmOrders, error} = await db.from("orders")
-      .select("side,price,shares,filled,created_at,status")
+      .select("side,price,shares,filled,created_at,order_type,mm_order_id")
       .eq("market_id", marketId)
       .eq("is_mm", true)
+      .eq("order_type", "mm")
       .eq("status", "filled")
+      .is("mm_order_id", null)
       .order("created_at", {ascending: true});
 
     if(error){
@@ -4789,17 +4793,12 @@ async function loadMyTrades(marketId){
     }
 
     for(const o of (mmOrders||[])){
-      // El MM recibe el lado OPUESTO al que pone en el libro:
-      // Si el MM pone orden de venta SÍ y la ejecutan, el MM entrega SÍ y recibe dinero → ganó NO implícitamente
-      // Pero en terms de shares en cartera: filled en una orden de venta SÍ = shares SÍ vendidos
-      // Lo que queremos mostrar es lo que el MM TIENE en cartera = positions.yes_shares / no_shares
-      // Cada vez que un usuario compra SÍ al MM, el MM pierde shares SÍ de su pool
-      // pero internamente el sistema puede crear una orden espejo (is_mirror)
-      // Mostramos cada orden filled como una "posición tomada" con su precio y shares
+      // Estas son contrapartes reales: cuando un usuario compró SÍ,
+      // el MM recibió NO como contraparte (y viceversa)
       const sh = (o.filled && o.filled > 0) ? o.filled : (o.shares||0);
       if(sh <= 0) continue;
       trades.push({
-        side:    o.side,
+        side:    o.side,   // lado que el MM absorbió (contraparte del usuario)
         shares:  sh,
         dollars: sh * (o.price||0),
         price:   o.price||0,
