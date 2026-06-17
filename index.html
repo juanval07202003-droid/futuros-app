@@ -4806,27 +4806,59 @@ async function loadMyTrades(marketId){
       return;
     }
 
-    // Cada orden = un trade individual, igual que usuarios
-    // Solo mostramos los lados que el MM aún tiene en posición
-    for(const o of (mmOrders||[])){
-      const sh = (o.filled && o.filled > 0) ? o.filled : (o.shares||0);
-      if(sh <= 0) continue;
-      // Solo incluir el lado que el MM aún tiene
-      if(o.side === "YES" && currentYes < 0.001) continue;
-      if(o.side === "NO"  && currentNo  < 0.001) continue;
-      trades.push({
-        side:    o.side,
-        shares:  sh,
-        dollars: sh * (o.price||0),
-        price:   o.price||0,
-        date:    o.created_at,
-      });
-    }
+    // Cargar también las órdenes de venta (limit) del MM para saber cuánto ya vendió
+    const {data:mmSells} = await db.from("orders")
+      .select("side,filled,status")
+      .eq("market_id", marketId)
+      .eq("is_mm", true)
+      .eq("order_type", "limit")
+      .in("status", ["filled","partial"])
+      .not("mm_order_id", "is", null);
 
-    // Si no hay órdenes históricas pero sí posición, mostrar la posición actual
+    // Cuánto ya vendió el MM por lado
+    const soldYes = (mmSells||[]).filter(o=>o.side==="YES").reduce((s,o)=>s+(o.filled||0),0);
+    const soldNo  = (mmSells||[]).filter(o=>o.side==="NO" ).reduce((s,o)=>s+(o.filled||0),0);
+
+    // Mostrar la posición actual real (positions = fuente de verdad)
+    // con el desglose de cada entrada al precio que se compró
+    // Distribuimos los shares actuales proporcionalmente entre las entradas históricas
+    const ordYes = (mmOrders||[]).filter(o=>o.side==="YES" && (o.filled||o.shares||0)>0);
+    const ordNo  = (mmOrders||[]).filter(o=>o.side==="NO"  && (o.filled||o.shares||0)>0);
+
+    const buildTrades = (orders, currentShares) => {
+      if(currentShares < 0.001) return [];
+      // Distribuir los shares actuales entre las entradas en orden FIFO
+      // (primero las más antiguas ya fueron vendidas)
+      let remaining = currentShares;
+      const result = [];
+      // Recorrer de más reciente a más antigua (las más antiguas se vendieron primero)
+      for(const o of [...orders].reverse()){
+        if(remaining <= 0.001) break;
+        const bought = (o.filled && o.filled > 0) ? o.filled : (o.shares||0);
+        const stillHeld = Math.min(bought, remaining);
+        if(stillHeld > 0.001){
+          result.unshift({
+            side:    o.side,
+            shares:  Math.round(stillHeld * 10000)/10000,
+            dollars: Math.round(stillHeld * (o.price||0) * 100)/100,
+            price:   o.price||0,
+            date:    o.created_at,
+          });
+          remaining -= stillHeld;
+        }
+      }
+      return result;
+    };
+
+    const yesTradesList = buildTrades(ordYes, currentYes);
+    const noTradesList  = buildTrades(ordNo,  currentNo);
+
+    for(const t of [...yesTradesList, ...noTradesList]) trades.push(t);
+
+    // Fallback si no hay historial
     if(trades.length === 0){
-      if(currentYes > 0.001) trades.push({side:"YES", shares:currentYes, dollars:0, price:0, date:null});
-      if(currentNo  > 0.001) trades.push({side:"NO",  shares:currentNo,  dollars:0, price:0, date:null});
+      if(currentYes > 0.001) trades.push({side:"YES", shares:currentYes, dollars:currentYes*0.5, price:0.5, date:null});
+      if(currentNo  > 0.001) trades.push({side:"NO",  shares:currentNo,  dollars:currentNo*0.5,  price:0.5, date:null});
     }
   } else {
     // ── USUARIO NORMAL: leer transacciones de tipo "trade"
