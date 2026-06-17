@@ -4774,10 +4774,9 @@ async function loadMyTrades(marketId){
   let trades = [];
 
   if(isAdm){
-    // ── ADMIN/MM: leer posición ACTUAL desde la DB (fuente de verdad real)
-    // Las órdenes históricas no reflejan ventas ya ejecutadas.
-    // La posición real es positions.yes_shares / no_shares del admin en este mercado.
-    // Para el precio promedio, cruzamos con las órdenes 'mm' filled sin mm_order_id.
+    // ── ADMIN/MM: mostrar cada trade individual igual que usuarios
+    // Fuente: órdenes 'mm' filled sin mm_order_id = cada contraparte absorbida
+    // Cruzamos con positions para saber qué queda aún en cartera
     const [{data:mmPos, error:errPos}, {data:mmOrders, error:errOrd}] = await Promise.all([
       db.from("positions")
         .select("yes_shares,no_shares")
@@ -4807,39 +4806,27 @@ async function loadMyTrades(marketId){
       return;
     }
 
-    // Calcular precio promedio de las órdenes históricas para cada lado
-    const ordYes = (mmOrders||[]).filter(o => o.side==="YES");
-    const ordNo  = (mmOrders||[]).filter(o => o.side==="NO");
-    const avgPrice = (list) => {
-      const totalSh   = list.reduce((s,o)=>s+(o.filled||o.shares||0), 0);
-      const totalCost = list.reduce((s,o)=>s+(o.filled||o.shares||0)*(o.price||0), 0);
-      return totalSh > 0 ? totalCost/totalSh : 0;
-    };
-    const avgYes = avgPrice(ordYes);
-    const avgNo  = avgPrice(ordNo);
-    const lastDateYes = ordYes.length ? ordYes[ordYes.length-1].created_at : null;
-    const lastDateNo  = ordNo.length  ? ordNo[ordNo.length-1].created_at   : null;
-
-    // Mostrar posición actual (lo que realmente tiene el MM ahora)
-    if(currentYes > 0.001){
+    // Cada orden = un trade individual, igual que usuarios
+    // Solo mostramos los lados que el MM aún tiene en posición
+    for(const o of (mmOrders||[])){
+      const sh = (o.filled && o.filled > 0) ? o.filled : (o.shares||0);
+      if(sh <= 0) continue;
+      // Solo incluir el lado que el MM aún tiene
+      if(o.side === "YES" && currentYes < 0.001) continue;
+      if(o.side === "NO"  && currentNo  < 0.001) continue;
       trades.push({
-        side:    "YES",
-        shares:  currentYes,
-        dollars: currentYes * avgYes,
-        price:   avgYes,
-        date:    lastDateYes,
-        isCurrent: true,
+        side:    o.side,
+        shares:  sh,
+        dollars: sh * (o.price||0),
+        price:   o.price||0,
+        date:    o.created_at,
       });
     }
-    if(currentNo > 0.001){
-      trades.push({
-        side:    "NO",
-        shares:  currentNo,
-        dollars: currentNo * avgNo,
-        price:   avgNo,
-        date:    lastDateNo,
-        isCurrent: true,
-      });
+
+    // Si no hay órdenes históricas pero sí posición, mostrar la posición actual
+    if(trades.length === 0){
+      if(currentYes > 0.001) trades.push({side:"YES", shares:currentYes, dollars:0, price:0, date:null});
+      if(currentNo  > 0.001) trades.push({side:"NO",  shares:currentNo,  dollars:0, price:0, date:null});
     }
   } else {
     // ── USUARIO NORMAL: leer transacciones de tipo "trade"
