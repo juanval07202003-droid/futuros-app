@@ -5038,8 +5038,10 @@ async function renderObBook(marketId, el){
 
   const bidsYes = (orders||[]).filter(o=>o.side==="YES" && !o.is_mm);
   const bidsNo  = (orders||[]).filter(o=>o.side==="NO"  && !o.is_mm);
-  const mmYes   = (orders||[]).filter(o=>o.side==="YES" &&  o.is_mm);
-  const mmNo    = (orders||[]).filter(o=>o.side==="NO"  &&  o.is_mm);
+  // Solo mostrar órdenes de venta REALES del MM (limit con mm_order_id)
+  // Las órdenes seed (order_type='mm' sin mm_order_id) son reserva de capital, no van al libro
+  const mmYes   = (orders||[]).filter(o=>o.side==="YES" && o.is_mm && o.order_type==="limit" && o.mm_order_id);
+  const mmNo    = (orders||[]).filter(o=>o.side==="NO"  && o.is_mm && o.order_type==="limit" && o.mm_order_id);
 
   const aggOrders = (list) => {
     const map = {};
@@ -5344,7 +5346,7 @@ async function renderObHistory(marketId, el){
       .eq("status", "filled")
       .is("mm_order_id", null)
       .order("created_at", {ascending: false})
-      .limit(40),
+      .limit(200),
     // Órdenes de usuarios que sí quedaron guardadas (parciales o limit)
     db.from("orders")
       .select("side,price,shares,filled,user_id,created_at,status")
@@ -5353,7 +5355,7 @@ async function renderObHistory(marketId, el){
       .in("status", ["filled","partial"])
       .neq("order_type", "sell")
       .order("created_at", {ascending: false})
-      .limit(40),
+      .limit(200),
     // Cola pendiente
     db.from("orders")
       .select("side,price,shares,filled,user_id,created_at,status")
@@ -5372,23 +5374,39 @@ async function renderObHistory(marketId, el){
   const mmTrades   = (mmFilledRes.data   || []).map(o=>({...o, _source:"mm"}));
   const userTrades = (userFilledRes.data || []).map(o=>({...o, _source:"user"}));
 
-  // El lado del trade para el usuario es el OPUESTO al del MM
-  // Si el MM absorbió NO, el usuario compró SÍ
-  const allTrades = mmTrades.map(o=>({
-    side:    o.side === "YES" ? "NO" : "YES",  // lado del comprador
-    price:   1 - (o.price||0),                 // precio del comprador
-    shares:  o.filled || o.shares || 0,
-    user_id: null,                              // no tenemos el user_id del comprador aquí
-    created_at: o.created_at,
-    _source: "mm"
-  }));
-
-  // Agregar órdenes de usuarios que sí quedaron registradas
-  // Evitar duplicados (mismo timestamp ±1s)
+  // Construir mapa de órdenes de usuario por timestamp para cruzar con trades del MM
+  const userByTime = {};
   for(const u of userTrades){
-    const ts = new Date(u.created_at).getTime();
-    const isDup = allTrades.some(t => Math.abs(new Date(t.created_at).getTime() - ts) < 2000 && t.side === u.side);
-    if(!isDup) allTrades.push({...u, _source:"user"});
+    const ts = Math.floor(new Date(u.created_at).getTime() / 1000); // segundos
+    userByTime[ts] = u;
+  }
+
+  // El lado del trade para el usuario es el OPUESTO al del MM
+  const allTrades = mmTrades.map(o=>{
+    const ts = Math.floor(new Date(o.created_at).getTime() / 1000);
+    // Buscar orden de usuario en el mismo segundo (±2s)
+    let matchedUser = userByTime[ts] || userByTime[ts-1] || userByTime[ts+1] || userByTime[ts-2] || userByTime[ts+2];
+    return {
+      side:       o.side === "YES" ? "NO" : "YES",
+      price:      Math.round((1 - (o.price||0)) * 10000) / 10000,
+      shares:     o.filled || o.shares || 0,
+      user_id:    matchedUser?.user_id || null,
+      created_at: o.created_at,
+      _source:    "mm"
+    };
+  });
+
+  // Agregar órdenes de usuarios sin match en MM (ej. user vs user)
+  for(const u of userTrades){
+    const ts = Math.floor(new Date(u.created_at).getTime() / 1000);
+    const hasMMMatch = allTrades.some(t =>
+      Math.abs(Math.floor(new Date(t.created_at).getTime()/1000) - ts) <= 2 && t.side === u.side
+    );
+    if(!hasMMMatch) allTrades.push({
+      side: u.side, price: u.price,
+      shares: u.filled || u.shares || 0,
+      user_id: u.user_id, created_at: u.created_at, _source:"user"
+    });
   }
 
   // Ordenar por fecha descendente
@@ -5480,7 +5498,7 @@ async function renderObHistory(marketId, el){
     historyHtml = `
       <div>
         <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;
-            letter-spacing:.5px;margin-bottom:6px">📋 Historial (${filled.length})</div>
+            letter-spacing:.5px;margin-bottom:6px">📋 Historial (${filled.length} operaciones)</div>
         <div style="display:grid;grid-template-columns:auto 1fr 65px 65px 55px;gap:5px;
             font-size:9px;font-weight:700;color:var(--muted);text-transform:uppercase;
             letter-spacing:.3px;padding:2px 0;margin-bottom:4px;border-bottom:1px solid var(--border)">
@@ -5489,7 +5507,10 @@ async function renderObHistory(marketId, el){
           <div style="text-align:right">Precio</div>
           <div style="text-align:right">Fecha</div>
         </div>
-        <div style="max-height:300px;overflow-y:auto;scrollbar-width:thin">${rows}</div>
+        <div style="max-height:400px;overflow-y:auto;scrollbar-width:thin;
+            scrollbar-color:var(--border) transparent">${rows}</div>
+        ${filled.length >= 200 ? `<div style="font-size:10px;color:var(--muted);text-align:center;padding:6px">
+          Mostrando últimas 200 operaciones</div>` : ""}
       </div>`;
   }
 
