@@ -4774,35 +4774,71 @@ async function loadMyTrades(marketId){
   let trades = [];
 
   if(isAdm){
-    // ── ADMIN/MM: mostrar solo contrapartes reales absorbidas (PRIORIDAD 3)
-    // Son las órdenes order_type='mm', status='filled', mm_order_id IS NULL
-    // Estas se crean en match_order cuando un usuario compra y el MM actúa de contraparte
-    // Las órdenes seed iniciales (place_mm_order) tienen status='open' y NO deben aparecer
-    const {data:mmOrders, error} = await db.from("orders")
-      .select("side,price,shares,filled,created_at,order_type,mm_order_id")
-      .eq("market_id", marketId)
-      .eq("is_mm", true)
-      .eq("order_type", "mm")
-      .eq("status", "filled")
-      .is("mm_order_id", null)
-      .order("created_at", {ascending: true});
+    // ── ADMIN/MM: leer posición ACTUAL desde la DB (fuente de verdad real)
+    // Las órdenes históricas no reflejan ventas ya ejecutadas.
+    // La posición real es positions.yes_shares / no_shares del admin en este mercado.
+    // Para el precio promedio, cruzamos con las órdenes 'mm' filled sin mm_order_id.
+    const [{data:mmPos, error:errPos}, {data:mmOrders, error:errOrd}] = await Promise.all([
+      db.from("positions")
+        .select("yes_shares,no_shares")
+        .eq("market_id", marketId)
+        .eq("user_id", u.id)
+        .maybeSingle(),
+      db.from("orders")
+        .select("side,price,shares,filled,created_at")
+        .eq("market_id", marketId)
+        .eq("is_mm", true)
+        .eq("order_type", "mm")
+        .eq("status", "filled")
+        .is("mm_order_id", null)
+        .order("created_at", {ascending: true})
+    ]);
 
-    if(error){
-      el.innerHTML = `<div style="color:var(--no);font-size:11px;padding:8px">⚠️ Error: ${error.message}</div>`;
+    if(errPos || errOrd){
+      el.innerHTML = `<div style="color:var(--no);font-size:11px;padding:8px">⚠️ Error cargando posiciones</div>`;
       return;
     }
 
-    for(const o of (mmOrders||[])){
-      // Estas son contrapartes reales: cuando un usuario compró SÍ,
-      // el MM recibió NO como contraparte (y viceversa)
-      const sh = (o.filled && o.filled > 0) ? o.filled : (o.shares||0);
-      if(sh <= 0) continue;
+    const currentYes = mmPos?.yes_shares || 0;
+    const currentNo  = mmPos?.no_shares  || 0;
+
+    if(currentYes < 0.001 && currentNo < 0.001){
+      el.innerHTML = `<div style="text-align:center;padding:14px;color:var(--muted);font-size:12px">Sin contrapartes ejecutadas aún en este mercado</div>`;
+      return;
+    }
+
+    // Calcular precio promedio de las órdenes históricas para cada lado
+    const ordYes = (mmOrders||[]).filter(o => o.side==="YES");
+    const ordNo  = (mmOrders||[]).filter(o => o.side==="NO");
+    const avgPrice = (list) => {
+      const totalSh   = list.reduce((s,o)=>s+(o.filled||o.shares||0), 0);
+      const totalCost = list.reduce((s,o)=>s+(o.filled||o.shares||0)*(o.price||0), 0);
+      return totalSh > 0 ? totalCost/totalSh : 0;
+    };
+    const avgYes = avgPrice(ordYes);
+    const avgNo  = avgPrice(ordNo);
+    const lastDateYes = ordYes.length ? ordYes[ordYes.length-1].created_at : null;
+    const lastDateNo  = ordNo.length  ? ordNo[ordNo.length-1].created_at   : null;
+
+    // Mostrar posición actual (lo que realmente tiene el MM ahora)
+    if(currentYes > 0.001){
       trades.push({
-        side:    o.side,   // lado que el MM absorbió (contraparte del usuario)
-        shares:  sh,
-        dollars: sh * (o.price||0),
-        price:   o.price||0,
-        date:    o.created_at,
+        side:    "YES",
+        shares:  currentYes,
+        dollars: currentYes * avgYes,
+        price:   avgYes,
+        date:    lastDateYes,
+        isCurrent: true,
+      });
+    }
+    if(currentNo > 0.001){
+      trades.push({
+        side:    "NO",
+        shares:  currentNo,
+        dollars: currentNo * avgNo,
+        price:   avgNo,
+        date:    lastDateNo,
+        isCurrent: true,
       });
     }
   } else {
