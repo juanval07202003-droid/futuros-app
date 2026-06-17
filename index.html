@@ -4673,6 +4673,12 @@ function renderMarket(){
                 background:transparent;color:var(--muted);cursor:pointer">
               Posiciones
             </button>
+            <button onclick="setObTab('${m.id}','history')"
+              id="ob-btn-history-${m.id}"
+              style="font-size:11px;padding:3px 10px;border-radius:20px;border:1px solid var(--border);
+                background:transparent;color:var(--muted);cursor:pointer">
+              Historial
+            </button>
           </div>
         </div>
         <div id="ob-content-${m.id}">
@@ -4990,7 +4996,7 @@ function setObTab(marketId, tab){
   OB_STATE[marketId].tab = tab;
 
   // Update button styles
-  ["book","trades","positions"].forEach(t=>{
+  ["book","trades","positions","history"].forEach(t=>{
     const btn = document.getElementById(`ob-btn-${t}-${marketId}`);
     if(!btn) return;
     if(t===tab){
@@ -5015,8 +5021,10 @@ async function loadOrderBook(marketId){
     await renderObBook(marketId, el);
   } else if(tab==="trades"){
     await renderObTrades(marketId, el);
+  } else if(tab==="history"){
+    await renderObHistory(marketId, el);
   } else {
-    renderObPositions(marketId, el);  // async, no await needed here
+    renderObPositions(marketId, el);
   }
 }
 
@@ -5066,7 +5074,32 @@ async function renderObBook(marketId, el){
     }).join("");
   };
 
+  // Total invertido en shares por lado = q_yes / q_no del mercado
+  // (acumulado de todas las compras de usuarios, sin incluir pools del MM)
+  const m = getMarket(marketId);
+  const totalYesUsd = m ? Math.round((m.qYes||0)*100)/100 : 0;
+  const totalNoUsd  = m ? Math.round((m.qNo||0)*100)/100  : 0;
+  const totalUsd    = Math.round((totalYesUsd + totalNoUsd)*100)/100;
+
   el.innerHTML = `
+    <!-- Totales invertidos en shares por lado -->
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:10px">
+      <div style="background:rgba(0,168,112,.07);border:1px solid rgba(0,168,112,.2);
+          border-radius:8px;padding:6px 10px;text-align:center">
+        <div style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;margin-bottom:2px">Invertido SÍ</div>
+        <div style="font-size:14px;font-weight:800;color:var(--yes)">${usd(totalYesUsd)}</div>
+      </div>
+      <div style="background:var(--card2);border:1px solid var(--border);
+          border-radius:8px;padding:6px 10px;text-align:center">
+        <div style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;margin-bottom:2px">Total en shares</div>
+        <div style="font-size:14px;font-weight:800;color:var(--text)">${usd(totalUsd)}</div>
+      </div>
+      <div style="background:rgba(224,40,74,.07);border:1px solid rgba(224,40,74,.2);
+          border-radius:8px;padding:6px 10px;text-align:center">
+        <div style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;margin-bottom:2px">Invertido NO</div>
+        <div style="font-size:14px;font-weight:800;color:var(--no)">${usd(totalNoUsd)}</div>
+      </div>
+    </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;min-width:0;overflow:hidden">
       <div>
         <div style="display:flex;justify-content:space-between;margin-bottom:6px">
@@ -5145,7 +5178,14 @@ async function renderObTrades(marketId, el){
     const isMMContract = String(c.yes_user_id)===adminId || String(c.no_user_id)===adminId;
     const ago = timeAgo(c.updated_at || c.created_at);
 
-    return `<div style="display:grid;grid-template-columns:65px 65px 60px 60px 1fr 40px;
+    // Precio que pagó cada lado (precio de compra, no precio de mercado)
+    // La suma yes_price + no_price puede no ser exactamente 1.00 cuando
+    // el MM vendió con ganancia (el comprador pagó más caro que el MM)
+    // Eso es correcto — el exceso ya fue a spread_pool
+    const sumPrices = Math.round((c.yes_price + c.no_price)*1000)/10;
+    const sumColor  = sumPrices > 101 ? "var(--no)" : sumPrices < 99 ? "var(--muted)" : "var(--yes)";
+
+    return `<div style="display:grid;grid-template-columns:70px 70px 55px 55px 1fr 38px;
         gap:4px;align-items:center;padding:5px 0;border-bottom:1px solid var(--border);font-size:11px">
       <div style="display:flex;flex-direction:column">
         <span style="color:var(--yes);font-weight:700;font-size:10px">SÍ ${pct(c.yes_price)}</span>
@@ -5287,6 +5327,133 @@ function timeAgo(ts){
   if(s<3600) return Math.floor(s/60)+"m";
   if(s<86400) return Math.floor(s/3600)+"h";
   return Math.floor(s/86400)+"d";
+}
+
+async function renderObHistory(marketId, el){
+  // Cargar en paralelo: órdenes filled (historial) + órdenes pendientes (cola)
+  const [filledRes, pendingRes, queueRes] = await Promise.all([
+    db.from("orders")
+      .select("side,price,shares,filled,order_type,is_mm,user_id,created_at,status")
+      .eq("market_id", marketId)
+      .in("status", ["filled","partial"])
+      .eq("is_mm", false)
+      .neq("order_type", "sell")
+      .order("created_at", {ascending: false})
+      .limit(50),
+    db.from("orders")
+      .select("side,price,shares,filled,order_type,is_mm,user_id,created_at,status")
+      .eq("market_id", marketId)
+      .in("status", ["open","partial"])
+      .eq("is_mm", false)
+      .order("created_at", {ascending: true})
+      .limit(20),
+    db.from("order_queue")
+      .select("last_executed,processing")
+      .eq("market_id", marketId)
+      .maybeSingle()
+  ]);
+
+  const filled  = filledRes.data  || [];
+  const pending = pendingRes.data || [];
+  const queue   = queueRes.data;
+
+  const pct2 = v => (Math.round((v||0)*1000)/10).toFixed(1)+"%";
+  const getName = (uid) => {
+    const u = STATE.users.find(x=>String(x.id)===String(uid));
+    return u?.username ? "@"+u.username : "..."+String(uid).slice(-6);
+  };
+
+  // ── Cola de espera ──────────────────────────────────────────────
+  const isProcessing = queue?.processing || false;
+  const lastExec     = queue?.last_executed ? new Date(queue.last_executed) : null;
+  const msSinceExec  = lastExec ? Date.now() - lastExec.getTime() : 9999;
+  const queueBusy    = isProcessing || msSinceExec < 200;
+
+  const queueHtml = `
+    <div style="display:flex;align-items:center;gap:8px;padding:6px 10px;border-radius:8px;
+        margin-bottom:10px;font-size:11px;
+        background:${queueBusy?"rgba(245,158,11,.1)":"rgba(0,168,112,.08)"};
+        border:1px solid ${queueBusy?"rgba(245,158,11,.3)":"rgba(0,168,112,.2)"}">
+      <div style="width:8px;height:8px;border-radius:50%;flex-shrink:0;
+          background:${queueBusy?"#f59e0b":"var(--yes)"};
+          ${queueBusy?"animation:pulse 1s infinite":""}"></div>
+      <div>
+        <span style="font-weight:600;color:${queueBusy?"#f59e0b":"var(--yes)"}">
+          ${queueBusy?"⏳ Procesando orden...":"✅ Cola libre"}
+        </span>
+        ${pending.length>0?`<span style="color:var(--muted);margin-left:6px">${pending.length} orden${pending.length!==1?"es":""} en espera</span>`:""}
+      </div>
+    </div>`;
+
+  // ── Órdenes pendientes (cola visible) ──────────────────────────
+  let pendingHtml = "";
+  if(pending.length > 0){
+    const rows = pending.map((o,i) => {
+      const sh = (o.shares||0) - (o.filled||0);
+      return `<div style="display:grid;grid-template-columns:16px auto 1fr 60px 70px;gap:6px;
+          align-items:center;padding:5px 8px;border-radius:6px;margin-bottom:3px;
+          background:rgba(245,158,11,.06);border:1px solid rgba(245,158,11,.2)">
+        <div style="font-size:9px;font-weight:700;color:#f59e0b;text-align:center">${i+1}</div>
+        <div style="font-size:9px;padding:1px 5px;border-radius:8px;font-weight:600;
+            background:${o.side==="YES"?"rgba(0,168,112,.15)":"rgba(224,40,74,.15)"};
+            color:${o.side==="YES"?"var(--yes)":"var(--no)"}">${o.side==="YES"?"SÍ":"NO"}</div>
+        <div style="font-size:10px;color:var(--muted)">@${escHtml(getName(o.user_id))}</div>
+        <div style="font-size:10px;font-weight:700;color:var(--text);text-align:right">${sh.toFixed(2)} sh</div>
+        <div style="font-size:10px;color:var(--muted);text-align:right">${pct2(o.price)}</div>
+      </div>`;
+    }).join("");
+
+    pendingHtml = `
+      <div style="margin-bottom:12px">
+        <div style="font-size:10px;font-weight:700;color:#f59e0b;text-transform:uppercase;
+            letter-spacing:.5px;margin-bottom:6px">⏳ En cola (${pending.length})</div>
+        ${rows}
+      </div>`;
+  }
+
+  // ── Historial de órdenes ejecutadas ────────────────────────────
+  let historyHtml = "";
+  if(filled.length === 0){
+    historyHtml = `<div style="text-align:center;padding:20px;color:var(--muted);font-size:12px">Sin operaciones ejecutadas aún</div>`;
+  } else {
+    const rows = filled.map(o => {
+      const sh        = o.filled || o.shares || 0;
+      const isPartial = o.status === "partial";
+      const date      = o.created_at
+        ? new Date(o.created_at).toLocaleString("es-CO",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"})
+        : "";
+      return `<div style="display:grid;grid-template-columns:auto 1fr 65px 65px 55px;gap:5px;
+          align-items:center;padding:5px 0;border-bottom:1px solid var(--border);font-size:11px">
+        <div style="font-size:9px;padding:1px 6px;border-radius:8px;font-weight:700;
+            background:${o.side==="YES"?"rgba(0,168,112,.12)":"rgba(224,40,74,.12)"};
+            color:${o.side==="YES"?"var(--yes)":"var(--no)"}">${o.side==="YES"?"SÍ":"NO"}</div>
+        <div style="color:var(--muted);font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+          @${escHtml(getName(o.user_id))}
+          ${isPartial?`<span style="color:#f59e0b;font-size:9px;margin-left:4px">parcial</span>`:""}
+        </div>
+        <div style="font-weight:700;color:var(--text);text-align:right">${sh.toFixed(2)} sh</div>
+        <div style="color:var(--muted);text-align:right">${pct2(o.price)}</div>
+        <div style="color:var(--muted);font-size:9px;text-align:right">${date}</div>
+      </div>`;
+    }).join("");
+
+    historyHtml = `
+      <div>
+        <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;
+            letter-spacing:.5px;margin-bottom:6px">📋 Historial (${filled.length})</div>
+        <div style="display:grid;grid-template-columns:auto 1fr 65px 65px 55px;gap:5px;
+            font-size:9px;font-weight:700;color:var(--muted);text-transform:uppercase;
+            letter-spacing:.3px;padding:2px 0;margin-bottom:4px;border-bottom:1px solid var(--border)">
+          <div>Lado</div><div>Usuario</div>
+          <div style="text-align:right">Shares</div>
+          <div style="text-align:right">Precio</div>
+          <div style="text-align:right">Fecha</div>
+        </div>
+        <div style="max-height:300px;overflow-y:auto;scrollbar-width:thin">${rows}</div>
+      </div>`;
+  }
+
+  el.innerHTML = queueHtml + pendingHtml + historyHtml;
 }
 
 function startObRefresh(marketId){
