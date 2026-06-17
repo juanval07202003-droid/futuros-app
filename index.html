@@ -5330,18 +5330,33 @@ function timeAgo(ts){
 }
 
 async function renderObHistory(marketId, el){
-  // Cargar en paralelo: órdenes filled (historial) + órdenes pendientes (cola)
-  const [filledRes, pendingRes, queueRes] = await Promise.all([
+  // Fuentes de datos:
+  // - Trades ejecutados: órdenes 'mm' filled del MM = cada contraparte absorbida = un trade real
+  //   (el RPC no siempre guarda orden del usuario, pero siempre guarda la del MM)
+  // - Órdenes pending: órdenes 'limit' open/partial de usuarios = esperando en cola
+  const [mmFilledRes, userFilledRes, pendingRes, queueRes] = await Promise.all([
+    // Contrapartes del MM (cada una = un trade de usuario ejecutado)
     db.from("orders")
-      .select("side,price,shares,filled,order_type,is_mm,user_id,created_at,status")
+      .select("side,price,shares,filled,user_id,created_at")
       .eq("market_id", marketId)
-      .in("status", ["filled","partial"])
+      .eq("is_mm", true)
+      .eq("order_type", "mm")
+      .eq("status", "filled")
+      .is("mm_order_id", null)
+      .order("created_at", {ascending: false})
+      .limit(40),
+    // Órdenes de usuarios que sí quedaron guardadas (parciales o limit)
+    db.from("orders")
+      .select("side,price,shares,filled,user_id,created_at,status")
+      .eq("market_id", marketId)
       .eq("is_mm", false)
+      .in("status", ["filled","partial"])
       .neq("order_type", "sell")
       .order("created_at", {ascending: false})
-      .limit(50),
+      .limit(40),
+    // Cola pendiente
     db.from("orders")
-      .select("side,price,shares,filled,order_type,is_mm,user_id,created_at,status")
+      .select("side,price,shares,filled,user_id,created_at,status")
       .eq("market_id", marketId)
       .in("status", ["open","partial"])
       .eq("is_mm", false)
@@ -5353,7 +5368,33 @@ async function renderObHistory(marketId, el){
       .maybeSingle()
   ]);
 
-  const filled  = filledRes.data  || [];
+  // Combinar y deduplicar por created_at — la orden MM y la del usuario son del mismo momento
+  const mmTrades   = (mmFilledRes.data   || []).map(o=>({...o, _source:"mm"}));
+  const userTrades = (userFilledRes.data || []).map(o=>({...o, _source:"user"}));
+
+  // El lado del trade para el usuario es el OPUESTO al del MM
+  // Si el MM absorbió NO, el usuario compró SÍ
+  const allTrades = mmTrades.map(o=>({
+    side:    o.side === "YES" ? "NO" : "YES",  // lado del comprador
+    price:   1 - (o.price||0),                 // precio del comprador
+    shares:  o.filled || o.shares || 0,
+    user_id: null,                              // no tenemos el user_id del comprador aquí
+    created_at: o.created_at,
+    _source: "mm"
+  }));
+
+  // Agregar órdenes de usuarios que sí quedaron registradas
+  // Evitar duplicados (mismo timestamp ±1s)
+  for(const u of userTrades){
+    const ts = new Date(u.created_at).getTime();
+    const isDup = allTrades.some(t => Math.abs(new Date(t.created_at).getTime() - ts) < 2000 && t.side === u.side);
+    if(!isDup) allTrades.push({...u, _source:"user"});
+  }
+
+  // Ordenar por fecha descendente
+  allTrades.sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
+
+  const filled  = allTrades;
   const pending = pendingRes.data || [];
   const queue   = queueRes.data;
 
@@ -5417,19 +5458,18 @@ async function renderObHistory(marketId, el){
     historyHtml = `<div style="text-align:center;padding:20px;color:var(--muted);font-size:12px">Sin operaciones ejecutadas aún</div>`;
   } else {
     const rows = filled.map(o => {
-      const sh        = o.filled || o.shares || 0;
-      const isPartial = o.status === "partial";
-      const date      = o.created_at
+      const sh   = o.shares || 0;
+      const date = o.created_at
         ? new Date(o.created_at).toLocaleString("es-CO",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"})
         : "";
+      const userLabel = o.user_id ? "@"+escHtml(getName(o.user_id)) : "vía MM";
       return `<div style="display:grid;grid-template-columns:auto 1fr 65px 65px 55px;gap:5px;
           align-items:center;padding:5px 0;border-bottom:1px solid var(--border);font-size:11px">
         <div style="font-size:9px;padding:1px 6px;border-radius:8px;font-weight:700;
             background:${o.side==="YES"?"rgba(0,168,112,.12)":"rgba(224,40,74,.12)"};
             color:${o.side==="YES"?"var(--yes)":"var(--no)"}">${o.side==="YES"?"SÍ":"NO"}</div>
         <div style="color:var(--muted);font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-          @${escHtml(getName(o.user_id))}
-          ${isPartial?`<span style="color:#f59e0b;font-size:9px;margin-left:4px">parcial</span>`:""}
+          ${userLabel}
         </div>
         <div style="font-weight:700;color:var(--text);text-align:right">${sh.toFixed(2)} sh</div>
         <div style="color:var(--muted);text-align:right">${pct2(o.price)}</div>
