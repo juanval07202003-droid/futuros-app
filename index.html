@@ -11361,9 +11361,12 @@ async function adminCreateMarket(){
     id: crypto.randomUUID ? crypto.randomUUID() : "m_"+genId(),
     title:f.title, category:f.category, emoji:f.emoji, description:f.description,
     alpha: 0.1,
-    seedLiquidity: totalCost,
-    lpYes: sharesYes,
-    lpNo:  sharesNo,
+    // lpYes/lpNo arrancan en 0 — los fondea EXCLUSIVAMENTE place_mm_order
+    // en el paso 2 (de lo contrario se duplica el capital: una vez aquí
+    // y otra vez dentro del RPC).
+    seedLiquidity: 0,
+    lpYes: 0,
+    lpNo:  0,
     qYes: 0.01,
     qNo:  0.01,
     totalVolume:0, spreadPool:0, totalPaid:0,
@@ -11415,6 +11418,17 @@ async function adminCreateMarket(){
   if(errNo || mmNo?.error){
     mmErrors.push("NO: "+(errNo?.message||mmNo?.error));
     console.error("[MM NO Error]", errNo, mmNo);
+  }
+
+  // Registrar el capital seed original (necesario para que match_order
+  // pueda topar la reposición de pool sin exceder el capital inicial).
+  // Solo se setea si AMBAS órdenes MM se crearon correctamente.
+  if(!mmErrors.length){
+    const {error: errSeed} = await db.from("markets").update({
+      seed_lp_yes: sharesYes,
+      seed_lp_no:  sharesNo,
+    }).eq("id", String(m.id));
+    if(errSeed) console.error("[MM Seed] error guardando seed_lp_yes/seed_lp_no:", errSeed.message);
   }
 
   // 3. Sincronizar STATE desde DB (balance real + posiciones reales)
