@@ -9614,6 +9614,79 @@ async function uploadMarketImage(input){
   }
 }
 
+// ── Cambiar/agregar imagen de un mercado YA CREADO, desde el panel
+// de Resolver mercados. A diferencia de uploadMarketImage (que solo
+// guarda en STATE.mkForm durante la creación), esta función persiste
+// directamente en la tabla `markets` y actualiza STATE.markets local.
+async function uploadResolveMarketImage(input, marketId){
+  const file = input.files[0];
+  if(!file) return;
+  const statusId = "resolve-img-status-"+marketId;
+  const status = document.getElementById(statusId);
+  if(status) status.textContent = "⏳ Procesando imagen...";
+
+  try{
+    const img = await new Promise((res,rej)=>{
+      const i = new Image();
+      i.onload = ()=>res(i);
+      i.onerror = rej;
+      i.src = URL.createObjectURL(file);
+    });
+    const MAX = 400;
+    const ratio = Math.min(MAX/img.width, MAX/img.height, 1);
+    const canvas = document.createElement("canvas");
+    canvas.width  = Math.round(img.width  * ratio);
+    canvas.height = Math.round(img.height * ratio);
+    canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise(res=>canvas.toBlob(res,"image/jpeg",0.85));
+    const fileName = `markets/${Date.now()}_${Math.random().toString(36).slice(2,8)}.jpg`;
+
+    let newUrl = null;
+    try{
+      const {error} = await db.storage
+        .from("market-images")
+        .upload(fileName, blob, {contentType:"image/jpeg", upsert:false});
+      if(error) throw error;
+      const {data:{publicUrl}} = db.storage.from("market-images").getPublicUrl(fileName);
+      newUrl = publicUrl;
+    }catch(storageErr){
+      console.warn("Storage no disponible, usando base64:", storageErr?.message);
+      newUrl = await new Promise(res=>{
+        const reader = new FileReader();
+        reader.onload = e=>res(e.target.result);
+        reader.readAsDataURL(blob);
+      });
+    }
+
+    const {error: dbErr} = await db.from("markets")
+      .update({image_url: newUrl})
+      .eq("id", marketId);
+    if(dbErr) throw dbErr;
+
+    const mi = STATE.markets.findIndex(m=>m.id===marketId);
+    if(mi>=0) STATE.markets[mi] = {...STATE.markets[mi], imageUrl: newUrl};
+
+    if(status) status.textContent = "✅ Imagen actualizada";
+    render();
+  }catch(e){
+    if(status) status.textContent = "❌ Error: "+(e?.message||e);
+    console.error("uploadResolveMarketImage:",e);
+  }
+}
+
+async function removeResolveMarketImage(marketId){
+  try{
+    const {error} = await db.from("markets").update({image_url:null}).eq("id", marketId);
+    if(error){ notify("Error quitando imagen: "+error.message, "error"); return; }
+    const mi = STATE.markets.findIndex(m=>m.id===marketId);
+    if(mi>=0) STATE.markets[mi] = {...STATE.markets[mi], imageUrl:null};
+    notify("Imagen eliminada");
+    render();
+  }catch(e){
+    notify("Error: "+(e?.message||e), "error");
+  }
+}
+
 function renderOracleConfigHint(){
   const type = STATE.mkForm.oracleType;
   const hint = document.getElementById("oracle-hint");
@@ -9834,6 +9907,24 @@ function renderAdminResolve(){
             <span>Tick: ${tickSize}</span>
             <span>${timeLeft(m.closesAt)}</span>
             ${oracleTag}
+          </div>
+
+          <!-- Imagen del mercado: cambiar o agregar si no se puso al crear -->
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;background:var(--card2);border:1px solid var(--border);border-radius:10px;padding:8px 10px">
+            ${m.imageUrl
+              ? `<img src="${escHtml(m.imageUrl)}" style="width:40px;height:40px;object-fit:cover;border-radius:8px;border:1px solid var(--border);flex-shrink:0"/>`
+              : `<div style="width:40px;height:40px;border-radius:8px;border:2px dashed var(--border);display:flex;align-items:center;justify-content:center;flex-shrink:0;color:var(--muted);font-size:16px">📷</div>`}
+            <div style="flex:1;min-width:0;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+              <input type="file" id="resolve-image-input-${m.id}" accept="image/*" style="display:none"
+                onchange="uploadResolveMarketImage(this,'${m.id}')"/>
+              <button class="btn-ghost" style="font-size:11px;padding:5px 10px"
+                onclick="document.getElementById('resolve-image-input-${m.id}').click()">
+                ${m.imageUrl ? "Cambiar imagen" : "📷 Agregar imagen"}
+              </button>
+              ${m.imageUrl ? `<button class="btn-ghost" style="font-size:11px;padding:5px 10px;color:var(--no);border-color:var(--no)"
+                onclick="removeResolveMarketImage('${m.id}')">Quitar</button>` : ""}
+              <span id="resolve-img-status-${m.id}" style="font-size:11px;color:var(--muted)"></span>
+            </div>
           </div>
 
           <!-- Bloque 1: Pool del mercado -->
