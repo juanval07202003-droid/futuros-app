@@ -9875,24 +9875,46 @@ function renderAdminResolve(){
     const mmWinSharesIfYes = Math.round(mmSharesYes * 0.98 * 100)/100; // MM tiene SÍ comprometidos
     const mmWinSharesIfNo  = Math.round(mmSharesNo  * 0.98 * 100)/100; // MM tiene NO comprometidos
 
-    // 2% del total cobrado por usuarios ganadores (estimado)
-    // Usuarios con SÍ = poolYes invertido / precio promedio ≈ totalVolume * ratio
-    // Aproximación: 2% sobre el pool del lado ganador (lo que pagaron usuarios)
-    const userWinAmtIfYes = poolYes; // lo que pusieron usuarios en SÍ
-    const userWinAmtIfNo  = poolNo;  // lo que pusieron usuarios en NO
-    const fee2pctIfYes = Math.round(userWinAmtIfYes * 0.02 * 100)/100;
-    const fee2pctIfNo  = Math.round(userWinAmtIfNo  * 0.02 * 100)/100;
+    // Total de shares creados de cada lado = suma de TODAS las posiciones
+    // (usuarios normales + MM), no solo las del MM. Necesario para el
+    // término "shares creados × $0.02" de la fórmula de punto de equilibrio.
+    let totalSharesYesAll = 0, totalSharesNoAll = 0;
+    STATE.users.forEach(u=>{
+      const p = (u.positions||{})[m.id];
+      if(!p) return;
+      totalSharesYesAll += p.YES || 0;
+      totalSharesNoAll  += p.NO  || 0;
+    });
+    totalSharesYesAll = Math.round(totalSharesYesAll * 100)/100;
+    totalSharesNoAll  = Math.round(totalSharesNoAll  * 100)/100;
+
+    // Número de contratos reales = cantidad de shares por lado, que
+    // estructuralmente debería ser igual en ambos lados (cada share SÍ
+    // tiene su contraparte NO en algún contrato). Se usa max() en vez de
+    // sumar ambos lados para NO contar el sobrante de $0.02 por contrato
+    // dos veces — el sobrante es $0.02 por CONTRATO, no por cada lado del
+    // mismo contrato.
+    const totalContracts = Math.max(totalSharesYesAll, totalSharesNoAll);
+
+    // $0.02 por cada contrato creado (sobrante de resolución: el lado
+    // ganador cobra $0.98, el resto queda para el MM/spread_pool).
+    const sharesFee2pct = Math.round(totalContracts * 0.02 * 100)/100;
+    const fee2pctIfYes = sharesFee2pct;
+    const fee2pctIfNo  = sharesFee2pct;
 
     // Fórmula pérdida máxima real:
-    // Si gana SÍ: (spread + shares_SÍ×0.98 + 2%_ganadores_SÍ) - comprometido_NO
-    // Si gana NO: (spread + shares_NO×0.98 + 2%_ganadores_NO) - comprometido_SÍ
+    // Si gana SÍ: (spread + shares_SÍ×0.98 + shares_totales×0.02) - invertido_NO
+    // Si gana NO: (spread + shares_NO×0.98 + shares_totales×0.02) - invertido_SÍ
     const incomeSi = Math.round((spreads + mmWinSharesIfYes + fee2pctIfYes) * 100)/100;
     const incomeNo = Math.round((spreads + mmWinSharesIfNo  + fee2pctIfNo)  * 100)/100;
-    const netIfYes = Math.round((lpTotal + incomeSi - mmCommittedNo)  * 100)/100;
-    const netIfNo  = Math.round((lpTotal + incomeNo - mmCommittedYes) * 100)/100;
+    const netIfYes = Math.round((lpTotal + incomeSi - poolNo)  * 100)/100;
+    const netIfNo  = Math.round((lpTotal + incomeNo - poolYes) * 100)/100;
     // Pérd. máx. real = qué falta para cubrir (negativo = pérdida, positivo = ganancia)
-    const maxLossIfYes = Math.round((incomeSi - mmCommittedNo)  * 100)/100;
-    const maxLossIfNo  = Math.round((incomeNo - mmCommittedYes) * 100)/100;
+    // Resta el TOTAL INVERTIDO por usuarios en el lado perdedor (poolYes/poolNo),
+    // no solo lo comprometido del inventario del MM — así coincide con la spec:
+    // "... - el total invertido en NO/SÍ".
+    const maxLossIfYes = Math.round((incomeSi - poolNo)  * 100)/100;
+    const maxLossIfNo  = Math.round((incomeNo - poolYes) * 100)/100;
 
     return `<div class="card" style="margin-bottom:16px${borderStyle}">
       <div style="display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap">
@@ -10008,12 +10030,12 @@ function renderAdminResolve(){
                 <span style="color:var(--yes)">+${usd(mmWinSharesIfYes)}</span>
               </div>
               <div style="display:flex;justify-content:space-between;margin-bottom:3px">
-                <span style="color:var(--muted)">2% fee ganadores SÍ</span>
+                <span style="color:var(--muted)">Contratos creados (${totalContracts.toFixed(2)}) × $0.02</span>
                 <span style="color:var(--yes)">+${usd(fee2pctIfYes)}</span>
               </div>
               <div style="display:flex;justify-content:space-between;margin-bottom:3px">
-                <span style="color:var(--no)">Comprometido NO → pierde</span>
-                <span style="color:var(--no)">-${usd(mmCommittedNo)}</span>
+                <span style="color:var(--no)">Invertido en NO → pierde</span>
+                <span style="color:var(--no)">-${usd(poolNo)}</span>
               </div>
               <div style="display:flex;justify-content:space-between;margin-bottom:3px;padding-top:4px;border-top:1px dashed rgba(0,168,112,.3)">
                 <span style="font-size:10px;color:var(--muted)">Pérd. máx. real (sin pool devuelto)</span>
@@ -10045,12 +10067,12 @@ function renderAdminResolve(){
                 <span style="color:var(--no)">+${usd(mmWinSharesIfNo)}</span>
               </div>
               <div style="display:flex;justify-content:space-between;margin-bottom:3px">
-                <span style="color:var(--muted)">2% fee ganadores NO</span>
+                <span style="color:var(--muted)">Contratos creados (${totalContracts.toFixed(2)}) × $0.02</span>
                 <span style="color:var(--no)">+${usd(fee2pctIfNo)}</span>
               </div>
               <div style="display:flex;justify-content:space-between;margin-bottom:3px">
-                <span style="color:var(--yes)">Comprometido SÍ → pierde</span>
-                <span style="color:var(--yes)">-${usd(mmCommittedYes)}</span>
+                <span style="color:var(--yes)">Invertido en SÍ → pierde</span>
+                <span style="color:var(--yes)">-${usd(poolYes)}</span>
               </div>
               <div style="display:flex;justify-content:space-between;margin-bottom:3px;padding-top:4px;border-top:1px dashed rgba(224,40,74,.3)">
                 <span style="font-size:10px;color:var(--muted)">Pérd. máx. real (sin pool devuelto)</span>
@@ -10222,6 +10244,21 @@ async function loadAdminPositions(marketId){
   const spreads = mktFresh?.spread_pool || 0;
   const tick    = mktFresh?.tick || 0.01;
   const priceY  = mktFresh?.price_yes || 0.50;
+  const investedYes = mktFresh?.q_yes || 0;  // total invertido por usuarios en SÍ
+  const investedNo  = mktFresh?.q_no  || 0;  // total invertido por usuarios en NO
+
+  // Total de shares creados de cada lado (todos los holders, no solo el MM),
+  // necesario para el término "shares totales × $0.02" de la fórmula.
+  const {data:allPosFresh} = await db.from("positions")
+    .select("yes_shares,no_shares")
+    .eq("market_id", marketId);
+  let totalSharesYesFresh = 0, totalSharesNoFresh = 0;
+  (allPosFresh||[]).forEach(p=>{
+    totalSharesYesFresh += p.yes_shares || 0;
+    totalSharesNoFresh  += p.no_shares  || 0;
+  });
+  totalSharesYesFresh = Math.round(totalSharesYesFresh*100)/100;
+  totalSharesNoFresh  = Math.round(totalSharesNoFresh*100)/100;
 
   // Capital comprometido = seed/2 - pool disponible
   // Capital comprometido = shares reales del MM × precio opuesto
@@ -10237,17 +10274,30 @@ async function loadAdminPositions(marketId){
   const committedYes = Math.round(mmSharesYesFresh * (1-priceYesNow) * 100)/100;
   const committedNo  = Math.round(mmSharesNoFresh  * priceYesNow     * 100)/100;
 
-  // Break-even: volumen necesario para cubrir la pérdida máxima
-  // Ingresos del MM = 2% spread entrada + 2% fee resolución lado ganador
-  // = 2% × vol_total + 2% × vol_total = 4% × vol_total
-  // Para cubrir pérdida: 0.04 × vol = maxLoss → vol = maxLoss / 0.04
-  const maxLoss       = Math.max(committedYes, committedNo);  // peor caso
-  const currentVol    = (mktFresh?.q_yes||0) + (mktFresh?.q_no||0);
-  const spreadsNow    = mktFresh?.spread_pool || 0;
-  // Ingresos actuales: spreads ya cobrados + fee resolución estimado (2% del vol)
-  const incomeNow     = Math.round((spreadsNow + currentVol * 0.02) * 100)/100;
-  const breakEvenVol  = maxLoss > 0 ? Math.round(maxLoss / 0.04) : 0;
-  const breakEvenPct  = breakEvenVol > 0 ? Math.min(100, Math.round(incomeNow/maxLoss*100)) : 100;
+  // Punto de equilibrio — POR ESCENARIO (SÍ y NO independientes), no compartido.
+  // Pérdida/ganancia máxima real = la misma fórmula del bloque "Si gana SÍ/NO":
+  //   (spread acumulado + shares_lado_ganador×0.98 + shares_totales×0.02) − invertido_lado_perdedor
+  const mmWinIfYesFresh = Math.round(mmSharesYesFresh * 0.98 * 100)/100;
+  const mmWinIfNoFresh  = Math.round(mmSharesNoFresh  * 0.98 * 100)/100;
+  // Número de contratos reales (max, no suma — ver nota en renderAdminResolve
+  // sobre por qué sumar ambos lados duplicaba el sobrante de $0.02).
+  const totalContractsFresh = Math.max(totalSharesYesFresh, totalSharesNoFresh);
+  const sharesFee2pctFresh = Math.round(totalContractsFresh * 0.02 * 100)/100;
+  const incomeSiFresh = Math.round((spreads + mmWinIfYesFresh + sharesFee2pctFresh) * 100)/100;
+  const incomeNoFresh = Math.round((spreads + mmWinIfNoFresh  + sharesFee2pctFresh) * 100)/100;
+  const maxLossIfYesFresh = Math.round((incomeSiFresh - investedNo)  * 100)/100; // si gana SÍ, se resta lo invertido en NO
+  const maxLossIfNoFresh  = Math.round((incomeNoFresh - investedYes) * 100)/100; // si gana NO, se resta lo invertido en SÍ
+
+  // "Volumen necesario" e "ingresos actuales" se mantienen como referencia
+  // informativa (cuánto volumen adicional se necesitaría para que el
+  // ingreso por comisiones cubra la pérdida, a una tasa combinada de 4%:
+  // 2% de entrada + 2% de resolución del lado ganador).
+  const currentVol    = investedYes + investedNo;
+  const incomeNow     = Math.round((spreads + currentVol * 0.02) * 100)/100;
+  const breakEvenVolYes = maxLossIfYesFresh > 0 ? Math.round(maxLossIfYesFresh / 0.04) : 0;
+  const breakEvenVolNo  = maxLossIfNoFresh  > 0 ? Math.round(maxLossIfNoFresh  / 0.04) : 0;
+  const breakEvenPctYes = maxLossIfYesFresh > 0 ? Math.min(100, Math.round(incomeNow/maxLossIfYesFresh*100)) : 100;
+  const breakEvenPctNo  = maxLossIfNoFresh  > 0 ? Math.min(100, Math.round(incomeNow/maxLossIfNoFresh*100))  : 100;
 
   const mmEl = document.getElementById("mm-committed-"+marketId);
   if(mmEl){
@@ -10334,25 +10384,36 @@ async function loadAdminPositions(marketId){
         </div>
       </div>
 
-      <!-- Break-even -->
+      <!-- Break-even (por escenario, SÍ y NO independientes) -->
       <div style="background:rgba(255,193,7,.06);border:1px solid rgba(255,193,7,.25);border-radius:8px;padding:8px 10px;margin-bottom:8px">
-        <div style="font-size:10px;font-weight:700;color:#b8860b;margin-bottom:6px">📈 Punto de equilibrio (Break-even)</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;font-size:11px">
-          <div>
-            <div style="color:var(--muted);font-size:10px;margin-bottom:1px">Pérdida máxima</div>
-            <div style="font-weight:700;color:var(--no)">-$${maxLoss.toFixed(2)}</div>
+        <div style="font-size:10px;font-weight:700;color:#b8860b;margin-bottom:8px">📈 Punto de equilibrio (Break-even)</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <!-- Si gana SÍ -->
+          <div style="border:1px solid rgba(0,168,112,.25);border-radius:8px;padding:8px">
+            <div style="font-size:10px;font-weight:700;color:var(--yes);margin-bottom:6px">✅ Si gana SÍ</div>
+            <div style="font-size:10px;color:var(--muted);margin-bottom:1px">Pérd./Ganancia máxima</div>
+            <div style="font-weight:700;color:${maxLossIfYesFresh>=0?'var(--yes)':'var(--no)'};margin-bottom:6px">
+              ${maxLossIfYesFresh>=0?'+':''}$${maxLossIfYesFresh.toFixed(2)}
+            </div>
+            <div style="font-size:10px;color:var(--muted);margin-bottom:1px">Progreso actual</div>
+            <div style="font-weight:700;color:${breakEvenPctYes>=100?"var(--yes)":"var(--text)"}">${breakEvenPctYes}%</div>
+            <div style="font-size:9px;color:var(--muted);margin-bottom:3px">Ingresos: $${incomeNow.toFixed(2)} ${maxLossIfYesFresh>0?`· faltan $${breakEvenVolYes.toLocaleString()} vol.`:''}</div>
+            <div style="height:5px;background:var(--border);border-radius:2px">
+              <div style="height:5px;background:${breakEvenPctYes>=100?"var(--yes)":"#b8860b"};border-radius:2px;width:${Math.min(100,breakEvenPctYes)}%"></div>
+            </div>
           </div>
-          <div>
-            <div style="color:var(--muted);font-size:10px;margin-bottom:1px">Volumen necesario</div>
-            <div style="font-weight:700;color:#b8860b">$${breakEvenVol.toLocaleString()}</div>
-            <div style="font-size:9px;color:var(--muted)">2% entrada + 2% resolución</div>
-          </div>
-          <div>
-            <div style="color:var(--muted);font-size:10px;margin-bottom:1px">Progreso actual</div>
-            <div style="font-weight:700;color:${breakEvenPct>=100?"var(--yes)":"var(--text)"}">${breakEvenPct}%</div>
-            <div style="font-size:9px;color:var(--muted)">Ingresos: $${incomeNow.toFixed(2)}</div>
-            <div style="height:4px;background:var(--border);border-radius:2px;margin-top:3px">
-              <div style="height:4px;background:${breakEvenPct>=100?"var(--yes)":"#b8860b"};border-radius:2px;width:${Math.min(100,breakEvenPct)}%"></div>
+          <!-- Si gana NO -->
+          <div style="border:1px solid rgba(224,40,74,.25);border-radius:8px;padding:8px">
+            <div style="font-size:10px;font-weight:700;color:var(--no);margin-bottom:6px">❌ Si gana NO</div>
+            <div style="font-size:10px;color:var(--muted);margin-bottom:1px">Pérd./Ganancia máxima</div>
+            <div style="font-weight:700;color:${maxLossIfNoFresh>=0?'var(--yes)':'var(--no)'};margin-bottom:6px">
+              ${maxLossIfNoFresh>=0?'+':''}$${maxLossIfNoFresh.toFixed(2)}
+            </div>
+            <div style="font-size:10px;color:var(--muted);margin-bottom:1px">Progreso actual</div>
+            <div style="font-weight:700;color:${breakEvenPctNo>=100?"var(--yes)":"var(--text)"}">${breakEvenPctNo}%</div>
+            <div style="font-size:9px;color:var(--muted);margin-bottom:3px">Ingresos: $${incomeNow.toFixed(2)} ${maxLossIfNoFresh>0?`· faltan $${breakEvenVolNo.toLocaleString()} vol.`:''}</div>
+            <div style="height:5px;background:var(--border);border-radius:2px">
+              <div style="height:5px;background:${breakEvenPctNo>=100?"var(--yes)":"#b8860b"};border-radius:2px;width:${Math.min(100,breakEvenPctNo)}%"></div>
             </div>
           </div>
         </div>
