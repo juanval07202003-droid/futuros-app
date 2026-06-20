@@ -9903,18 +9903,24 @@ function renderAdminResolve(){
     const fee2pctIfNo  = sharesFee2pct;
 
     // Fórmula pérdida máxima real:
-    // Si gana SÍ: (spread + shares_SÍ×0.98 + shares_totales×0.02) - invertido_NO
-    // Si gana NO: (spread + shares_NO×0.98 + shares_totales×0.02) - invertido_SÍ
+    // Si gana SÍ: (spread + shares_SÍ×0.98 + contratos×0.02) - (invertido_NO + comprometido_NO_del_MM)
+    // Si gana NO: (spread + shares_NO×0.98 + contratos×0.02) - (invertido_SÍ + comprometido_SÍ_del_MM)
+    // El MM pierde en DOS frentes del lado contrario: lo que los usuarios
+    // invirtieron directo en ese lado (poolNo/poolYes) Y lo que el MM
+    // mismo tiene comprometido en inventario propio de ese lado
+    // (mmCommittedNo/mmCommittedYes) — ambos deben restarse, no solo uno.
+    const exposureIfYesWins = Math.round((poolNo + mmCommittedNo)  * 100)/100; // todo lo que pierde si gana SÍ
+    const exposureIfNoWins  = Math.round((poolYes + mmCommittedYes) * 100)/100; // todo lo que pierde si gana NO
     const incomeSi = Math.round((spreads + mmWinSharesIfYes + fee2pctIfYes) * 100)/100;
     const incomeNo = Math.round((spreads + mmWinSharesIfNo  + fee2pctIfNo)  * 100)/100;
-    const netIfYes = Math.round((lpTotal + incomeSi - poolNo)  * 100)/100;
-    const netIfNo  = Math.round((lpTotal + incomeNo - poolYes) * 100)/100;
+    const netIfYes = Math.round((lpTotal + incomeSi - exposureIfYesWins)  * 100)/100;
+    const netIfNo  = Math.round((lpTotal + incomeNo - exposureIfNoWins) * 100)/100;
     // Pérd. máx. real = qué falta para cubrir (negativo = pérdida, positivo = ganancia)
-    // Resta el TOTAL INVERTIDO por usuarios en el lado perdedor (poolYes/poolNo),
-    // no solo lo comprometido del inventario del MM — así coincide con la spec:
-    // "... - el total invertido en NO/SÍ".
-    const maxLossIfYes = Math.round((incomeSi - poolNo)  * 100)/100;
-    const maxLossIfNo  = Math.round((incomeNo - poolYes) * 100)/100;
+    // Resta la exposición TOTAL del lado perdedor: lo que invirtieron
+    // usuarios directamente (poolYes/poolNo) MÁS lo que el MM tiene
+    // comprometido en su propio inventario de ese lado (mmCommittedYes/No).
+    const maxLossIfYes = Math.round((incomeSi - exposureIfYesWins) * 100)/100;
+    const maxLossIfNo  = Math.round((incomeNo - exposureIfNoWins) * 100)/100;
 
     return `<div class="card" style="margin-bottom:16px${borderStyle}">
       <div style="display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap">
@@ -10035,7 +10041,7 @@ function renderAdminResolve(){
               </div>
               <div style="display:flex;justify-content:space-between;margin-bottom:3px">
                 <span style="color:var(--no)">Invertido en NO → pierde</span>
-                <span style="color:var(--no)">-${usd(poolNo)}</span>
+                <span style="color:var(--no)">-${usd(exposureIfYesWins)}</span>
               </div>
               <div style="display:flex;justify-content:space-between;margin-bottom:3px;padding-top:4px;border-top:1px dashed rgba(0,168,112,.3)">
                 <span style="font-size:10px;color:var(--muted)">Pérd. máx. real (sin pool devuelto)</span>
@@ -10072,7 +10078,7 @@ function renderAdminResolve(){
               </div>
               <div style="display:flex;justify-content:space-between;margin-bottom:3px">
                 <span style="color:var(--yes)">Invertido en SÍ → pierde</span>
-                <span style="color:var(--yes)">-${usd(poolYes)}</span>
+                <span style="color:var(--yes)">-${usd(exposureIfNoWins)}</span>
               </div>
               <div style="display:flex;justify-content:space-between;margin-bottom:3px;padding-top:4px;border-top:1px dashed rgba(224,40,74,.3)">
                 <span style="font-size:10px;color:var(--muted)">Pérd. máx. real (sin pool devuelto)</span>
@@ -10285,8 +10291,14 @@ async function loadAdminPositions(marketId){
   const sharesFee2pctFresh = Math.round(totalContractsFresh * 0.02 * 100)/100;
   const incomeSiFresh = Math.round((spreads + mmWinIfYesFresh + sharesFee2pctFresh) * 100)/100;
   const incomeNoFresh = Math.round((spreads + mmWinIfNoFresh  + sharesFee2pctFresh) * 100)/100;
-  const maxLossIfYesFresh = Math.round((incomeSiFresh - investedNo)  * 100)/100; // si gana SÍ, se resta lo invertido en NO
-  const maxLossIfNoFresh  = Math.round((incomeNoFresh - investedYes) * 100)/100; // si gana NO, se resta lo invertido en SÍ
+  // Exposición total del lado perdedor = invertido por usuarios + comprometido
+  // por el MM en su propio inventario de ese lado (committedYes/committedNo,
+  // ya calculados arriba). Restar solo lo invertido por usuarios ignoraba la
+  // exposición real del MM cuando tiene shares propias sin revender.
+  const exposureIfYesWinsFresh = Math.round((investedNo  + committedNo)  * 100)/100;
+  const exposureIfNoWinsFresh  = Math.round((investedYes + committedYes) * 100)/100;
+  const maxLossIfYesFresh = Math.round((incomeSiFresh - exposureIfYesWinsFresh) * 100)/100;
+  const maxLossIfNoFresh  = Math.round((incomeNoFresh  - exposureIfNoWinsFresh) * 100)/100;
 
   // "Volumen necesario" e "ingresos actuales" se mantienen como referencia
   // informativa (cuánto volumen adicional se necesitaría para que el
