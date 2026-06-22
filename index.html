@@ -6379,10 +6379,15 @@ async function dbLoadFeed(){
     }
 
     // Cargar transacciones propias + de usuarios seguidos
+    // NOTA: las compras de shares se guardan con type:"trade" (ver
+    // executeInlineTrade/match_order), nunca "buy"/"sell" — ese era el
+    // bug por el que nunca aparecían en el feed. El campo `network`
+    // guarda el marketId directamente, así que no hace falta adivinar
+    // el mercado por fragmento de texto del título.
     const {data:txData, error:txErr} = await db.from("transactions")
       .select("*")
       .in("user_id", allIds)
-      .in("type", ["buy","sell"])
+      .eq("type", "trade")
       .order("created_at",{ascending:false})
       .limit(300);
 
@@ -6391,6 +6396,7 @@ async function dbLoadFeed(){
         id: row.id,
         userId: row.user_id,
         type: row.type,
+        marketId: row.network||null, // network = marketId para tx de tipo "trade"
         amount: Math.abs(Number(row.amount)||0),
         description: row.description||"",
         ts: row.created_at,
@@ -6511,22 +6517,61 @@ function submitComment(marketId){
 async function followTrader(userId){
   const u = getUser(); if(!u) return notify("Inicia sesión primero","error");
   if(userId === u.id) return notify("No puedes seguirte a ti mismo","error");
-  if(STATE.following.includes(userId)){
+
+  const alreadyFollowing = STATE.following.includes(userId);
+  if(alreadyFollowing){
     STATE.following = STATE.following.filter(id=>id!==userId);
     notify("Dejaste de seguir a este trader","info");
   } else {
     STATE.following.push(userId);
     notify("¡Ahora sigues a este trader!","success");
   }
-  // Guardar en localStorage
-  localStorage.setItem("sw_following_"+u.id, JSON.stringify(STATE.following));
-  render();
+  render(); // optimista: refleja el cambio de inmediato
+
+  try{
+    if(alreadyFollowing){
+      const {error} = await db.from("follows")
+        .delete().eq("follower_id", u.id).eq("following_id", userId);
+      if(error) throw error;
+    }else{
+      const {error} = await db.from("follows")
+        .insert({follower_id: u.id, following_id: userId});
+      if(error) throw error;
+    }
+  }catch(e){
+    console.error("[Follow] error guardando en DB:", e?.message||e);
+    // Revertir el cambio optimista si falló en la base de datos
+    if(alreadyFollowing) STATE.following.push(userId);
+    else STATE.following = STATE.following.filter(id=>id!==userId);
+    notify("Error guardando — intenta de nuevo","error");
+    render();
+  }
 }
 
+// ── Carga de "a quién sigo", desde la base de datos (global, no por
+// dispositivo). Usa un cache en memoria (STATE._followingLoadedFor) para
+// no repetir la consulta en cada render — los muchos call-sites
+// síncronos existentes (loadFollowing()) siguen funcionando: la primera
+// vez disparan la carga async y re-renderizan cuando llega; las
+// siguientes veces ya usan STATE.following cacheado.
 function loadFollowing(){
   const u = getUser(); if(!u) return;
-  const saved = localStorage.getItem("sw_following_"+u.id);
-  if(saved) try{ STATE.following = JSON.parse(saved); }catch(e){}
+  if(STATE._followingLoadedFor === u.id) return; // ya cargado para este usuario
+  if(STATE._followingLoading) return; // ya hay una carga en curso
+  STATE._followingLoading = true;
+
+  db.from("follows").select("following_id").eq("follower_id", u.id)
+    .then(({data, error})=>{
+      STATE._followingLoading = false;
+      if(error){ console.error("[Follow] error cargando:", error.message); return; }
+      STATE.following = (data||[]).map(r=>r.following_id);
+      STATE._followingLoadedFor = u.id;
+      render();
+    })
+    .catch(e=>{
+      STATE._followingLoading = false;
+      console.error("[Follow] excepción cargando:", e?.message||e);
+    });
 }
 
 function renderTraderProfile(userId){
@@ -7023,20 +7068,22 @@ function renderFeed(){
   const feedItems = [];
   const allFeedUsers = [u, ...STATE.users.filter(x=>following.includes(x.id)&&x.id!==u.id)];
 
-  // 1. Real transactions from DB (compras y ventas reales)
+  // 1. Real transactions from DB (compras reales de SÍ/NO)
+  // Filtra explícitamente a "propio usuario o alguien que sigues" — la
+  // query de dbLoadFeed ya trae solo esos user_id, pero se revalida aquí
+  // por seguridad ante cualquier cambio futuro en esa función.
+  const followingOrSelfIds = new Set([u.id, ...following]);
   (STATE.feedTransactions||[]).forEach(tx=>{
+    if(!followingOrSelfIds.has(tx.userId)) return;
     const trader = STATE.users.find(x=>x.id===tx.userId);
     if(!trader) return;
-    const isYes = /YES/i.test(tx.description);
-    const isNo  = /\bNO\b/i.test(tx.description);
-    if(!isYes && !isNo) return;
-    const side = isYes ? "YES" : "NO";
-    const market = STATE.markets.find(m=>{
-      const frag = mTitle(m).slice(0,20).toLowerCase();
-      return tx.description.toLowerCase().includes(frag);
-    });
+    // Formato real: "Compra YES $50.00 → 98.00 shares · Título…"
+    const match = tx.description.match(/^Compra\s+(YES|NO)\s+/i);
+    if(!match) return;
+    const side = match[1].toUpperCase();
+    const market = tx.marketId ? getMarket(tx.marketId) : null;
     feedItems.push({
-      type: tx.type==="buy"?"buy":"sell",
+      type: "buy",
       side, trader, market: market||null,
       amount: tx.amount,
       description: tx.description,
@@ -8789,6 +8836,7 @@ async function executeInlineTrade(marketId, side, mode){
 
 function handleLogout(){
   STATE.session=null;STATE.walletConnected=false;STATE.walletAddress=null;
+  STATE.following=[]; STATE._followingLoadedFor=null; STATE._followingLoading=false;
   localStorage.removeItem("sw_session");
   localStorage.removeItem("sw_wallet");
   dbStopRealtime();
