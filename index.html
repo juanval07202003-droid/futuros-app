@@ -1412,6 +1412,8 @@ async function dbLoadPlatformSettings(){
     if(data){
       const row = data.find(r=>r.key==="stw_launch_date");
       STATE.stwLaunchDate = row ? row.value : null;
+      const countRow = data.find(r=>r.key==="stw_notify_count");
+      STATE.stwNotifyCount = countRow ? (parseInt(countRow.value,10)||0) : 0;
     }
   }catch(e){ console.error("[DB] excepción platform_settings:", e?.message||e); }
 }
@@ -2788,7 +2790,7 @@ function render(){
     case"portfolio":app.innerHTML=renderPortfolio();break;
     case"wallet":   app.innerHTML=renderWallet();   break;
     case"admin":    app.innerHTML=renderAdmin();    break;
-    case"bemm":     app.innerHTML=renderBeMM();     startBeMMCountdown(); break;
+    case"bemm":     app.innerHTML=renderBeMM();     startBeMMCountdown(); loadSTWNotifyCount(); break;
     case"terms":    app.innerHTML=renderPolicy("terms");    break;
     case"privacy":  app.innerHTML=renderPolicy("privacy");  break;
     case"cookies":  app.innerHTML=renderPolicy("cookies");  break;
@@ -6833,7 +6835,7 @@ function renderBeMM(){
         </div>
         <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center">
           ${getUser() ? `
-          <a href="https://t.me/statwaves_bot?start=stw_notify" target="_blank" rel="noopener"
+          <a href="https://t.me/stwtoken" target="_blank" rel="noopener" onclick="registerSTWNotifyClick()"
              style="display:inline-flex;align-items:center;gap:8px;padding:12px 22px;
                     background:linear-gradient(135deg,#0088cc,#00aaff);border-radius:12px;
                     color:#fff;font-weight:700;font-size:14px;text-decoration:none;
@@ -6841,6 +6843,10 @@ function renderBeMM(){
             <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.562 8.248l-2.014 9.488c-.145.658-.537.818-1.084.508l-3-2.21-1.447 1.394c-.16.16-.295.295-.605.295l.213-3.053 5.56-5.023c.242-.213-.054-.333-.373-.12l-6.871 4.326-2.962-.924c-.643-.204-.657-.643.136-.953l11.57-4.461c.537-.194 1.006.131.877.733z"/></svg>
             ${en?"🔔 Notify me at STW launch":"🔔 Notifícame en el lanzamiento de STW"}
           </a>
+          <span id="stw-subscriber-count" style="display:inline-flex;align-items:center;gap:6px;background:var(--card2);border:1px solid var(--border);border-radius:20px;padding:6px 14px;font-size:12px;font-weight:700;color:var(--text)">
+            <span style="width:7px;height:7px;border-radius:50%;background:#00aaff;display:inline-block"></span>
+            <span id="stw-subscriber-number">${(STATE.stwNotifyCount||0).toLocaleString()}</span> ${en?"waiting":"esperando"}
+          </span>
           <span style="color:var(--muted);font-size:12px">${en?"Free · No spam · Just the launch alert":"Gratis · Sin spam · Solo la alerta de lanzamiento"}</span>
           ` : `
           <div style="display:flex;flex-direction:column;gap:8px">
@@ -6957,6 +6963,44 @@ function startBeMMCountdown(){
   }
   tick();
   _beMMInterval = setInterval(tick, 1000);
+}
+
+// ── Contador simple de clics en "Notifícame en el lanzamiento de STW" ──
+// Guardado en platform_settings (misma tabla que stw_launch_date) bajo
+// la clave "stw_notify_count". Cada clic suma 1. Se evita que el MISMO
+// usuario sume varias veces marcando localStorage (solo para no inflar
+// con clics repetidos del mismo navegador — el conteo real sigue
+// viviendo en la base de datos, editable desde el panel admin).
+async function loadSTWNotifyCount(){
+  try{
+    const {data} = await db.from("platform_settings").select("value").eq("key","stw_notify_count").maybeSingle();
+    STATE.stwNotifyCount = data ? (parseInt(data.value,10)||0) : 0;
+  }catch(e){
+    console.warn("[STW Notify Count] error cargando:", e?.message||e);
+    STATE.stwNotifyCount = STATE.stwNotifyCount || 0;
+  }
+  const el = document.getElementById("stw-subscriber-number");
+  if(el) el.textContent = (STATE.stwNotifyCount||0).toLocaleString();
+}
+
+async function registerSTWNotifyClick(){
+  // Evitar que un mismo navegador infle el contador con clics repetidos.
+  let already = false;
+  try{ already = localStorage.getItem("stw_notify_clicked") === "1"; }catch(e){}
+  if(already) return;
+  try{ localStorage.setItem("stw_notify_clicked","1"); }catch(e){}
+
+  const newCount = (STATE.stwNotifyCount||0) + 1;
+  STATE.stwNotifyCount = newCount;
+  const el = document.getElementById("stw-subscriber-number");
+  if(el) el.textContent = newCount.toLocaleString();
+
+  try{
+    await db.from("platform_settings")
+      .upsert({key:"stw_notify_count", value:String(newCount), updated_at:new Date().toISOString()}, {onConflict:"key"});
+  }catch(e){
+    console.warn("[STW Notify Count] error guardando:", e?.message||e);
+  }
 }
 
 function renderFeed(){
@@ -9022,7 +9066,31 @@ function renderAdminSTW(){
         </div>
       </div>
     </div>
+
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px;margin-top:16px">
+      <div style="font-weight:700;font-size:13px;margin-bottom:10px">🔔 Contador "Notifícame en el lanzamiento"</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:12px">
+        Suma 1 automáticamente cada vez que alguien hace clic en el botón de la página "Be MM".
+        Puedes editarlo manualmente aquí si necesitas ajustarlo.
+      </div>
+      <div style="display:flex;gap:10px;align-items:center">
+        <input type="number" id="stw-notify-count-input" value="${STATE.stwNotifyCount||0}" min="0" step="1"
+          style="width:140px;padding:10px 12px;border-radius:8px;border:1px solid var(--border);background:var(--card2);color:var(--text);font-size:15px;font-weight:700"/>
+        <button class="btn-green" style="padding:10px 20px" onclick="saveSTWNotifyCount()">Guardar</button>
+        <span style="font-size:12px;color:var(--muted)">Actual: <strong>${(STATE.stwNotifyCount||0).toLocaleString()}</strong></span>
+      </div>
+    </div>
   </div>`;
+}
+
+async function saveSTWNotifyCount(){
+  const val = parseInt(document.getElementById("stw-notify-count-input")?.value, 10);
+  if(isNaN(val) || val < 0){ notify("Ingresa un número válido","error"); return; }
+  const ok = await dbSetPlatformSetting("stw_notify_count", String(val));
+  if(!ok){ notify("Error guardando el contador — revisa la consola","error"); return; }
+  STATE.stwNotifyCount = val;
+  notify("✅ Contador actualizado a "+val.toLocaleString());
+  render();
 }
 
 async function saveSTWLaunchDate(){
