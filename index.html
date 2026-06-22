@@ -9184,7 +9184,6 @@ function renderAdminStats(){
   }
 
   const stats   = STATE.adminStats     || [];
-  const mktData = STATE.adminMktData   || {};
 
   // ── Métricas de usuarios ──────────────────────────────────────
   const nonAdmin      = stats.filter(s=>s.role!=="admin");
@@ -9199,7 +9198,11 @@ function renderAdminStats(){
   const activeMarkets   = STATE.markets.filter(m=>!m.resolved);
   const resolvedMarkets = STATE.markets.filter(m=>m.resolved);
   const totalVolume     = STATE.markets.reduce((s,m)=>s+(m.totalVolume||0),0);
-  const totalSpread     = STATE.markets.reduce((s,m)=>s+(m.spreadPool||0),0);
+  // Spread acumulado SOLO de mercados aún sin resolver — el de mercados
+  // ya resueltos se acreditó al admin y se reseteó a 0 en `markets`
+  // (queda capturado, en cambio, en STATE.adminRevenue.resolvedMarketsPL,
+  // que viene de las transacciones reales del admin, no de este campo).
+  const activeSpread    = activeMarkets.reduce((s,m)=>s+(m.spreadPool||0),0);
   const totalPaid       = STATE.markets.reduce((s,m)=>s+(m.totalPaid||0),0);
 
   // ── Order Book: Market Cap = valor total de posiciones abiertas ─
@@ -9211,9 +9214,15 @@ function renderAdminStats(){
     return sum + Math.max(0,(m.totalPaid||0)-(m.spreadPool||0));
   },0);
 
-  // ── Utilidad de la plataforma ─────────────────────────────────
-  const spreadRevenue  = totalSpread;
-  const platformProfit = spreadRevenue + (mktData.resolvedProfit||0);
+  // ── Utilidad de la plataforma ──────────────────────────────────────
+  // = spread acumulado en mercados ACTIVOS (todavía no cobrado/acreditado)
+  // + dinero ganado o perdido en mercados YA RESUELTOS (incluye el spread
+  //   de esos mercados, ya que se acredita junto con el resto al resolver)
+  // + comisión del 1% sobre retiros de la plataforma
+  const rev = STATE.adminRevenue || {resolvedMarketsPL:0, withdrawFeeRevenue:0};
+  const resolvedMarketsPL  = rev.resolvedMarketsPL  || 0;
+  const withdrawFeeRevenue = rev.withdrawFeeRevenue || 0;
+  const platformProfit = Math.round((activeSpread + resolvedMarketsPL + withdrawFeeRevenue) * 100)/100;
 
   // ── Liquidez total: suma de LP inicial de todos los mercados ──
   const totalLiquidity = STATE.markets.reduce((s,m)=>s+(m.lpYes||0)+(m.lpNo||0),0);
@@ -9268,10 +9277,16 @@ function renderAdminStats(){
           <div style="font-size:18px;font-weight:900">📊 Dashboard de la Plataforma</div>
           <div style="font-size:12px;color:var(--muted);margin-top:2px">Actualizado: ${new Date().toLocaleString("es-CO",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"})}</div>
         </div>
-        <button class="btn-ghost" style="font-size:12px;padding:7px 14px;flex-shrink:0"
-          onclick="STATE.adminStatsLoaded=false;STATE.adminStats=null;STATE.adminMktData=null;render()">
-          Actualizar
-        </button>
+        <div style="display:flex;gap:8px;flex-shrink:0">
+          <button class="btn-ghost" style="font-size:12px;padding:7px 14px"
+            onclick="STATE.adminStatsLoaded=false;STATE.adminStats=null;STATE.adminMktData=null;render()">
+            Actualizar
+          </button>
+          <button class="btn-ghost" style="font-size:12px;padding:7px 14px;color:var(--no);border-color:var(--no)"
+            onclick="confirmResetPlatformStats()">
+            🗑️ Reiniciar datos
+          </button>
+        </div>
       </div>
 
       <!-- Filtros de período -->
@@ -9316,18 +9331,43 @@ function renderAdminStats(){
       </div>
     </div>
 
+    ${section("💼 Utilidad de la plataforma","var(--yes)")}
+    <div class="card" style="padding:16px 18px;margin-bottom:14px;background:var(--yes-bg);border-color:rgba(0,168,112,.3)">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px">
+        <span style="font-size:12px;font-weight:700;color:var(--muted)">Utilidad total</span>
+        <span style="font-size:26px;font-weight:900;color:var(--yes)">${usd(platformProfit)}</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:12px;padding:4px 0;border-top:1px solid rgba(0,168,112,.15)">
+        <span style="color:var(--muted)">📈 Mercados resueltos (ganancia/pérdida neta)</span>
+        <span style="font-weight:700;color:${resolvedMarketsPL>=0?'var(--yes)':'var(--no)'}">${resolvedMarketsPL>=0?'+':''}${usd(resolvedMarketsPL)}</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:12px;padding:4px 0">
+        <span style="color:var(--muted)">💵 Spreads en mercados activos (aún no cobrados)</span>
+        <span style="font-weight:700;color:var(--yes)">+${usd(activeSpread)}</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:12px;padding:4px 0">
+        <span style="color:var(--muted)">🏦 Comisión 1% sobre retiros</span>
+        <span style="font-weight:700;color:var(--yes)">+${usd(withdrawFeeRevenue)}</span>
+      </div>
+    </div>
+
     ${section("Finanzas de la plataforma","var(--yes)")}
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:8px">
-      ${statCard("Utilidad (spread)", usd(spreadRevenue), "Fee 3% cobrado en trades", "var(--yes)", "💵")}
       ${statCard("Dinero en mercados", usd(marketCap), "totalPaid - spreadPool activos", "var(--accent)", "↑")}
       ${statCard("LP total invertido", usd(totalLiquidity), "Tu liquidez en todos los mercados", "var(--no)", "🏊")}
-      ${statCard("Liquidez pool total", usd(totalLiquidity+totalSpread), "LP + fees acumulados", "var(--gold)", "🏦")}
+      ${statCard("Liquidez pool total", usd(totalLiquidity+activeSpread), "LP + fees acumulados (activos)", "var(--gold)", "🏦")}
+      ${statCard("Volumen total", usd(totalVolume), "Shares comprados/vendidos", "var(--text)", "≡")}
     </div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px">
-      ${statCard("Volumen total", usd(totalVolume), "Shares comprados/vendidos", "var(--text)", "≡")}
       ${statCard("Total recibido", usd(totalPaid), "Dinero real invertido", "var(--accent)", "💳")}
       ${statCard("Salud financiera", healthRatio+"%", "Saldo usuarios / Total depositado", Number(healthRatio)>=90?"var(--yes)":"var(--gold)", "❤️")}
       ${statCard("Mercados activos", activeMarkets.length+"", resolvedMarkets.length+" resueltos", "var(--text)", "◎")}
+    </div>
+
+    ${section("💰 Origen del dinero en la plataforma","var(--accent)")}
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px">
+      ${statCard("Ingresos por criptomoneda", usd(rev.cryptoDeposits||0), "Depósitos reales (Polygon/Solana)", "var(--yes)", "🪙")}
+      ${statCard("Agregado por admin", usd(rev.adminAdded||0), "Ajustes y créditos manuales", "var(--gold)", "🛠️")}
     </div>
 
     ${section("👥 Usuarios","var(--accent)")}
@@ -9371,6 +9411,46 @@ function renderAdminStats(){
   </div>`;
 }
 
+// ── Reiniciar estadísticas de la plataforma ─────────────────────────
+// Borra el HISTORIAL de transacciones (deposit/withdraw/adjustment) que
+// alimenta el dashboard, dejándolo en cero. NO toca los balances actuales
+// de los usuarios ni sus posiciones — solo el historial usado para
+// calcular ingresos por cripto, dinero agregado por admin, P&L, etc.
+// Acción irreversible: pide confirmación escrita, no solo un clic.
+function confirmResetPlatformStats(){
+  const word = prompt(
+    "⚠️ Esto borrará TODO el historial de transacciones (depósitos, retiros, ajustes) " +
+    "usado para calcular las estadísticas. Los balances actuales de los usuarios NO se modifican.\n\n" +
+    "Esta acción no se puede deshacer.\n\n" +
+    "Escribe REINICIAR para confirmar:"
+  );
+  if(word !== "REINICIAR"){
+    if(word !== null) notify("Cancelado — no se escribió REINICIAR exactamente","info");
+    return;
+  }
+  resetPlatformStats();
+}
+
+async function resetPlatformStats(){
+  if(!isAdmin()) return notify("Sin permisos","error");
+  const {data:adminDb} = await db.from("users").select("role").eq("id",STATE.session).maybeSingle();
+  if(adminDb?.role !== "admin") return notify("Sin permisos (DB)","error");
+
+  try{
+    const {error} = await db.from("transactions").delete().neq("id","__never_matches__");
+    if(error){ notify("Error reiniciando: "+error.message,"error"); return; }
+
+    STATE.adminStatsLoaded = false;
+    STATE.adminStats       = null;
+    STATE.adminMktData     = null;
+    STATE.adminRevenue     = null;
+    notify("✅ Historial de transacciones reiniciado — balances de usuarios intactos");
+    render();
+  }catch(e){
+    notify("Error: "+(e?.message||e),"error");
+  }
+}
+
 function getStatsDateRange(){
   const filter = STATE.statsFilter;
   const now = new Date();
@@ -9384,25 +9464,60 @@ function getStatsDateRange(){
   return {from, to};
 }
 
+// Prefijos de descripción usados por movimientos INTERNOS DEL SISTEMA
+// (resoluciones de mercado, devoluciones, créditos de spread) — estos
+// NUNCA deben contarse como "depósito real" ni "dinero añadido por admin",
+// porque son redistribución de dinero que ya estaba dentro de la plataforma.
+const SYSTEM_TX_PREFIXES = ["✅", "💰", "♻️", "Devolución retiro rechazado"];
+function isSystemTx(description){
+  const d = (description||"").trim();
+  return SYSTEM_TX_PREFIXES.some(p=>d.startsWith(p));
+}
+// Redes que representan una transacción cripto real on-chain.
+const CRYPTO_NETWORKS = ["polygon","solana","matic","sol","eth","ethereum"];
+
 async function loadAdminStats(){
   try{
     const {from, to} = getStatsDateRange();
 
     // Build query with optional date filter
     let q = db.from("transactions")
-      .select("user_id,type,amount,status,created_at")
+      .select("user_id,type,amount,status,network,description,created_at")
       .eq("status","confirmed")
       .lte("created_at", to.toISOString());
     if(from) q = q.gte("created_at", from.toISOString());
     const {data:txs} = await q;
 
+    const adminUser = STATE.users.find(u=>u.role==="admin");
+    const adminId   = adminUser ? String(adminUser.id) : null;
+
     const stats = [];
+    let cryptoDepositsTotal = 0; // dinero real que entró por cripto
+    let adminAddedTotal     = 0; // dinero que el admin agregó manualmente (sin cripto real)
+
     for(const user of STATE.users.filter(u=>u.role!=="admin")){
       const userTxs   = (txs||[]).filter(t=>String(t.user_id)===String(user.id));
-      const deposited = userTxs.filter(t=>t.type==="deposit") .reduce((s,t)=>s+Number(t.amount),0);
-      const withdrawn = userTxs.filter(t=>t.type==="withdraw").reduce((s,t)=>s+Number(t.amount),0);
-      const balance   = user.balance||0;
-      const pnl       = Math.round((balance+withdrawn-deposited)*100)/100;
+
+      // "Depositado" para el ranking de usuario sigue siendo TODO lo que
+      // incrementó su saldo vía depósito (igual que antes, para no romper
+      // el cálculo de P&L por usuario) — la separación cripto/admin se
+      // hace a nivel de PLATAFORMA, abajo.
+      const depositTxs = userTxs.filter(t=>t.type==="deposit" && !isSystemTx(t.description));
+      const deposited  = depositTxs.reduce((s,t)=>s+Number(t.amount),0);
+      const withdrawn  = userTxs.filter(t=>t.type==="withdraw").reduce((s,t)=>s+Number(t.amount),0);
+      const balance    = user.balance||0;
+      const pnl        = Math.round((balance+withdrawn-deposited)*100)/100;
+
+      depositTxs.forEach(t=>{
+        const net = (t.network||"internal").toLowerCase();
+        if(CRYPTO_NETWORKS.includes(net)) cryptoDepositsTotal += Number(t.amount);
+        else adminAddedTotal += Number(t.amount); // network "internal" + no es tx de sistema
+      });
+      // Ajustes manuales de admin (type:"adjustment") también cuentan
+      // como "dinero añadido por admin" cuando son positivos.
+      userTxs.filter(t=>t.type==="adjustment" && Number(t.amount)>0)
+        .forEach(t=>{ adminAddedTotal += Number(t.amount); });
+
       stats.push({
         id:            user.id,
         username:      user.username||user.id.slice(0,8),
@@ -9415,13 +9530,50 @@ async function loadAdminStats(){
         txCount:       userTxs.length,
       });
     }
+
+    // ── Dinero ganado/perdido en mercados resueltos ───────────────────
+    // = todo lo que el ADMIN recibió por transacciones internas del
+    // sistema relacionadas con resolución (✅ pool devuelto/shares
+    // ganadoras, 💰 spreads acreditados) MENOS lo que el admin "perdió"
+    // (shares comprometidas del lado perdedor nunca generan tx, así que
+    // ya están implícitas: si el admin no recibe nada de un mercado
+    // donde tenía capital comprometido, esa pérdida se refleja en que
+    // NO aparece ningún ingreso por ese mercado).
+    const adminSystemTxs = adminId
+      ? (txs||[]).filter(t=>String(t.user_id)===adminId && isSystemTx(t.description))
+      : [];
+    const resolvedMarketsPL = Math.round(
+      adminSystemTxs.reduce((s,t)=>s+Number(t.amount),0) * 100
+    )/100;
+
+    // ── Comisión 1% de retiros ─────────────────────────────────────────
+    // Los retiros descuentan el monto BRUTO del usuario y le entregan el
+    // NETO (bruto - 1%); la diferencia es ingreso de la plataforma. No
+    // hay un campo separado de "fee" en transactions, así que se infiere:
+    // monto retirado por el usuario (bruto) × 1% — ver withdraw_fee en
+    // la sección de retiros del sitio (comisión del 1% documentada).
+    const withdrawTxs = (txs||[]).filter(t=>t.type==="withdraw");
+    const withdrawFeeRevenue = Math.round(
+      withdrawTxs.reduce((s,t)=>s + Number(t.amount) * (0.01/0.99), 0) * 100
+    )/100;
+    // Nota: si `amount` en la tx de retiro ya es el NETO entregado al
+    // usuario (bruto×0.99), el fee = neto × (0.01/0.99). Si tu esquema
+    // guarda el BRUTO en `amount`, ajusta a: amount × 0.01.
+
     STATE.adminStats       = stats;
     STATE.adminStatsLoaded = true;
+    STATE.adminRevenue = {
+      cryptoDeposits:    Math.round(cryptoDepositsTotal*100)/100,
+      adminAdded:        Math.round(adminAddedTotal*100)/100,
+      resolvedMarketsPL: resolvedMarketsPL,
+      withdrawFeeRevenue: withdrawFeeRevenue,
+    };
     render();
   }catch(e){
     console.error("[Stats]",e);
     STATE.adminStatsLoaded = true;
     STATE.adminStats       = [];
+    STATE.adminRevenue     = {cryptoDeposits:0, adminAdded:0, resolvedMarketsPL:0, withdrawFeeRevenue:0};
     render();
   }
 }
@@ -9971,22 +10123,25 @@ function renderAdminResolve(){
     const fee2pctIfNo  = sharesFee2pct;
 
     // Fórmula pérdida máxima real:
-    // Si gana SÍ: (spread + shares_SÍ×0.98 + contratos×0.02) - (invertido_NO + comprometido_NO_del_MM)
-    // Si gana NO: (spread + shares_NO×0.98 + contratos×0.02) - (invertido_SÍ + comprometido_SÍ_del_MM)
-    // El MM pierde en DOS frentes del lado contrario: lo que los usuarios
-    // invirtieron directo en ese lado (poolNo/poolYes) Y lo que el MM
-    // mismo tiene comprometido en inventario propio de ese lado
-    // (mmCommittedNo/mmCommittedYes) — ambos deben restarse, no solo uno.
-    const exposureIfYesWins = Math.round((poolNo + mmCommittedNo)  * 100)/100; // todo lo que pierde si gana SÍ
-    const exposureIfNoWins  = Math.round((poolYes + mmCommittedYes) * 100)/100; // todo lo que pierde si gana NO
+    // Si gana SÍ: (spread + shares_SÍ×0.98 + contratos×0.02) - invertido_por_usuarios_en_NO
+    // Si gana NO: (spread + shares_NO×0.98 + contratos×0.02) - invertido_por_usuarios_en_SÍ
+    //
+    // IMPORTANTE: NO se resta mmCommittedYes/mmCommittedNo (el capital que
+    // el MM ya gastó comprando su propio inventario). Ese gasto YA está
+    // reflejado en que lpTotal es menor que el seed original — restarlo
+    // de nuevo aquí sería contar la misma pérdida dos veces. Lo único que
+    // se resta es el dinero de TERCEROS (usuarios) invertido directamente
+    // en el lado que pierde, porque eso es capital que nunca pasó por la
+    // pool del MM y por tanto no está reflejado en lpTotal.
+    const exposureIfYesWins = poolNo;  // solo lo que invirtieron usuarios en NO
+    const exposureIfNoWins  = poolYes; // solo lo que invirtieron usuarios en SÍ
     const incomeSi = Math.round((spreads + mmWinSharesIfYes + fee2pctIfYes) * 100)/100;
     const incomeNo = Math.round((spreads + mmWinSharesIfNo  + fee2pctIfNo)  * 100)/100;
     const netIfYes = Math.round((lpTotal + incomeSi - exposureIfYesWins)  * 100)/100;
     const netIfNo  = Math.round((lpTotal + incomeNo - exposureIfNoWins) * 100)/100;
     // Pérd. máx. real = qué falta para cubrir (negativo = pérdida, positivo = ganancia)
-    // Resta la exposición TOTAL del lado perdedor: lo que invirtieron
-    // usuarios directamente (poolYes/poolNo) MÁS lo que el MM tiene
-    // comprometido en su propio inventario de ese lado (mmCommittedYes/No).
+    // Resta SOLO lo invertido por usuarios en el lado perdedor — el
+    // capital propio del MM en ese lado ya está descontado de lpTotal.
     const maxLossIfYes = Math.round((incomeSi - exposureIfYesWins) * 100)/100;
     const maxLossIfNo  = Math.round((incomeNo - exposureIfNoWins) * 100)/100;
 
@@ -10359,12 +10514,12 @@ async function loadAdminPositions(marketId){
   const sharesFee2pctFresh = Math.round(totalContractsFresh * 0.02 * 100)/100;
   const incomeSiFresh = Math.round((spreads + mmWinIfYesFresh + sharesFee2pctFresh) * 100)/100;
   const incomeNoFresh = Math.round((spreads + mmWinIfNoFresh  + sharesFee2pctFresh) * 100)/100;
-  // Exposición total del lado perdedor = invertido por usuarios + comprometido
-  // por el MM en su propio inventario de ese lado (committedYes/committedNo,
-  // ya calculados arriba). Restar solo lo invertido por usuarios ignoraba la
-  // exposición real del MM cuando tiene shares propias sin revender.
-  const exposureIfYesWinsFresh = Math.round((investedNo  + committedNo)  * 100)/100;
-  const exposureIfNoWinsFresh  = Math.round((investedYes + committedYes) * 100)/100;
+  // Exposición a restar = SOLO lo invertido por usuarios en el lado
+  // perdedor. El capital propio del MM (committedYes/committedNo) ya
+  // está reflejado en que lpYes/lpNo son menores que el seed original —
+  // restarlo aquí de nuevo sería contar la misma pérdida dos veces.
+  const exposureIfYesWinsFresh = investedNo;  // solo lo invertido por usuarios en NO
+  const exposureIfNoWinsFresh  = investedYes; // solo lo invertido por usuarios en SÍ
   const maxLossIfYesFresh = Math.round((incomeSiFresh - exposureIfYesWinsFresh) * 100)/100;
   const maxLossIfNoFresh  = Math.round((incomeNoFresh  - exposureIfNoWinsFresh) * 100)/100;
 
