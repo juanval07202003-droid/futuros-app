@@ -1220,6 +1220,8 @@ function dbRowToMarket(row){
     description_en: row.description_en||null,
     description: row.description||"",
     seedLiquidity: row.seed_liquidity||100,
+    seedLpYes: row.seed_lp_yes||0,
+    seedLpNo:  row.seed_lp_no||0,
     lpYes: row.lp_yes||0,
     lpNo:  row.lp_no||0,
     qYes: row.q_yes||0,
@@ -10122,26 +10124,28 @@ function renderAdminResolve(){
     const fee2pctIfYes = sharesFee2pct;
     const fee2pctIfNo  = sharesFee2pct;
 
-    // Fórmula pérdida máxima real:
-    // Si gana SÍ: (spread + shares_SÍ×0.98 + contratos×0.02) - invertido_por_usuarios_en_NO
-    // Si gana NO: (spread + shares_NO×0.98 + contratos×0.02) - invertido_por_usuarios_en_SÍ
+    // Fórmula pérdida máxima real — SOLO datos del MM, sin mezclar dinero
+    // de terceros (q_yes/q_no son lo que USUARIOS invirtieron, no el MM):
+    // Si gana SÍ: (spread + shares_SÍ×0.98 + contratos×0.02) - costo_real_MM_en_NO
+    // Si gana NO: (spread + shares_NO×0.98 + contratos×0.02) - costo_real_MM_en_SÍ
     //
-    // IMPORTANTE: NO se resta mmCommittedYes/mmCommittedNo (el capital que
-    // el MM ya gastó comprando su propio inventario). Ese gasto YA está
-    // reflejado en que lpTotal es menor que el seed original — restarlo
-    // de nuevo aquí sería contar la misma pérdida dos veces. Lo único que
-    // se resta es el dinero de TERCEROS (usuarios) invertido directamente
-    // en el lado que pierde, porque eso es capital que nunca pasó por la
-    // pool del MM y por tanto no está reflejado en lpTotal.
-    const exposureIfYesWins = poolNo;  // solo lo que invirtieron usuarios en NO
-    const exposureIfNoWins  = poolYes; // solo lo que invirtieron usuarios en SÍ
+    // costo_real_MM_en_X = seed_lp_X - lp_X_actual → es el dinero que el
+    // MM gastó de su propia pool para comprar el inventario que tiene
+    // ahora en ese lado. Si ese lado pierde, ese dinero no vuelve.
+    // NO se usa q_yes/q_no (eso es dinero de usuarios, no del MM) ni el
+    // precio actual de mercado (eso daría un valor de reposición, no el
+    // costo histórico real).
+    const seedLpYesVal = m.seedLpYes || 0;
+    const seedLpNoVal  = m.seedLpNo  || 0;
+    const mmCostInYes  = Math.max(0, Math.round((seedLpYesVal - lpYes) * 100)/100); // gastado comprando SÍ
+    const mmCostInNo   = Math.max(0, Math.round((seedLpNoVal  - lpNo)  * 100)/100); // gastado comprando NO
+    const exposureIfYesWins = mmCostInNo;  // si gana SÍ, el MM pierde lo que gastó en su inventario NO
+    const exposureIfNoWins  = mmCostInYes; // si gana NO, el MM pierde lo que gastó en su inventario SÍ
     const incomeSi = Math.round((spreads + mmWinSharesIfYes + fee2pctIfYes) * 100)/100;
     const incomeNo = Math.round((spreads + mmWinSharesIfNo  + fee2pctIfNo)  * 100)/100;
     const netIfYes = Math.round((lpTotal + incomeSi - exposureIfYesWins)  * 100)/100;
     const netIfNo  = Math.round((lpTotal + incomeNo - exposureIfNoWins) * 100)/100;
     // Pérd. máx. real = qué falta para cubrir (negativo = pérdida, positivo = ganancia)
-    // Resta SOLO lo invertido por usuarios en el lado perdedor — el
-    // capital propio del MM en ese lado ya está descontado de lpTotal.
     const maxLossIfYes = Math.round((incomeSi - exposureIfYesWins) * 100)/100;
     const maxLossIfNo  = Math.round((incomeNo - exposureIfNoWins) * 100)/100;
 
@@ -10263,7 +10267,7 @@ function renderAdminResolve(){
                 <span style="color:var(--yes)">+${usd(fee2pctIfYes)}</span>
               </div>
               <div style="display:flex;justify-content:space-between;margin-bottom:3px">
-                <span style="color:var(--no)">Invertido en NO → pierde</span>
+                <span style="color:var(--no)">Costo MM en inventario NO → pierde</span>
                 <span style="color:var(--no)">-${usd(exposureIfYesWins)}</span>
               </div>
               <div style="display:flex;justify-content:space-between;margin-bottom:3px;padding-top:4px;border-top:1px dashed rgba(0,168,112,.3)">
@@ -10300,7 +10304,7 @@ function renderAdminResolve(){
                 <span style="color:var(--no)">+${usd(fee2pctIfNo)}</span>
               </div>
               <div style="display:flex;justify-content:space-between;margin-bottom:3px">
-                <span style="color:var(--yes)">Invertido en SÍ → pierde</span>
+                <span style="color:var(--yes)">Costo MM en inventario SÍ → pierde</span>
                 <span style="color:var(--yes)">-${usd(exposureIfNoWins)}</span>
               </div>
               <div style="display:flex;justify-content:space-between;margin-bottom:3px;padding-top:4px;border-top:1px dashed rgba(224,40,74,.3)">
@@ -10444,7 +10448,7 @@ async function loadAdminPositions(marketId){
 
   // Cargar datos frescos del mercado
   const {data:mktFresh} = await db.from("markets")
-    .select("spread_pool,lp_yes,lp_no,seed_liquidity,price_yes,tick,q_yes,q_no")
+    .select("spread_pool,lp_yes,lp_no,seed_liquidity,seed_lp_yes,seed_lp_no,price_yes,tick,q_yes,q_no")
     .eq("id", marketId).maybeSingle();
 
   // Actualizar spread_pool en tiempo real
@@ -10503,36 +10507,41 @@ async function loadAdminPositions(marketId){
   const committedYes = Math.round(mmSharesYesFresh * (1-priceYesNow) * 100)/100;
   const committedNo  = Math.round(mmSharesNoFresh  * priceYesNow     * 100)/100;
 
-  // Punto de equilibrio — POR ESCENARIO (SÍ y NO independientes), no compartido.
-  // Pérdida/ganancia máxima real = la misma fórmula del bloque "Si gana SÍ/NO":
-  //   (spread acumulado + shares_lado_ganador×0.98 + shares_totales×0.02) − invertido_lado_perdedor
-  const mmWinIfYesFresh = Math.round(mmSharesYesFresh * 0.98 * 100)/100;
-  const mmWinIfNoFresh  = Math.round(mmSharesNoFresh  * 0.98 * 100)/100;
-  // Número de contratos reales (max, no suma — ver nota en renderAdminResolve
-  // sobre por qué sumar ambos lados duplicaba el sobrante de $0.02).
+  // ── Punto de equilibrio — fórmula propia, SOLO datos del MM ────────
+  // Si gana SÍ: costo_MM_en_NO − spread_pool − contratos_creados×0.02
+  // Si gana NO: costo_MM_en_SÍ − spread_pool − contratos_creados×0.02
+  //
+  // costo_MM_en_X = seed_lp_X − lp_X_actual (dinero que salió de la pool
+  // del MM para comprar su propio inventario en ese lado — NUNCA se usa
+  // q_yes/q_no, que es dinero de usuarios, no del MM).
+  // El resultado es la pérdida NETA que el MM tiene en este momento si
+  // ese lado gana (positivo = pérdida, negativo = ya está en ganancia).
+  const seedLpYesFresh = mktFresh?.seed_lp_yes || 0;
+  const seedLpNoFresh  = mktFresh?.seed_lp_no  || 0;
+  const mmCostInYesFresh = Math.max(0, Math.round((seedLpYesFresh - lpYes) * 100)/100);
+  const mmCostInNoFresh  = Math.max(0, Math.round((seedLpNoFresh  - lpNo)  * 100)/100);
+  // Número de contratos reales (max, no suma — evita contar el sobrante
+  // de $0.02 dos veces, ya que ambos lados tienen la misma cantidad).
   const totalContractsFresh = Math.max(totalSharesYesFresh, totalSharesNoFresh);
-  const sharesFee2pctFresh = Math.round(totalContractsFresh * 0.02 * 100)/100;
-  const incomeSiFresh = Math.round((spreads + mmWinIfYesFresh + sharesFee2pctFresh) * 100)/100;
-  const incomeNoFresh = Math.round((spreads + mmWinIfNoFresh  + sharesFee2pctFresh) * 100)/100;
-  // Exposición a restar = SOLO lo invertido por usuarios en el lado
-  // perdedor. El capital propio del MM (committedYes/committedNo) ya
-  // está reflejado en que lpYes/lpNo son menores que el seed original —
-  // restarlo aquí de nuevo sería contar la misma pérdida dos veces.
-  const exposureIfYesWinsFresh = investedNo;  // solo lo invertido por usuarios en NO
-  const exposureIfNoWinsFresh  = investedYes; // solo lo invertido por usuarios en SÍ
-  const maxLossIfYesFresh = Math.round((incomeSiFresh - exposureIfYesWinsFresh) * 100)/100;
-  const maxLossIfNoFresh  = Math.round((incomeNoFresh  - exposureIfNoWinsFresh) * 100)/100;
+  const contractsFee2pctFresh = Math.round(totalContractsFresh * 0.02 * 100)/100;
 
-  // "Volumen necesario" e "ingresos actuales" se mantienen como referencia
-  // informativa (cuánto volumen adicional se necesitaría para que el
-  // ingreso por comisiones cubra la pérdida, a una tasa combinada de 4%:
-  // 2% de entrada + 2% de resolución del lado ganador).
+  const breakEvenLossIfYesFresh = Math.round((mmCostInNoFresh - spreads - contractsFee2pctFresh) * 100)/100;
+  const breakEvenLossIfNoFresh  = Math.round((mmCostInYesFresh - spreads - contractsFee2pctFresh) * 100)/100;
+  // Convención de signo: positivo = todavía falta cubrir esa pérdida con
+  // más volumen; negativo o cero = el MM ya está en ganancia neta en ese
+  // escenario (los ingresos ya superan el costo de su inventario).
+  const netResultIfYesFresh = -breakEvenLossIfYesFresh; // para mostrar en pantalla: positivo = ganancia
+  const netResultIfNoFresh  = -breakEvenLossIfNoFresh;
+
+  // Volumen necesario para llegar a $0 (cubrir la pérdida neta) a una
+  // tasa combinada de 4%: 2% de entrada + 2% de resolución del lado
+  // ganador, sobre CADA dólar de volumen nuevo que entre al mercado.
   const currentVol    = investedYes + investedNo;
-  const incomeNow     = Math.round((spreads + currentVol * 0.02) * 100)/100;
-  const breakEvenVolYes = maxLossIfYesFresh > 0 ? Math.round(maxLossIfYesFresh / 0.04) : 0;
-  const breakEvenVolNo  = maxLossIfNoFresh  > 0 ? Math.round(maxLossIfNoFresh  / 0.04) : 0;
-  const breakEvenPctYes = maxLossIfYesFresh > 0 ? Math.min(100, Math.round(incomeNow/maxLossIfYesFresh*100)) : 100;
-  const breakEvenPctNo  = maxLossIfNoFresh  > 0 ? Math.min(100, Math.round(incomeNow/maxLossIfNoFresh*100))  : 100;
+  const incomeNow      = Math.round((spreads + contractsFee2pctFresh) * 100)/100;
+  const breakEvenVolYes = breakEvenLossIfYesFresh > 0 ? Math.round(breakEvenLossIfYesFresh / 0.04) : 0;
+  const breakEvenVolNo  = breakEvenLossIfNoFresh  > 0 ? Math.round(breakEvenLossIfNoFresh  / 0.04) : 0;
+  const breakEvenPctYes = breakEvenLossIfYesFresh > 0 ? Math.min(100, Math.round(incomeNow/(mmCostInNoFresh||1)*100)) : 100;
+  const breakEvenPctNo  = breakEvenLossIfNoFresh  > 0 ? Math.min(100, Math.round(incomeNow/(mmCostInYesFresh||1)*100)) : 100;
 
   const mmEl = document.getElementById("mm-committed-"+marketId);
   if(mmEl){
@@ -10627,12 +10636,12 @@ async function loadAdminPositions(marketId){
           <div style="border:1px solid rgba(0,168,112,.25);border-radius:8px;padding:8px">
             <div style="font-size:10px;font-weight:700;color:var(--yes);margin-bottom:6px">✅ Si gana SÍ</div>
             <div style="font-size:10px;color:var(--muted);margin-bottom:1px">Pérd./Ganancia máxima</div>
-            <div style="font-weight:700;color:${maxLossIfYesFresh>=0?'var(--yes)':'var(--no)'};margin-bottom:6px">
-              ${maxLossIfYesFresh>=0?'+':''}$${maxLossIfYesFresh.toFixed(2)}
+            <div style="font-weight:700;color:${netResultIfYesFresh>=0?'var(--yes)':'var(--no)'};margin-bottom:6px">
+              ${netResultIfYesFresh>=0?'+':''}$${netResultIfYesFresh.toFixed(2)}
             </div>
             <div style="font-size:10px;color:var(--muted);margin-bottom:1px">Progreso actual</div>
             <div style="font-weight:700;color:${breakEvenPctYes>=100?"var(--yes)":"var(--text)"}">${breakEvenPctYes}%</div>
-            <div style="font-size:9px;color:var(--muted);margin-bottom:3px">Ingresos: $${incomeNow.toFixed(2)} ${maxLossIfYesFresh>0?`· faltan $${breakEvenVolYes.toLocaleString()} vol.`:''}</div>
+            <div style="font-size:9px;color:var(--muted);margin-bottom:3px">Ingresos: $${incomeNow.toFixed(2)} ${breakEvenLossIfYesFresh>0?`· faltan $${breakEvenVolYes.toLocaleString()} vol.`:''}</div>
             <div style="height:5px;background:var(--border);border-radius:2px">
               <div style="height:5px;background:${breakEvenPctYes>=100?"var(--yes)":"#b8860b"};border-radius:2px;width:${Math.min(100,breakEvenPctYes)}%"></div>
             </div>
@@ -10641,12 +10650,12 @@ async function loadAdminPositions(marketId){
           <div style="border:1px solid rgba(224,40,74,.25);border-radius:8px;padding:8px">
             <div style="font-size:10px;font-weight:700;color:var(--no);margin-bottom:6px">❌ Si gana NO</div>
             <div style="font-size:10px;color:var(--muted);margin-bottom:1px">Pérd./Ganancia máxima</div>
-            <div style="font-weight:700;color:${maxLossIfNoFresh>=0?'var(--yes)':'var(--no)'};margin-bottom:6px">
-              ${maxLossIfNoFresh>=0?'+':''}$${maxLossIfNoFresh.toFixed(2)}
+            <div style="font-weight:700;color:${netResultIfNoFresh>=0?'var(--yes)':'var(--no)'};margin-bottom:6px">
+              ${netResultIfNoFresh>=0?'+':''}$${netResultIfNoFresh.toFixed(2)}
             </div>
             <div style="font-size:10px;color:var(--muted);margin-bottom:1px">Progreso actual</div>
             <div style="font-weight:700;color:${breakEvenPctNo>=100?"var(--yes)":"var(--text)"}">${breakEvenPctNo}%</div>
-            <div style="font-size:9px;color:var(--muted);margin-bottom:3px">Ingresos: $${incomeNow.toFixed(2)} ${maxLossIfNoFresh>0?`· faltan $${breakEvenVolNo.toLocaleString()} vol.`:''}</div>
+            <div style="font-size:9px;color:var(--muted);margin-bottom:3px">Ingresos: $${incomeNow.toFixed(2)} ${breakEvenLossIfNoFresh>0?`· faltan $${breakEvenVolNo.toLocaleString()} vol.`:''}</div>
             <div style="height:5px;background:var(--border);border-radius:2px">
               <div style="height:5px;background:${breakEvenPctNo>=100?"var(--yes)":"#b8860b"};border-radius:2px;width:${Math.min(100,breakEvenPctNo)}%"></div>
             </div>
