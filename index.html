@@ -10191,9 +10191,18 @@ function renderAdminResolve(){
     const exposureIfNoWins  = mmCostInYes; // si gana NO, el MM pierde lo que gastó en su inventario SÍ
     const incomeSi = Math.round((spreads + mmWinSharesIfYes + fee2pctIfYes) * 100)/100;
     const incomeNo = Math.round((spreads + mmWinSharesIfNo  + fee2pctIfNo)  * 100)/100;
-    const netIfYes = Math.round((lpTotal + incomeSi - exposureIfYesWins)  * 100)/100;
-    const netIfNo  = Math.round((lpTotal + incomeNo - exposureIfNoWins) * 100)/100;
+    // IMPORTANTE: lpTotal = lpYes + lpNo YA es el valor ACTUAL de las pools,
+    // es decir, YA tiene restado lo que el MM gastó comprando su inventario
+    // (mmCostInYes/mmCostInNo). Restar exposureIfYesWins/exposureIfNoWins
+    // aquí de nuevo sería contar ese gasto dos veces — por eso "Neto MM"
+    // no debe restarlo otra vez al calcular cuánto dinero hay que devolver.
+    const netIfYes = Math.round((lpTotal + incomeSi) * 100)/100;
+    const netIfNo  = Math.round((lpTotal + incomeNo) * 100)/100;
     // Pérd. máx. real = qué falta para cubrir (negativo = pérdida, positivo = ganancia)
+    // Esta métrica SÍ resta el costo del inventario, porque mide algo
+    // distinto: cuánto "perdió" el MM en esa porción específica de
+    // inventario, comparado con sus ingresos de ese mercado — no es el
+    // monto a devolver (eso es netIfYes/netIfNo, sin restar de nuevo).
     const maxLossIfYes = Math.round((incomeSi - exposureIfYesWins) * 100)/100;
     const maxLossIfNo  = Math.round((incomeNo - exposureIfNoWins) * 100)/100;
 
