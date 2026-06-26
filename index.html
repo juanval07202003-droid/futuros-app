@@ -2017,6 +2017,7 @@ const STATE={
   marketInvested:{},
   copyTraderView:null,
   following:[],
+  proSelectedMarket: null, // mercado activo dentro del Modo Pro
   replyTo:null,          // {commentId, author} — comentario al que se responde
   mentions:{},           // {userId:[{marketId,commentId,from,text,ts}]} — menciones recibidas
   feedTransactions:[],
@@ -2766,7 +2767,7 @@ function render(){
   const app=document.getElementById("app");
   const footer=document.getElementById("site-footer");
   const policyViews=["terms","privacy","cookies","risks","aml","responsible"];
-  if(footer){footer.style.display=(STATE.view==="admin"||STATE.view==="market")?"none":"block";}
+  if(footer){footer.style.display=(STATE.view==="admin"||STATE.view==="market"||STATE.view==="pro")?"none":"block";}
   switch(STATE.view){
     case"home":     app.innerHTML=renderHome();     break;
     case"feed":     app.innerHTML=renderFeed();     dbLoadFeed();
@@ -2793,6 +2794,17 @@ function render(){
       })();
       break;
     case"portfolio":app.innerHTML=renderPortfolio();break;
+    case"pro":      app.innerHTML=renderProPanel();
+      (()=>{
+        const pm = getMarket(STATE.proSelectedMarket);
+        if(pm){
+          setTimeout(()=>{
+            startObRefresh(pm.id);
+            loadOrderBook(pm.id);
+          }, 150);
+        }
+      })();
+      break;
     case"wallet":   app.innerHTML=renderWallet();   break;
     case"admin":    app.innerHTML=renderAdmin();    break;
     case"bemm":     app.innerHTML=renderBeMM();     startBeMMCountdown(); loadSTWNotifyCount(); break;
@@ -2844,6 +2856,7 @@ function renderNav(){
     (u?'<button class="nav-btn'+(vw==="feed"?' active':'')+'" onclick="navigate(\'feed\')">'+t("nav_feed")+'</button>':'')+
     '<button class="nav-btn'+(vw==="portfolio"?' active':'')+'" onclick="navigate(\'portfolio\')">'+t("nav_portfolio")+'</button>'+
     (u?'<button class="nav-btn'+(vw==="wallet"?' active':'')+'" onclick="navigate(\'wallet\')">'+t("nav_wallet")+'</button>':'')+
+    (u?'<button class="nav-btn'+(vw==="pro"?' active':'')+'" onclick="navigate(\'pro\')" title="Panel profesional de trading">📊 Modo Pro</button>':'')+
     '<button class="nav-btn'+(vw==="bemm"?' active':'')+' nav-btn-stw" onclick="navigate(\'bemm\')">🪙 '+t("nav_bemm")+'</button>'+
     (admin?'<button class="nav-btn admin-btn'+(vw==="admin"?' active':'')+'" onclick="navigate(\'admin\')">⚙️ '+t("nav_admin")+'</button>':'');
 
@@ -2868,6 +2881,7 @@ function renderNav(){
         {icon:`<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>`,label:t("nav_feed"),    view:"feed",     fn:"navigate('feed')"},
         {icon:`<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="15" rx="2"/><path d="M16 7V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v2"/><line x1="12" y1="12" x2="12" y2="16"/><line x1="10" y1="14" x2="14" y2="14"/></svg>`,label:t("nav_portfolio"), view:"portfolio",fn:"navigate('portfolio')"},
         {icon:`<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="15" rx="2"/><path d="M2 10h20"/><circle cx="17" cy="15" r="1.5" fill="currentColor" stroke="none"/></svg>`,label:t("nav_wallet"),    view:"wallet",   fn:"navigate('wallet')"},
+        {icon:`<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>`,label:"Pro",    view:"pro",   fn:"navigate('pro')"},
         {icon:`<span style="font-size:12px;font-weight:900;color:#f59e0b;letter-spacing:-1px;line-height:22px;display:block;text-align:center">MM</span>`,label:t("nav_bemm"), view:"bemm", fn:"navigate('bemm')"},
         {icon:`<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>`,label:usd(u.balance),     view:"__dep__",  fn:"openDeposit()"},
         ...(admin?[{icon:`<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>`,label:t("nav_admin"),view:"admin",fn:"navigate('admin')",isAdmin:true}]:[])
@@ -4436,6 +4450,175 @@ async function _authConnectEVM(walletType,provider=window.ethereum){
 }
 
 // ─── MARKET DETAIL ─────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+// MODO PRO — panel de trading estilo MetaTrader con mercados propios
+// Layout: lista de mercados | gráfica + panel de compra | posiciones + libro de órdenes
+// ═══════════════════════════════════════════════════════════════════
+function selectProMarket(marketId){
+  STATE.proSelectedMarket = marketId;
+  stopObRefresh && Object.keys(OB_STATE||{}).forEach(k=>{ if(k!==marketId) stopObRefresh(k); });
+  render();
+  setTimeout(()=>{
+    startObRefresh(marketId);
+    loadOrderBook(marketId);
+  }, 150);
+}
+
+function renderProPanel(){
+  const u = getUser();
+  if(!u){
+    return `<div class="container" style="padding-top:60px;text-align:center">
+      <div style="font-size:40px;margin-bottom:12px">📊</div>
+      <div style="font-weight:800;font-size:18px;margin-bottom:8px">Modo Pro</div>
+      <div style="color:var(--muted);font-size:13px;margin-bottom:20px">Inicia sesión para usar el panel profesional de trading</div>
+      <button class="btn-green" style="padding:10px 24px" onclick="navigate('auth')">Iniciar sesión</button>
+    </div>`;
+  }
+
+  const activeMarkets = STATE.markets.filter(m=>!m.resolved);
+  if(!STATE.proSelectedMarket || !activeMarkets.find(m=>m.id===STATE.proSelectedMarket)){
+    STATE.proSelectedMarket = activeMarkets[0]?.id || null;
+  }
+  const m = getMarket(STATE.proSelectedMarket);
+  const pos = (u.positions||{})[STATE.proSelectedMarket] || {YES:0,NO:0};
+  const tab = STATE.inlineTab?.[STATE.proSelectedMarket] || {side:"YES", mode:"buy"};
+
+  if(!m){
+    return `<div class="container" style="padding-top:60px;text-align:center;color:var(--muted)">
+      No hay mercados activos en este momento
+    </div>`;
+  }
+
+  const pYes = getPrice(m,"YES");
+
+  return `
+  <div style="max-width:1400px;margin:0 auto;padding:14px">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+      <div style="font-size:20px">📊</div>
+      <div style="font-weight:900;font-size:18px">Modo Pro</div>
+      <span style="font-size:11px;color:var(--muted);background:var(--card2);padding:3px 10px;border-radius:20px">Panel de trading profesional</span>
+    </div>
+
+    <div style="display:grid;grid-template-columns:240px 1fr 280px;gap:12px;align-items:stretch">
+
+      <!-- ═══ PANEL 1: Lista de mercados ═══ -->
+      <div class="card" style="padding:0;overflow:hidden;display:flex;flex-direction:column;max-height:760px">
+        <div style="padding:12px 14px;border-bottom:1px solid var(--border);font-weight:700;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px">
+          Mercados (${activeMarkets.length})
+        </div>
+        <div style="overflow-y:auto;flex:1">
+          ${activeMarkets.map(am=>{
+            const active = am.id===STATE.proSelectedMarket;
+            const amPYes = getPrice(am,"YES");
+            const cc = CAT_COLOR[am.category]||"#888";
+            return `<div onclick="selectProMarket('${am.id}')"
+              style="padding:10px 14px;cursor:pointer;border-bottom:1px solid var(--border);
+                background:${active?"var(--card2)":"transparent"};
+                border-left:3px solid ${active?"var(--yes)":"transparent"}">
+              <div style="display:flex;align-items:center;gap:5px;margin-bottom:3px">
+                <span style="width:6px;height:6px;border-radius:50%;background:${cc};flex-shrink:0"></span>
+                <span style="font-size:11px;color:var(--muted)">${am.category}</span>
+              </div>
+              <div style="font-size:12px;font-weight:600;line-height:1.3;margin-bottom:5px;
+                display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">
+                ${escHtml(mTitle(am))}
+              </div>
+              <div style="display:flex;justify-content:space-between;align-items:center">
+                <span style="font-size:13px;font-weight:800;color:var(--yes)">${pct(amPYes)}</span>
+                <span style="font-size:10px;color:var(--muted)">${fmtVol(am.totalVolume)}</span>
+              </div>
+            </div>`;
+          }).join("")}
+        </div>
+      </div>
+
+      <!-- ═══ PANEL 2 (centro): Gráfica + Cuadro de operaciones ═══ -->
+      <div style="display:flex;flex-direction:column;gap:12px;min-width:0">
+
+        <!-- Gráfica -->
+        <div class="card" style="padding:14px">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px;flex-wrap:wrap;gap:8px">
+            <div style="min-width:0;flex:1">
+              <div style="font-weight:800;font-size:14px;margin-bottom:2px;cursor:pointer" onclick="navigate('market',{marketId:'${m.id}'})">
+                ${escHtml(mTitle(m))}
+              </div>
+              <div style="font-size:11px;color:var(--muted)">${m.category} · Cierra ${timeLeft(m.closesAt)}</div>
+            </div>
+            <div style="text-align:right;flex-shrink:0">
+              <div style="font-size:26px;font-weight:900;color:var(--yes);line-height:1">${pct(pYes)}</div>
+              <div style="font-size:10px;color:var(--muted)">probabilidad SÍ</div>
+            </div>
+          </div>
+          ${mkProChartSVG(m.priceHistory, "#00e5a0")}
+        </div>
+
+        <!-- Cuadro de operaciones: libro de órdenes en vivo -->
+        <div class="card" style="padding:0;flex:1;display:flex;flex-direction:column;min-height:300px">
+          <div style="padding:12px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
+            <span style="font-weight:700;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px">📋 Cuadro de operaciones — libro de órdenes en vivo</span>
+            <span style="font-size:10px;color:var(--muted)">● actualiza cada 8s</span>
+          </div>
+          <div id="ob-content-${m.id}" style="padding:14px;flex:1;overflow-y:auto">
+            <div style="text-align:center;color:var(--muted);font-size:12px;padding:30px 0">Cargando libro de órdenes…</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══ PANEL 3 (derecha): Compra/venta + Posiciones ═══ -->
+      <div style="display:flex;flex-direction:column;gap:12px">
+
+        <!-- Panel de compras -->
+        <div class="card" style="padding:14px">
+          <div style="font-weight:700;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin-bottom:10px">💱 Panel de compras</div>
+          <div id="inline-trade-${m.id}">${renderInlineTrade(m, tab.side, tab.mode, u, pos)}</div>
+        </div>
+
+        <!-- Posiciones (del usuario en este mercado) -->
+        <div class="card" style="padding:14px">
+          <div style="font-weight:700;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin-bottom:10px">📌 Mis posiciones</div>
+          ${(pos.YES||0)<=0.001 && (pos.NO||0)<=0.001
+            ? `<div style="text-align:center;color:var(--muted);font-size:12px;padding:14px 0">Sin posiciones en este mercado</div>`
+            : `<div style="display:flex;flex-direction:column;gap:8px">
+                ${(pos.YES||0)>0.001?`<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border-radius:8px;background:var(--yes-bg)">
+                  <div><div style="font-size:11px;color:var(--muted)">SÍ</div><div style="font-weight:700;font-size:13px">${pos.YES.toFixed(2)} sh</div></div>
+                  <div style="text-align:right"><div style="font-size:11px;color:var(--muted)">valor est.</div><div style="font-weight:700;font-size:13px;color:var(--yes)">${usd(calcSellReturn(m,"YES",pos.YES))}</div></div>
+                </div>`:""}
+                ${(pos.NO||0)>0.001?`<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border-radius:8px;background:var(--no-bg)">
+                  <div><div style="font-size:11px;color:var(--muted)">NO</div><div style="font-weight:700;font-size:13px">${pos.NO.toFixed(2)} sh</div></div>
+                  <div style="text-align:right"><div style="font-size:11px;color:var(--muted)">valor est.</div><div style="font-weight:700;font-size:13px;color:var(--no)">${usd(calcSellReturn(m,"NO",pos.NO))}</div></div>
+                </div>`:""}
+              </div>`}
+          <div id="pending-orders-${m.id}" style="margin-top:8px"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Layout móvil: una sola columna -->
+    <style>
+      @media (max-width: 900px){
+        div[style*="grid-template-columns:240px 1fr 280px"]{
+          grid-template-columns: 1fr !important;
+        }
+      }
+    </style>
+  </div>`;
+}
+
+// Gráfico grande para Modo Pro — usa viewBox para escalar correctamente
+// al ancho del panel, a diferencia de mkSparklineSVG (pensado para
+// tarjetas pequeñas con dimensiones fijas en píxeles).
+function mkProChartSVG(history, color="#00e5a0"){
+  if(!history || history.length<2) return `<div style="height:120px;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:12px">Sin datos suficientes</div>`;
+  const W=600, H=120;
+  const mn=Math.min(...history)-0.01, mx=Math.max(...history)+0.01, rng=mx-mn||0.01;
+  const pts=history.map((v,i)=>`${(i/(history.length-1))*W},${H-((v-mn)/rng)*(H-8)-4}`).join(" ");
+  const lastY = H-((history[history.length-1]-mn)/rng)*(H-8)-4;
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:120px;display:block;overflow:visible">
+    <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+    <circle cx="${W}" cy="${lastY.toFixed(1)}" r="3" fill="${color}"/>
+  </svg>`;
+}
+
 function renderMarket(){
   const m=getMarket(STATE.selectedMarket);
   if(!m)return`<div class="container"><p>${t("market_not_found")}</p></div>`;
