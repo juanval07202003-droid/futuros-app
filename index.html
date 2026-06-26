@@ -1123,6 +1123,7 @@ input, select, textarea{
 </footer>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
 <script>
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1925,12 +1926,14 @@ function sharesFromCost_OLD(mkt, side, dollars){
 // ── Retorno de venta anticipada (3% spread) ───────────────────────
 function calcSellReturn(mkt, side, netShares){
   if(netShares <= 0) return 0;
-  const poolYes = Math.max(0.01, mkt.qYes || 1);
-  const poolNo  = Math.max(0.01, mkt.qNo  || 1);
-  const total   = poolYes + poolNo;
-  // CLOB puro: precio fijo al momento de venta, sin price impact
-  const poolSide    = side==="YES" ? poolYes : poolNo;
-  const currentPrice = Math.min(PRICE_MAX, Math.max(PRICE_MIN, poolSide / total));
+  // Usar el precio REAL del mercado (mismo que se muestra en pantalla,
+  // basado en price_yes / ticks) — NO un cálculo aparte basado en
+  // qYes/qNo, que es el ratio de dinero invertido por usuarios y no
+  // coincide con el precio actual mostrado en la interfaz. Esa
+  // discrepancia era la causa de que el preview de venta mostrara un
+  // monto muy distinto al precio real visible (ej. $313.69 a un precio
+  // marcado como 31%, cuando 326.66 shares × 0.31 ≈ $101).
+  const currentPrice = getPrice(mkt, side);
   const gross = netShares * currentPrice;
   return gross * (1 - EARLY_SELL_SPREAD);
 }
@@ -3013,7 +3016,11 @@ function getAutoTrendingIds(){
 
 function renderHome(){
   const en = STATE.lang==="en";
-  const catIds=["Todos","Deportes","Economía","Política","Cultura","Tecnología"];
+  const allCatIds=["Deportes","Economía","Política","Cultura","Tecnología"];
+  // Solo mostrar categorías con AL MENOS un mercado (activo o resuelto) —
+  // una categoría sin ningún mercado se ve poco profesional en la barra.
+  // "Todos" siempre se muestra porque agrupa todas las categorías.
+  const catIds=["Todos", ...allCatIds.filter(c=>STATE.markets.some(m=>m.category===c))];
   const catLabels={Todos:en?"All":"Todos",Deportes:en?"Sports":"Deportes",Economía:en?"Economy":"Economía",Política:en?"Politics":"Política",Cultura:en?"Culture":"Cultura",Tecnología:en?"Tech":"Tecnología"};
   const filtered = STATE.markets.filter(m => {
     let catMatch;
@@ -7600,9 +7607,16 @@ function renderDepositModal(){
 function closeDepositIfBg(e){if(e.target.id==="deposit-overlay")closeDepositModal();}
 
 function renderDepositStep(){
+  if(STATE.depositStep===3){
+    // setTimeout(0): el HTML devuelto aquí todavía no está en el DOM
+    // (el caller hace innerHTML=... después de que esta función retorna),
+    // así que el dibujo del QR se programa para el siguiente tick, una
+    // vez que el contenedor con el id "deposit-qr-*" ya exista.
+    setTimeout(drawDepositQR, 0);
+    return renderDepositStep3();
+  }
   if(STATE.depositStep===1) return renderDepositStep1();
   if(STATE.depositStep===2) return renderDepositStep2();
-  if(STATE.depositStep===3) return renderDepositStep3();
   return"";
 }
 
@@ -7718,6 +7732,26 @@ function renderPolygonStep(amt,token){
   const displayAmt = isPoly
     ? (maticAmt ? maticAmt+" MATIC" : "Cargando precio…")
     : amt.toFixed(2)+" "+token;
+  const qrId = "deposit-qr-"+token;
+  // Para tokens ERC-20 (USDC/USDT) usamos el estándar EIP-681 para pagos:
+  // ethereum:<contrato>@<chainId>/transfer?address=<destino>&uint256=<monto_en_unidades_mínimas>
+  // Esto permite que wallets compatibles (MetaMask Mobile, algunas Trust
+  // Wallet) prellenen automáticamente el token y el monto al escanear,
+  // no solo la dirección. Para MATIC nativo, el estándar es más simple:
+  // ethereum:<destino>@<chainId>?value=<monto_en_wei>
+  const POLYGON_CHAIN_ID = 137;
+  let qrPayload;
+  if(isStable && contractAddr){
+    const decimals = 6; // USDC/USDT en Polygon usan 6 decimales
+    const amountUnits = Math.round(amt * Math.pow(10, decimals));
+    qrPayload = `ethereum:${contractAddr}@${POLYGON_CHAIN_ID}/transfer?address=${addr}&uint256=${amountUnits}`;
+  } else if(isPoly && maticAmt){
+    const amountWei = BigInt(Math.round(parseFloat(maticAmt) * 1e18)).toString();
+    qrPayload = `ethereum:${addr}@${POLYGON_CHAIN_ID}?value=${amountWei}`;
+  } else {
+    qrPayload = addr; // fallback simple: solo la dirección
+  }
+
   return`
   <div>
     <div style="text-align:center;margin-bottom:16px">
@@ -7725,6 +7759,21 @@ function renderPolygonStep(amt,token){
       <div style="font-size:34px;font-weight:900;color:${tokenColor}">${displayAmt}</div>
       <div style="font-size:12px;color:var(--muted)">${t("deposit_receive")} <strong style="color:var(--yes)">${usd(amt)}</strong> ${t("deposit_credits")}</div>
     </div>
+
+    <!-- Código QR — para escanear desde una app de wallet móvil en vez de
+         copiar la dirección manualmente o usar el botón de wallet del navegador -->
+    <div style="display:flex;flex-direction:column;align-items:center;margin-bottom:16px;padding:16px;background:var(--card2);border:1px solid var(--border);border-radius:14px">
+      <div id="${qrId}" data-payload="${escHtml(qrPayload)}" style="width:180px;height:180px;display:flex;align-items:center;justify-content:center;background:#fff;border-radius:10px;padding:8px">
+        <span style="font-size:11px;color:var(--muted)">Generando QR…</span>
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-top:10px;text-align:center;max-width:260px">
+        📱 Escanea con tu app de wallet (Trust Wallet, MetaMask Mobile, Binance, etc.) para autocompletar el envío
+      </div>
+      <button onclick="copyDepositAddress('${addr}')" style="margin-top:8px;background:transparent;border:none;color:var(--accent);font-size:11px;cursor:pointer;text-decoration:underline">
+        Copiar dirección manualmente
+      </button>
+    </div>
+
     <button class="btn-polygon" style="margin-bottom:8px" onclick="sendPolygonDeposit('${token}',${isPoly?(maticAmt||0):amt})" ${isPoly&&!maticAmt?"disabled style='opacity:.5;cursor:not-allowed'":""}>
       <span>⬡</span> ${isPoly&&!maticAmt?"Obteniendo precio…":"Enviar "+displayAmt+" desde mi wallet"}
     </button>
@@ -7767,12 +7816,34 @@ function renderSolanaStep(amt, token){
     ? (solAmt ? solAmt+" SOL" : "Cargando precio…")
     : amt.toFixed(2)+" "+tokenName;
 
+  // Solana Pay: solana:<dirección>?amount=<monto>&spl-token=<mint_del_token>
+  // Para SOL nativo no se incluye spl-token. Wallets compatibles (Phantom,
+  // Solflare) prellenan automáticamente monto y token al escanear.
+  const qrIdSol = "deposit-qr-"+token;
+  let qrPayloadSol = `solana:${addr}`;
+  const qrParams = [];
+  if(isSOL && solAmt) qrParams.push(`amount=${solAmt}`);
+  else if(!isSOL) qrParams.push(`amount=${amt.toFixed(2)}`);
+  if(mintAddr) qrParams.push(`spl-token=${mintAddr}`);
+  if(qrParams.length) qrPayloadSol += "?" + qrParams.join("&");
+
   return`
   <div>
     <div style="text-align:center;margin-bottom:16px">
       <div style="font-size:12px;color:var(--muted);margin-bottom:4px">Envía exactamente</div>
       <div style="font-size:34px;font-weight:900;color:${tokenColor}">${displayAmt}</div>
       <div style="font-size:12px;color:var(--muted)">Recibirás <strong style="color:var(--yes)">$${amt.toFixed(2)}</strong> en tu balance</div>
+    </div>
+
+    <!-- Código QR (estándar Solana Pay) — para escanear desde Phantom,
+         Solflare u otra wallet móvil compatible -->
+    <div style="display:flex;flex-direction:column;align-items:center;margin-bottom:16px;padding:16px;background:var(--card2);border:1px solid var(--border);border-radius:14px">
+      <div id="${qrIdSol}" data-payload="${escHtml(qrPayloadSol)}" style="width:180px;height:180px;display:flex;align-items:center;justify-content:center;background:#fff;border-radius:10px;padding:8px">
+        <span style="font-size:11px;color:var(--muted)">Generando QR…</span>
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-top:10px;text-align:center;max-width:260px">
+        📱 Escanea con Phantom, Solflare u otra wallet de Solana para autocompletar el envío
+      </div>
     </div>
 
     <button class="btn-polygon" style="background:linear-gradient(135deg,#9945ff,#7c3aed);width:100%;margin-bottom:14px" onclick="sendSolanaDeposit('${token}',${amt})" ${isSOL&&!solAmt?"disabled style='opacity:.5;cursor:not-allowed'":""}>
@@ -7813,6 +7884,41 @@ function updateDepositAmountDisplay(){
 }
 function depositNextStep(){if(STATE.depositStep<3){STATE.depositStep++;document.getElementById("deposit-step-content").innerHTML=renderDepositStep();}}
 function depositPrevStep(){if(STATE.depositStep>1){STATE.depositStep--;document.getElementById("deposit-step-content").innerHTML=renderDepositStep();}}
+
+// ── Dibuja el código QR del paso 3 de depósito ──────────────────────
+// Se llama después de insertar el HTML en el DOM (innerHTML no ejecuta
+// dibujo de canvas automáticamente). Usa la librería QRCode (cargada
+// por CDN) para renderizar dentro del div con id que coincide con el
+// patrón "deposit-qr-<token>" generado en renderPolygonStep/renderSolanaStep.
+function drawDepositQR(){
+  const m = STATE.depositMethod;
+  const tokenMap = {polygon:"MATIC", usdc:"USDC", usdt:"USDT", sol:"SOL", "usdc-sol":"USDC-SOL", "usdt-sol":"USDT-SOL"};
+  const token = tokenMap[m] || "MATIC";
+  const qrId = "deposit-qr-"+token;
+  const container = document.getElementById(qrId);
+  if(!container) return;
+  const payload = container.getAttribute("data-payload");
+  if(!payload || typeof QRCode === "undefined"){
+    container.innerHTML = `<span style="font-size:10px;color:var(--no);padding:8px;text-align:center">QR no disponible — usa la dirección de abajo</span>`;
+    return;
+  }
+  container.innerHTML = "";
+  QRCode.toCanvas(payload, {width:164, margin:1, color:{dark:"#000000", light:"#ffffff"}}, (err, canvas)=>{
+    if(err){
+      container.innerHTML = `<span style="font-size:10px;color:var(--no);padding:8px;text-align:center">Error generando QR</span>`;
+      return;
+    }
+    container.appendChild(canvas);
+  });
+}
+
+function copyDepositAddress(addr){
+  navigator.clipboard.writeText(addr).then(()=>{
+    notify("📋 Dirección copiada al portapapeles");
+  }).catch(()=>{
+    notify("No se pudo copiar — selecciona manualmente","error");
+  });
+}
 
 async function sendPolygonDeposit(token, amount){
   // Detectar wallet disponible automáticamente
@@ -10425,9 +10531,9 @@ function renderAdminResolve(){
             ?`<button class="btn-ghost" style="font-size:12px;padding:5px 12px" onclick="adminUnpauseMarket('${m.id}')">▶ Reanudar</button>`
             :`<button class="btn-ghost" style="font-size:12px;padding:5px 12px" onclick="adminPauseMarket('${m.id}')">⏸ Pausar</button>`}
           <button class="btn-green" style="font-size:13px;padding:8px 14px;font-weight:700"
-            onclick="adminResolve('${m.id}','YES')">✅ Resolver SÍ</button>
+            onclick="confirmAdminResolve('${m.id}','YES','${escHtml(m.title).replace(/'/g,"\\'")}','${pct(pYesCurrent)}','${pct(1-pYesCurrent)}','${fmtVol(m.totalVolume)}')">✅ Resolver SÍ</button>
           <button class="btn-red" style="font-size:13px;padding:8px 14px;font-weight:700"
-            onclick="adminResolve('${m.id}','NO')">❌ Resolver NO</button>
+            onclick="confirmAdminResolve('${m.id}','NO','${escHtml(m.title).replace(/'/g,"\\'")}','${pct(pYesCurrent)}','${pct(1-pYesCurrent)}','${fmtVol(m.totalVolume)}')">❌ Resolver NO</button>
         </div>
       </div>
     </div>`;
@@ -12069,6 +12175,50 @@ async function adminCreateMarket(){
   }
   render();
 }
+// ── Confirmación antes de resolver un mercado ───────────────────────
+// Resolver es IRREVERSIBLE: paga a todos los usuarios y cierra el
+// mercado de inmediato. Este modal obliga a ver claramente qué mercado
+// y qué resultado se va a confirmar antes de ejecutar adminResolve.
+function confirmAdminResolve(id, result, title, pYesPct, pNoPct, vol){
+  const existing = document.getElementById("resolve-confirm-overlay");
+  if(existing) existing.remove();
+  const isYes = result === "YES";
+  const color = isYes ? "var(--yes)" : "var(--no)";
+  const resultLabel = isYes ? "SÍ" : "NO";
+  const html = `<div class="overlay" id="resolve-confirm-overlay" onclick="if(event.target.id==='resolve-confirm-overlay')document.getElementById('resolve-confirm-overlay').remove()">
+    <div class="modal" onclick="event.stopPropagation()" style="max-width:420px">
+      <div style="text-align:center;margin-bottom:16px">
+        <div style="font-size:36px;margin-bottom:8px">⚠️</div>
+        <div style="font-weight:900;font-size:17px">Confirmar resolución</div>
+        <div style="font-size:12px;color:var(--muted);margin-top:4px">Esta acción es irreversible y paga a los usuarios de inmediato</div>
+      </div>
+      <div style="background:var(--card2);border:1px solid var(--border);border-radius:12px;padding:14px;margin-bottom:16px">
+        <div style="font-weight:700;font-size:14px;margin-bottom:10px">${title}</div>
+        <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px">
+          <span style="color:var(--muted)">Precio actual</span>
+          <span>SÍ ${pYesPct} · NO ${pNoPct}</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:12px">
+          <span style="color:var(--muted)">Volumen total</span>
+          <span>${vol}</span>
+        </div>
+      </div>
+      <div style="text-align:center;padding:12px;border-radius:12px;background:${isYes?"var(--yes-bg)":"var(--no-bg)"};border:1.5px solid ${color};margin-bottom:18px">
+        <div style="font-size:12px;color:var(--muted)">Vas a resolver este mercado como</div>
+        <div style="font-size:22px;font-weight:900;color:${color}">${resultLabel}</div>
+      </div>
+      <div style="display:flex;gap:10px">
+        <button class="btn-ghost" style="flex:1;padding:12px" onclick="document.getElementById('resolve-confirm-overlay').remove()">Cancelar</button>
+        <button style="flex:1;padding:12px;border:none;border-radius:10px;font-weight:700;cursor:pointer;color:#fff;background:${color}"
+          onclick="document.getElementById('resolve-confirm-overlay').remove();adminResolve('${id}','${result}')">
+          Sí, resolver ${resultLabel}
+        </button>
+      </div>
+    </div>
+  </div>`;
+  document.body.insertAdjacentHTML("beforeend", html);
+}
+
 async function adminResolve(id,result){
   if(!isAdmin()) return notify("Sin permisos","error");
   if(result !== "YES" && result !== "NO") return notify("Resultado inválido","error");
