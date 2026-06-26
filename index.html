@@ -7988,11 +7988,9 @@ function closeDepositIfBg(e){if(e.target.id==="deposit-overlay")closeDepositModa
 
 function renderDepositStep(){
   if(STATE.depositStep===3){
-    // setTimeout(0): el HTML devuelto aquí todavía no está en el DOM
-    // (el caller hace innerHTML=... después de que esta función retorna),
-    // así que el dibujo del QR se programa para el siguiente tick, una
-    // vez que el contenedor con el id "deposit-qr-*" ya exista.
-    setTimeout(drawDepositQR, 0);
+    // El QR ya no se dibuja automáticamente al entrar a este paso —
+    // ahora es una opción aparte que se despliega bajo demanda desde
+    // toggleDepositQR(), que es quien llama a drawDepositQR().
     return renderDepositStep3();
   }
   if(STATE.depositStep===1) return renderDepositStep1();
@@ -8140,9 +8138,18 @@ function renderPolygonStep(amt,token){
       <div style="font-size:12px;color:var(--muted)">${t("deposit_receive")} <strong style="color:var(--yes)">${usd(amt)}</strong> ${t("deposit_credits")}</div>
     </div>
 
-    <!-- Código QR — para escanear desde una app de wallet móvil en vez de
-         copiar la dirección manualmente o usar el botón de wallet del navegador -->
-    <div style="display:flex;flex-direction:column;align-items:center;margin-bottom:16px;padding:16px;background:var(--card2);border:1px solid var(--border);border-radius:14px">
+    <button class="btn-polygon" style="margin-bottom:10px" onclick="sendPolygonDeposit('${token}',${isPoly?(maticAmt||0):amt})" ${isPoly&&!maticAmt?"disabled style='opacity:.5;cursor:not-allowed'":""}>
+      <span>⬡</span> ${isPoly&&!maticAmt?"Obteniendo precio…":"Enviar "+displayAmt+" desde mi wallet"}
+    </button>
+
+    <!-- Opción aparte: pagar escaneando un código QR desde otra wallet móvil.
+         Oculta por defecto — el botón morado de arriba es la acción principal.
+         El contenedor del QR se mantiene en el DOM (solo oculto) para que
+         drawDepositQR lo siga encontrando cuando el usuario lo despliegue. -->
+    <button onclick="toggleDepositQR('${qrId}')" style="width:100%;background:transparent;border:1px dashed var(--border);border-radius:10px;padding:10px;font-size:12px;color:var(--muted);cursor:pointer;margin-bottom:10px;display:flex;align-items:center;justify-content:center;gap:6px">
+      <span>📱</span> <span id="${qrId}-toggle-label">Pagar con código QR desde otra wallet</span>
+    </button>
+    <div id="${qrId}-wrap" style="display:none;flex-direction:column;align-items:center;margin-bottom:16px;padding:16px;background:var(--card2);border:1px solid var(--border);border-radius:14px">
       <div id="${qrId}" data-payload="${escHtml(qrPayload)}" style="width:180px;height:180px;display:flex;align-items:center;justify-content:center;background:#fff;border-radius:10px;padding:8px">
         <span style="font-size:11px;color:var(--muted)">Generando QR…</span>
       </div>
@@ -8153,10 +8160,6 @@ function renderPolygonStep(amt,token){
         Copiar dirección manualmente
       </button>
     </div>
-
-    <button class="btn-polygon" style="margin-bottom:8px" onclick="sendPolygonDeposit('${token}',${isPoly?(maticAmt||0):amt})" ${isPoly&&!maticAmt?"disabled style='opacity:.5;cursor:not-allowed'":""}>
-      <span>⬡</span> ${isPoly&&!maticAmt?"Obteniendo precio…":"Enviar "+displayAmt+" desde mi wallet"}
-    </button>
 
     <div class="info-box" style="margin-top:14px;margin-bottom:10px">
       <strong>${t("deposit_warning")}:</strong><br>
@@ -8215,9 +8218,18 @@ function renderSolanaStep(amt, token){
       <div style="font-size:12px;color:var(--muted)">Recibirás <strong style="color:var(--yes)">$${amt.toFixed(2)}</strong> en tu balance</div>
     </div>
 
-    <!-- Código QR (estándar Solana Pay) — para escanear desde Phantom,
-         Solflare u otra wallet móvil compatible -->
-    <div style="display:flex;flex-direction:column;align-items:center;margin-bottom:16px;padding:16px;background:var(--card2);border:1px solid var(--border);border-radius:14px">
+    <button class="btn-polygon" style="background:linear-gradient(135deg,#9945ff,#7c3aed);width:100%;margin-bottom:10px" onclick="sendSolanaDeposit('${token}',${amt})" ${isSOL&&!solAmt?"disabled style='opacity:.5;cursor:not-allowed'":""}>
+      <span>◎</span> ${isSOL&&!solAmt?"Obteniendo precio…":"Enviar "+displayAmt+" desde Phantom"}
+    </button>
+
+    <!-- Opción aparte: pagar escaneando un código QR (Solana Pay) desde otra
+         wallet móvil. Oculta por defecto — el botón morado de arriba es la
+         acción principal. El contenedor del QR se mantiene en el DOM (solo
+         oculto) para que drawDepositQR lo siga encontrando al desplegarlo. -->
+    <button onclick="toggleDepositQR('${qrIdSol}')" style="width:100%;background:transparent;border:1px dashed var(--border);border-radius:10px;padding:10px;font-size:12px;color:var(--muted);cursor:pointer;margin-bottom:10px;display:flex;align-items:center;justify-content:center;gap:6px">
+      <span>📱</span> <span id="${qrIdSol}-toggle-label">Pagar con código QR desde otra wallet</span>
+    </button>
+    <div id="${qrIdSol}-wrap" style="display:none;flex-direction:column;align-items:center;margin-bottom:16px;padding:16px;background:var(--card2);border:1px solid var(--border);border-radius:14px">
       <div id="${qrIdSol}" data-payload="${escHtml(qrPayloadSol)}" style="width:180px;height:180px;display:flex;align-items:center;justify-content:center;background:#fff;border-radius:10px;padding:8px">
         <span style="font-size:11px;color:var(--muted)">Generando QR…</span>
       </div>
@@ -8225,10 +8237,6 @@ function renderSolanaStep(amt, token){
         📱 Escanea con Phantom, Solflare u otra wallet de Solana para autocompletar el envío
       </div>
     </div>
-
-    <button class="btn-polygon" style="background:linear-gradient(135deg,#9945ff,#7c3aed);width:100%;margin-bottom:14px" onclick="sendSolanaDeposit('${token}',${amt})" ${isSOL&&!solAmt?"disabled style='opacity:.5;cursor:not-allowed'":""}>
-      <span>◎</span> ${isSOL&&!solAmt?"Obteniendo precio…":"Enviar "+displayAmt+" desde Phantom"}
-    </button>
 
     <div class="lbl">Dirección Solana de la plataforma</div>
     <div class="crypto-addr-box" style="font-size:11px">${addr}</div>
@@ -8264,6 +8272,20 @@ function updateDepositAmountDisplay(){
 }
 function depositNextStep(){if(STATE.depositStep<3){STATE.depositStep++;document.getElementById("deposit-step-content").innerHTML=renderDepositStep();}}
 function depositPrevStep(){if(STATE.depositStep>1){STATE.depositStep--;document.getElementById("deposit-step-content").innerHTML=renderDepositStep();}}
+
+// ── Mostrar/ocultar la opción aparte de pago por código QR ─────────
+// El QR ya no se dibuja de entrada: solo cuando el usuario despliega
+// este panel, para que el botón morado (wallet conectada) sea la
+// acción principal del paso de pago.
+function toggleDepositQR(qrId){
+  const wrap = document.getElementById(qrId+"-wrap");
+  const label = document.getElementById(qrId+"-toggle-label");
+  if(!wrap) return;
+  const isHidden = wrap.style.display==="none" || !wrap.style.display;
+  wrap.style.display = isHidden ? "flex" : "none";
+  if(label) label.textContent = isHidden ? "Ocultar código QR" : "Pagar con código QR desde otra wallet";
+  if(isHidden) drawDepositQR();
+}
 
 // ── Dibuja el código QR del paso 3 de depósito ──────────────────────
 // Se llama después de insertar el HTML en el DOM (innerHTML no ejecuta
@@ -9484,15 +9506,22 @@ async function executeTrade(){
       const newPriceYesSell = sellData.price_yes;
       const newHistory= Array.isArray(sellData.new_history) ? sellData.new_history : [];
 
-      const nm={...localM, qYes:newQYes, qNo:newQNo,
-        spreadPool:(localM.spreadPool||0)+(sellData.spread_earn||0),
+      const nm={...localM, priceYes:newPriceYesSell ?? localM.priceYes,
+        spreadPool:(localM.spreadPool||0)+(sellData.spread_usd||0),
         priceHistory:newHistory};
       if(idx>=0) STATE.markets[idx]=nm;
 
-      const txSell={id:"tx_"+genId(),type:"withdrawal",amount:netReturn,network:"internal",
-        description:`Venta ${side} ${shares.toFixed(2)} shares → ${usd(netReturn)} · spread 3% cobrado en USD al admin`,
-        date:new Date().toISOString(),status:"confirmed"};
-      await dbSaveTransaction(u.id, txSell);
+      // Hoy "sell" siempre publica la orden en el libro (status='open') y
+      // espera a que una compra futura la empareje vía P2 — el RPC nunca
+      // resuelve nada al instante en esta rama, así que netReturn es
+      // siempre 0 aquí. Solo registramos transacción si en el futuro el
+      // RPC llega a devolver un match inmediato real.
+      if(netReturn > 0){
+        const txSell={id:"tx_"+genId(),type:"withdrawal",amount:netReturn,network:"internal",
+          description:`Venta ${side} ${shares.toFixed(2)} shares → ${usd(netReturn)} · spread cobrado en USD al admin`,
+          date:new Date().toISOString(),status:"confirmed"};
+        await dbSaveTransaction(u.id, txSell);
+      }
 
       // ── Sincronizar desde DB (evitar doble acreditación) ────────
       const [freshUserSell, freshPosSell, freshMktSell] = await Promise.all([
@@ -9510,7 +9539,7 @@ async function executeTrade(){
         STATE.users[uiNow]={...STATE.users[uiNow],
           balance:      freshUserSell.data?.balance ?? (STATE.users[uiNow].balance||0)+netReturn,
           positions:    updPos,
-          transactions: [txSell,...(STATE.users[uiNow].transactions||[])],
+          transactions: netReturn>0 ? [txSell,...(STATE.users[uiNow].transactions||[])] : (STATE.users[uiNow].transactions||[]),
         };
       }
       if(freshMktSell.data && idx>=0){
