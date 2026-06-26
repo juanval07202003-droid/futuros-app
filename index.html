@@ -5369,8 +5369,51 @@ async function loadMyTrades(marketId){
     return;
   }
 
+  // ── Órdenes de venta propias activas en este mercado ────────────────
+  // Se muestran dentro de "Mis posiciones" (no solo en el bloque de
+  // órdenes pendientes) para que sea evidente, junto a las shares
+  // compradas, cuáles de ellas están actualmente puestas a la venta.
+  const {data:sellOrdersRaw} = await db.from("orders")
+    .select("id,side,shares,filled,price,status,created_at")
+    .eq("market_id", marketId)
+    .eq("user_id", u.id)
+    .eq("order_type", "sell")
+    .eq("is_mm", false)
+    .in("status", ["open","partial"])
+    .order("created_at", {ascending:true});
+  const sellOrdersBySide = {
+    YES: (sellOrdersRaw||[]).filter(o=>o.side==="YES"),
+    NO:  (sellOrdersRaw||[]).filter(o=>o.side==="NO"),
+  };
+
   const pct  = v => (Math.round(v*1000)/10).toFixed(1)+"%";
   const fmt  = v => "$"+(Math.round(v*100)/100).toFixed(2);
+
+  const renderSellBadge = (side) => {
+    const orders = sellOrdersBySide[side]||[];
+    if(!orders.length) return "";
+    const totalPending = orders.reduce((s,o)=>s+Math.max(0,(o.shares||0)-(o.filled||0)),0);
+    if(totalPending <= 0.001) return "";
+    const color = side==="YES" ? "var(--yes)" : "var(--no)";
+    return orders.map(o=>{
+      const pending = Math.max(0,(o.shares||0)-(o.filled||0));
+      const filled  = o.filled||0;
+      if(pending <= 0.001) return "";
+      return `<div style="display:flex;justify-content:space-between;align-items:center;
+          padding:6px 8px;border-radius:6px;margin-bottom:3px;background:rgba(76,175,80,.07);
+          border:1px solid rgba(76,175,80,.3)">
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+          <span style="font-size:11px;font-weight:800;color:${color}">🏷️ ${pending.toFixed(2)} sh a la venta</span>
+          <span style="font-size:9px;color:var(--muted)">${pct(o.price||0)}${filled>0?` · ya vendiste ${filled.toFixed(2)}`:""}</span>
+        </div>
+        <button onclick="cancelPendingOrder('${o.id}','${marketId}','sell')"
+          title="Cancelar venta — deja de ofrecerse lo que no se ha vendido todavía"
+          style="font-size:13px;font-weight:800;line-height:1;width:20px;height:20px;border-radius:50%;
+            border:1px solid var(--border);background:var(--card);color:var(--muted);cursor:pointer;
+            flex-shrink:0;display:flex;align-items:center;justify-content:center">×</button>
+      </div>`;
+    }).join("");
+  };
 
   const renderSide = (list, side) => {
     if(!list.length) return "";
@@ -5431,6 +5474,7 @@ async function loadMyTrades(marketId){
         <div style="text-align:center">Pagado</div>
         <div style="text-align:right">P&L est.</div>
       </div>
+      ${renderSellBadge(side)}
       ${rows}
     </div>`;
   };
