@@ -2799,8 +2799,8 @@ function render(){
         const pm = getMarket(STATE.proSelectedMarket);
         if(pm){
           setTimeout(()=>{
-            startObRefresh(pm.id);
-            loadOrderBook(pm.id);
+            startProObRefresh(pm.id);
+            loadProOrderBook(pm.id);
           }, 150);
         }
       })();
@@ -4456,11 +4456,11 @@ async function _authConnectEVM(walletType,provider=window.ethereum){
 // ═══════════════════════════════════════════════════════════════════
 function selectProMarket(marketId){
   STATE.proSelectedMarket = marketId;
-  stopObRefresh && Object.keys(OB_STATE||{}).forEach(k=>{ if(k!==marketId) stopObRefresh(k); });
+  stopProObRefresh();
   render();
   setTimeout(()=>{
-    startObRefresh(marketId);
-    loadOrderBook(marketId);
+    startProObRefresh(marketId);
+    loadProOrderBook(marketId);
   }, 150);
 }
 
@@ -4552,14 +4552,14 @@ function renderProPanel(){
           ${mkProChartSVG(m.priceHistory, "#00e5a0")}
         </div>
 
-        <!-- Cuadro de operaciones: libro de órdenes en vivo -->
-        <div class="card" style="padding:0;flex:1;display:flex;flex-direction:column;min-height:300px">
+        <!-- Cuadro de operaciones: order book real + cinta de operaciones -->
+        <div class="card" style="padding:0;flex:1;display:flex;flex-direction:column;min-height:320px">
           <div style="padding:12px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
-            <span style="font-weight:700;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px">📋 Cuadro de operaciones — libro de órdenes en vivo</span>
-            <span style="font-size:10px;color:var(--muted)">● actualiza cada 8s</span>
+            <span style="font-weight:700;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px">📋 Cuadro de operaciones — order book</span>
+            <span style="font-size:10px;color:var(--muted)">● en vivo · cada 6s</span>
           </div>
-          <div id="ob-content-${m.id}" style="padding:14px;flex:1;overflow-y:auto">
-            <div style="text-align:center;color:var(--muted);font-size:12px;padding:30px 0">Cargando libro de órdenes…</div>
+          <div id="pro-ob-${m.id}" style="padding:14px;flex:1;overflow-y:auto">
+            <div style="text-align:center;color:var(--muted);font-size:12px;padding:30px 0">Cargando order book…</div>
           </div>
         </div>
       </div>
@@ -4617,6 +4617,176 @@ function mkProChartSVG(history, color="#00e5a0"){
     <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
     <circle cx="${W}" cy="${lastY.toFixed(1)}" r="3" fill="${color}"/>
   </svg>`;
+}
+
+// ── Order book PROFESIONAL para Modo Pro ────────────────────────────
+// A diferencia de renderObBook (agregado simple por nivel, usado en la
+// página normal de mercado), esto construye un libro real estilo
+// exchange: niveles de precio discretos, profundidad ACUMULADA (no solo
+// el monto de ese nivel), spread visible entre el mejor bid y el mejor
+// ask, y una cinta de últimas operaciones reales (de la tabla contracts).
+// ── Refresco del order book profesional (Modo Pro) ──────────────────
+// Intervalo propio, separado de OB_STATE (usado por la página normal
+// de mercado) para que ambos sistemas no se interfieran entre sí.
+const PRO_OB_STATE = {};
+function startProObRefresh(marketId){
+  if(PRO_OB_STATE.interval) clearInterval(PRO_OB_STATE.interval);
+  PRO_OB_STATE.marketId = marketId;
+  PRO_OB_STATE.interval = setInterval(()=>{
+    if(PRO_OB_STATE.marketId) loadProOrderBook(PRO_OB_STATE.marketId);
+  }, 6000);
+}
+function stopProObRefresh(){
+  if(PRO_OB_STATE.interval){ clearInterval(PRO_OB_STATE.interval); PRO_OB_STATE.interval=null; }
+}
+
+async function loadProOrderBook(marketId){
+  const el = document.getElementById("pro-ob-"+marketId);
+  if(!el) return;
+
+  const {data:orders} = await db.from("orders")
+    .select("side,price,shares,filled,is_mm,order_type,mm_order_id,created_at")
+    .eq("market_id", marketId)
+    .in("status", ["open","partial"])
+    .order("price", {ascending:false});
+
+  const {data:trades} = await db.from("contracts")
+    .select("shares,yes_price,no_price,created_at,updated_at")
+    .eq("market_id", marketId)
+    .order("updated_at", {ascending:false})
+    .limit(15);
+
+  el.innerHTML = renderProOrderBookHTML(orders||[], trades||[]);
+}
+
+function renderProOrderBookHTML(orders, trades){
+  // En este libro, "comprar SÍ a precio P" equivale económicamente a
+  // "vender NO a precio (1-P)" — por eso para tener un único eje de
+  // precio (el de SÍ) convertimos las órdenes del lado NO a su
+  // equivalente en términos de SÍ: una orden NO a precio q es, vista
+  // desde SÍ, una oferta de venta (ask) a precio (1-q).
+  const bidRows = []; // alguien dispuesto a comprar SÍ a precio P (== orden side=YES)
+  const askRows = []; // alguien dispuesto a vender SÍ a precio P (== orden side=NO, invertido)
+
+  orders.forEach(o=>{
+    // Excluir órdenes seed del MM (reserva de capital, nunca tocan el libro)
+    if(o.is_mm && !(o.order_type==="limit" && o.mm_order_id)) return;
+    const rem = (o.shares||0) - (o.filled||0);
+    if(rem <= 0.001) return;
+    if(o.side==="YES"){
+      bidRows.push({price:o.price, shares:rem, isMM:o.is_mm});
+    } else {
+      askRows.push({price: Math.round((1-o.price)*10000)/10000, shares:rem, isMM:o.is_mm});
+    }
+  });
+
+  const aggLevel = (rows) => {
+    const map = {};
+    rows.forEach(r=>{
+      const k = r.price.toFixed(3);
+      if(!map[k]) map[k] = {price:r.price, shares:0, isMM:false};
+      map[k].shares += r.shares;
+      if(r.isMM) map[k].isMM = true;
+    });
+    return Object.values(map);
+  };
+
+  // Bids ordenados de mayor a menor precio (el mejor bid arriba, cerca del spread)
+  const bids = aggLevel(bidRows).sort((a,b)=>b.price-a.price).slice(0,10);
+  // Asks ordenados de menor a mayor precio (el mejor ask arriba, cerca del spread)
+  const asks = aggLevel(askRows).sort((a,b)=>a.price-b.price).slice(0,10);
+
+  // Profundidad ACUMULADA: cada nivel suma todos los que están "delante"
+  // de él hacia el spread — el patrón real de un order book de exchange.
+  let acc = 0;
+  const bidsWithDepth = bids.map(b=>{ acc += b.shares; return {...b, depth:acc}; });
+  acc = 0;
+  const asksWithDepth = asks.map(a=>{ acc += a.shares; return {...a, depth:acc}; });
+
+  const maxDepth = Math.max(
+    bidsWithDepth.length ? bidsWithDepth[bidsWithDepth.length-1].depth : 0,
+    asksWithDepth.length ? asksWithDepth[asksWithDepth.length-1].depth : 0,
+    1
+  );
+
+  const bestBid = bids[0]?.price ?? null;
+  const bestAsk = asks[0]?.price ?? null;
+  const spread = (bestBid!=null && bestAsk!=null) ? Math.round((bestAsk-bestBid)*10000)/100 : null;
+  const mid = (bestBid!=null && bestAsk!=null) ? (bestBid+bestAsk)/2 : null;
+
+  const row = (r, side) => {
+    const w = Math.round(r.depth/maxDepth*100);
+    const color = side==="bid" ? "var(--yes)" : "var(--no)";
+    const bg    = side==="bid" ? "rgba(0,229,160,.15)" : "rgba(224,40,74,.15)";
+    // La barra crece desde el lado del spread (derecha para bids, izquierda para asks)
+    const barStyle = side==="bid"
+      ? `right:0;left:auto;width:${w}%`
+      : `left:0;right:auto;width:${w}%`;
+    return `<div style="display:grid;grid-template-columns:${side==="bid"?"50px 1fr 60px":"60px 1fr 50px"};
+        gap:4px;align-items:center;position:relative;padding:2px 0;font-size:11px">
+      ${side==="bid"?`
+        <div style="font-weight:700;color:${color};text-align:left;z-index:1">${pct(r.price)}</div>
+        <div style="position:relative;height:16px;background:var(--card2);border-radius:2px;overflow:hidden">
+          <div style="position:absolute;top:0;height:100%;background:${bg};${barStyle}"></div>
+          ${r.isMM?`<div style="position:absolute;top:0;right:4px;line-height:16px;font-size:8px;color:var(--muted);z-index:1">MM</div>`:""}
+        </div>
+        <div style="color:var(--muted);text-align:right;z-index:1">${r.shares.toFixed(1)}</div>
+      `:`
+        <div style="color:var(--muted);text-align:left;z-index:1">${r.shares.toFixed(1)}</div>
+        <div style="position:relative;height:16px;background:var(--card2);border-radius:2px;overflow:hidden">
+          <div style="position:absolute;top:0;height:100%;background:${bg};${barStyle}"></div>
+          ${r.isMM?`<div style="position:absolute;top:0;left:4px;line-height:16px;font-size:8px;color:var(--muted);z-index:1">MM</div>`:""}
+        </div>
+        <div style="font-weight:700;color:${color};text-align:right;z-index:1">${pct(r.price)}</div>
+      `}
+    </div>`;
+  };
+
+  const tapeRows = trades.slice(0,12).map(tr=>{
+    const ago = timeAgo(tr.updated_at || tr.created_at);
+    // El "precio" de la operación, visto desde SÍ, es yes_price
+    const tradeSide = tr.yes_price >= 0.5 ? "yes-leaning" : "no-leaning";
+    return `<div style="display:grid;grid-template-columns:50px 1fr 55px;gap:4px;font-size:10px;padding:3px 0;border-bottom:1px solid var(--border)">
+      <div style="color:var(--muted)">${ago}</div>
+      <div style="font-weight:700;color:${tr.yes_price>=0.5?"var(--yes)":"var(--no)"}">${pct(tr.yes_price)}</div>
+      <div style="color:var(--muted);text-align:right">${(tr.shares||0).toFixed(1)} sh</div>
+    </div>`;
+  }).join("");
+
+  return `
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+    <!-- Libro de órdenes real: bids y asks con profundidad acumulada -->
+    <div>
+      <div style="display:flex;justify-content:space-between;font-size:9px;color:var(--muted);
+          text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px;padding:0 2px">
+        <span>Compra (SÍ)</span><span>Acum.</span>
+      </div>
+      ${bidsWithDepth.length ? bidsWithDepth.map(b=>row(b,"bid")).join("") : `<div style="text-align:center;color:var(--muted);font-size:11px;padding:14px 0">Sin órdenes de compra</div>`}
+
+      <div style="margin:10px 0;padding:8px 0;border-top:1px solid var(--border);border-bottom:1px solid var(--border);
+          text-align:center">
+        ${spread!=null
+          ? `<div style="font-size:13px;font-weight:800">${pct(mid)}</div>
+             <div style="font-size:9px;color:var(--muted)">spread ${spread.toFixed(1)}¢</div>`
+          : `<div style="font-size:11px;color:var(--muted)">Sin spread visible</div>`}
+      </div>
+
+      <div style="display:flex;justify-content:space-between;font-size:9px;color:var(--muted);
+          text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px;padding:0 2px">
+        <span>Cant.</span><span>Venta (SÍ)</span>
+      </div>
+      ${asksWithDepth.length ? asksWithDepth.map(a=>row(a,"ask")).join("") : `<div style="text-align:center;color:var(--muted);font-size:11px;padding:14px 0">Sin órdenes de venta</div>`}
+    </div>
+
+    <!-- Cinta de últimas operaciones reales -->
+    <div>
+      <div style="display:grid;grid-template-columns:50px 1fr 55px;gap:4px;font-size:9px;color:var(--muted);
+          text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px;padding:0 2px">
+        <span>Hace</span><span>Precio</span><span style="text-align:right">Shares</span>
+      </div>
+      ${tapeRows || `<div style="text-align:center;color:var(--muted);font-size:11px;padding:14px 0">Sin operaciones recientes</div>`}
+    </div>
+  </div>`;
 }
 
 function renderMarket(){
