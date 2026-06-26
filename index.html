@@ -2649,6 +2649,10 @@ function slugify(text){
 
 function navigate(view,opts={}){
   if((view==="portfolio"||view==="wallet")&&!getUser()){navigate("auth");return;}
+  if(view==="pro" && !isProPanelAllowed()){
+    notify("📊 Modo Pro solo está disponible en computador","error");
+    return;
+  }
   stopCarousel();
   if(view !== "home") STATE.marketSearch = "";
   STATE.view=view;
@@ -2862,7 +2866,7 @@ function renderNav(){
     (u?'<button class="nav-btn'+(vw==="feed"?' active':'')+'" onclick="navigate(\'feed\')">'+t("nav_feed")+'</button>':'')+
     '<button class="nav-btn'+(vw==="portfolio"?' active':'')+'" onclick="navigate(\'portfolio\')">'+t("nav_portfolio")+'</button>'+
     (u?'<button class="nav-btn'+(vw==="wallet"?' active':'')+'" onclick="navigate(\'wallet\')">'+t("nav_wallet")+'</button>':'')+
-    (u?'<button class="nav-btn'+(vw==="pro"?' active':'')+'" onclick="navigate(\'pro\')" title="Panel profesional de trading">📊 Modo Pro</button>':'')+
+    (u&&isProPanelAllowed()?'<button class="nav-btn'+(vw==="pro"?' active':'')+'" onclick="navigate(\'pro\')" title="Panel profesional de trading">📊 Modo Pro</button>':'')+
     '<button class="nav-btn'+(vw==="bemm"?' active':'')+' nav-btn-stw" onclick="navigate(\'bemm\')">🪙 '+t("nav_bemm")+'</button>'+
     (admin?'<button class="nav-btn admin-btn'+(vw==="admin"?' active':'')+'" onclick="navigate(\'admin\')">⚙️ '+t("nav_admin")+'</button>':'');
 
@@ -2887,7 +2891,6 @@ function renderNav(){
         {icon:`<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>`,label:t("nav_feed"),    view:"feed",     fn:"navigate('feed')"},
         {icon:`<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="15" rx="2"/><path d="M16 7V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v2"/><line x1="12" y1="12" x2="12" y2="16"/><line x1="10" y1="14" x2="14" y2="14"/></svg>`,label:t("nav_portfolio"), view:"portfolio",fn:"navigate('portfolio')"},
         {icon:`<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="15" rx="2"/><path d="M2 10h20"/><circle cx="17" cy="15" r="1.5" fill="currentColor" stroke="none"/></svg>`,label:t("nav_wallet"),    view:"wallet",   fn:"navigate('wallet')"},
-        {icon:`<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>`,label:"Pro",    view:"pro",   fn:"navigate('pro')"},
         {icon:`<span style="font-size:12px;font-weight:900;color:#f59e0b;letter-spacing:-1px;line-height:22px;display:block;text-align:center">MM</span>`,label:t("nav_bemm"), view:"bemm", fn:"navigate('bemm')"},
         {icon:`<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>`,label:usd(u.balance),     view:"__dep__",  fn:"openDeposit()"},
         ...(admin?[{icon:`<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>`,label:t("nav_admin"),view:"admin",fn:"navigate('admin')",isAdmin:true}]:[])
@@ -3944,6 +3947,22 @@ function isMobile(){
   return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
 }
 
+// Modo Pro (panel de trading con order book) solo tiene sentido en
+// pantallas grandes — el layout de 3 columnas con profundidad acumulada
+// no es usable en móvil. Combina detección de dispositivo (user-agent)
+// con ancho real de ventana, para cubrir también ventanas de escritorio
+// angostas. 900px coincide con el breakpoint que el panel ya usaba.
+function isProPanelAllowed(){
+  return !isMobile() && window.innerWidth >= 900;
+}
+
+// Si el usuario está en Modo Pro y reduce la ventana por debajo del
+// umbral (sin recargar), lo sacamos del panel en vez de dejar un
+// layout de 3 columnas roto en pantalla.
+window.addEventListener("resize", ()=>{
+  if(STATE.view==="pro" && !isProPanelAllowed()) render();
+});
+
 function isInsideWalletBrowser(){
   const ua = navigator.userAgent.toLowerCase();
   // Detectar por UA
@@ -4471,6 +4490,17 @@ function selectProMarket(marketId){
 }
 
 function renderProPanel(){
+  if(!isProPanelAllowed()){
+    return `<div class="container" style="padding-top:60px;text-align:center">
+      <div style="font-size:40px;margin-bottom:12px">🖥️</div>
+      <div style="font-weight:800;font-size:18px;margin-bottom:8px">Modo Pro solo en computador</div>
+      <div style="color:var(--muted);font-size:13px;max-width:320px;margin:0 auto 20px">
+        El panel profesional de trading (libro de órdenes, gráficas y profundidad de mercado)
+        está diseñado para pantallas grandes. Ábrelo desde un computador para usarlo.
+      </div>
+      <button class="btn-green" style="padding:10px 24px" onclick="navigate('home')">Volver al inicio</button>
+    </div>`;
+  }
   const u = getUser();
   if(!u){
     return `<div class="container" style="padding-top:60px;text-align:center">
@@ -4598,15 +4628,6 @@ function renderProPanel(){
         </div>
       </div>
     </div>
-
-    <!-- Layout móvil: una sola columna -->
-    <style>
-      @media (max-width: 900px){
-        div[style*="grid-template-columns:240px 1fr 280px"]{
-          grid-template-columns: 1fr !important;
-        }
-      }
-    </style>
   </div>`;
 }
 
