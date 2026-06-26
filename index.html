@@ -1233,6 +1233,8 @@ function dbRowToMarket(row){
     totalVolume: row.total_volume||0,
     spreadPool:  row.spread_pool||0,
     totalPaid:   row.total_paid||0,
+    totalPayout: row.total_payout||0,
+    resolvedAt:  row.resolved_at||null,
     closesAt:    row.closes_at,
     resolved:    row.resolved||false,
     resolution:  row.resolution||null,
@@ -1267,6 +1269,10 @@ function marketToDbRow(m){
     total_volume: m.totalVolume||0,
     spread_pool:  m.spreadPool||0,
     total_paid:   m.totalPaid||0,
+    ...(m.totalPayout !== undefined ? {total_payout: m.totalPayout||0} : {}),
+    ...(m.resolvedAt  !== undefined ? {resolved_at: m.resolvedAt||null} : {}),
+    ...(m.seedLpYes   !== undefined ? {seed_lp_yes: m.seedLpYes||0} : {}),
+    ...(m.seedLpNo    !== undefined ? {seed_lp_no: m.seedLpNo||0} : {}),
     closes_at:    m.closesAt,
     resolved:     m.resolved||false,
     resolution:   m.resolution||null,
@@ -9634,6 +9640,7 @@ function renderAdmin(){
     {k:"markets",  l:`<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block;vertical-align:middle;margin-right:4px"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>${t("admin_create_market")}`},
     {k:"featured", l:`⚡ ${t("admin_featured_tab")}`,   count:featuredCount},
     {k:"resolve",  l:`🏁 ${t("admin_resolve")}`,        count:STATE.markets.filter(m=>!m.resolved||m.oracleLocked||m.manualPaused).length},
+    {k:"history",  l:`📜 Historial`,                     count:STATE.markets.filter(m=>m.resolved).length||null},
     {k:"withdrawals",l:`💸 Retiros`,                    count:pendingWd||null},
     {k:"deposits", l:`<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block;vertical-align:middle;margin-right:4px"><path d="M12 2v10m0 0l-3-3m3 3l3-3"/><rect x="2" y="14" width="20" height="8" rx="2"/></svg>Depósitos`,count:pendingDep||null},
     {k:"referrals",l:`<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block;vertical-align:middle;margin-right:4px"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>Referidos`,count:null},
@@ -9647,6 +9654,7 @@ function renderAdmin(){
   if(STATE.adminTab==="markets")    content=renderAdminMarkets();
   if(STATE.adminTab==="featured")   content=renderAdminFeatured();
   if(STATE.adminTab==="resolve")    content=renderAdminResolve();
+  if(STATE.adminTab==="history")    content=renderAdminHistory();
   if(STATE.adminTab==="withdrawals")content=renderAdminWithdrawals();
   if(STATE.adminTab==="deposits")   content=renderAdminDeposits();
   if(STATE.adminTab==="referrals")  content=renderAdminReferrals();
@@ -9663,6 +9671,7 @@ function setAdminTab(tab){
   STATE.adminTab=tab;
   if(tab==="withdrawals") dbLoadWithdrawals();
   if(tab==="resolve")     dbLoadMarketInvested();
+  if(tab==="history")     dbLoadMarkets().then(render);
   else if(tab==="stats"){
     STATE.adminStatsLoaded=false;
     STATE.adminStats=null;
@@ -10556,6 +10565,92 @@ async function dbLoadMarketInvested(){
     STATE.marketInvested = invested;
     render();
   }catch(e){ console.warn("dbLoadMarketInvested:",e); }
+}
+
+// ── Historial de mercados resueltos ─────────────────────────────────
+// Muestra, por cada mercado ya resuelto: cuánto se puso al crearlo en
+// las pools SÍ/NO (seed_lp_yes / seed_lp_no) y cuánto se le devolvió
+// en total al MM en el momento de la resolución (total_payout).
+// Arriba: resumen agregado de ganancia/pérdida = Σ(total_payout) − Σ(seed_lp_yes+seed_lp_no).
+function renderAdminHistory(){
+  const statCard = (label, value, sub="", color="var(--text)", icon="") => `
+    <div class="card" style="padding:18px;text-align:center">
+      ${icon?`<div style="font-size:20px;margin-bottom:6px">${icon}</div>`:""}
+      <div style="font-size:10px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.6px;margin-bottom:6px">${label}</div>
+      <div style="font-size:22px;font-weight:900;color:${color};line-height:1.1">${value}</div>
+      ${sub?`<div style="font-size:11px;color:var(--muted);margin-top:5px">${sub}</div>`:""}
+    </div>`;
+
+  const resolved = STATE.markets
+    .filter(m => m.resolved)
+    .sort((a,b) => new Date(b.resolvedAt||b.closesAt||0) - new Date(a.resolvedAt||a.closesAt||0));
+
+  const totalSeed    = resolved.reduce((s,m)=>s+(m.seedLpYes||0)+(m.seedLpNo||0), 0);
+  const totalPayout  = resolved.reduce((s,m)=>s+(m.totalPayout||0), 0);
+  const totalPL       = Math.round((totalPayout - totalSeed) * 100) / 100;
+  const plColor        = totalPL >= 0 ? "var(--yes)" : "var(--no)";
+  const plSign          = totalPL >= 0 ? "+" : "−";
+
+  const rows = resolved.map(m=>{
+    const seedYes = m.seedLpYes||0;
+    const seedNo  = m.seedLpNo||0;
+    const seedSum = seedYes + seedNo;
+    const payout  = m.totalPayout||0;
+    const hasPayoutData = m.totalPayout !== undefined && m.totalPayout !== null;
+    const pl     = Math.round((payout - seedSum) * 100) / 100;
+    const rColor = pl >= 0 ? "var(--yes)" : "var(--no)";
+    const rSign  = pl >= 0 ? "+" : "−";
+    return `<tr>
+      <td style="padding:10px 8px;text-align:left">
+        <div style="display:flex;align-items:center;gap:8px;min-width:0">
+          <span style="font-size:16px;flex-shrink:0">${escHtml(m.emoji||"🎯")}</span>
+          <span style="font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px" title="${escHtml(m.title)}">${escHtml(m.title)}</span>
+        </div>
+      </td>
+      <td style="padding:10px 8px;text-align:center">
+        <span class="tag" style="background:${m.resolution==="YES"?"var(--yes)22":"var(--no)22"};color:${m.resolution==="YES"?"var(--yes)":"var(--no)"}">${m.resolution||"—"}</span>
+      </td>
+      <td style="padding:10px 8px;text-align:right;color:var(--yes);font-weight:600">${usd(seedYes)}</td>
+      <td style="padding:10px 8px;text-align:right;color:var(--no);font-weight:600">${usd(seedNo)}</td>
+      <td style="padding:10px 8px;text-align:right;color:var(--muted);font-weight:600">${usd(seedSum)}</td>
+      <td style="padding:10px 8px;text-align:right;font-weight:700;color:var(--text)">${hasPayoutData?usd(payout):"<span style=\"color:var(--muted);font-weight:400\">sin datos</span>"}</td>
+      <td style="padding:10px 8px;text-align:right;font-weight:700;color:${hasPayoutData?rColor:"var(--muted)"}">${hasPayoutData?(rSign+usd(pl)):"—"}</td>
+      <td style="padding:10px 8px;text-align:right;color:var(--muted);font-size:12px;white-space:nowrap">${m.resolvedAt?formatDate(m.resolvedAt):(m.closesAt?formatDate(m.closesAt):"—")}</td>
+    </tr>`;
+  }).join("");
+
+  return `<div class="slide-in">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:20px">
+      ${statCard("Mercados resueltos", String(resolved.length), "Total en el historial", "var(--accent)", "📜")}
+      ${statCard("Capital inicial (pools)", usd(totalSeed), "Σ seed pools SÍ+NO", "var(--muted)", "🏦")}
+      ${statCard("Devuelto al MM", usd(totalPayout), "Σ total_payout al resolver", "var(--accent)", "💳")}
+      ${statCard("Ganancia / Pérdida total", plSign+usd(totalPL), "Devuelto − capital inicial", plColor, totalPL>=0?"↑":"↓")}
+    </div>
+
+    <div class="card" style="overflow-x:auto">
+      <div class="admin-section-title">📜 Historial de mercados resueltos</div>
+      ${resolved.length===0
+        ? `<div style="padding:32px 16px;text-align:center;color:var(--muted);font-size:13px">
+             Todavía no hay mercados resueltos con datos de historial.<br/>
+             Los mercados que resuelvas a partir de ahora aparecerán aquí automáticamente.
+           </div>`
+        : `<table style="width:100%;border-collapse:collapse;font-size:13px;min-width:780px">
+            <thead>
+              <tr style="border-bottom:1.5px solid var(--border)">
+                <th style="padding:8px;text-align:left;color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase">Mercado</th>
+                <th style="padding:8px;text-align:center;color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase">Resultado</th>
+                <th style="padding:8px;text-align:right;color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase">Pool SÍ inicial</th>
+                <th style="padding:8px;text-align:right;color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase">Pool NO inicial</th>
+                <th style="padding:8px;text-align:right;color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase">Capital inicial</th>
+                <th style="padding:8px;text-align:right;color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase">Devuelto al MM</th>
+                <th style="padding:8px;text-align:right;color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase">Ganancia/Pérdida</th>
+                <th style="padding:8px;text-align:right;color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase">Resuelto</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>`}
+    </div>
+  </div>`;
 }
 
 function renderAdminResolve(){
@@ -12648,6 +12743,11 @@ async function adminResolve(id,result){
   // Los shares perdedores = $0 (ese riesgo ya fue absorbido, lo cobran los ganadores)
   const adminTotalPayout = Math.round((mmPoolReturn + mmWinPayout) * 100) / 100;
 
+  // Acumulador del total real que recibe el MM en esta resolución
+  // (payout base + fees de resolución de ganadores + spread acumulado),
+  // se persiste en markets.total_payout para el historial de admin.
+  let mmGrandTotal = adminTotalPayout;
+
   console.log(`[Resolve] Resultado: ${result}`);
   console.log(`[Resolve] Pool disponible devuelta al MM: $${mmPoolReturn} (lp_yes=${lpYes} + lp_no=${lpNo})`);
   console.log(`[Resolve] Shares MM ganadores (${result}): ${mmWinShares.toFixed(4)} × $1.00 = $${mmWinPayout}`);
@@ -12726,6 +12826,7 @@ async function adminResolve(id,result){
             network: "internal", status: "confirmed", created_at: resolvedAt,
             description: `💰 Fee resolución 2% · "${titleShort}" · ${winShares.toFixed(2)} shares ganadores @${uid.slice(0,6)}`
           });
+          mmGrandTotal = Math.round((mmGrandTotal + exitFee) * 100) / 100;
           const ai = STATE.users.findIndex(u=>String(u.id)===adminId);
           if(ai>=0) STATE.users[ai]={...STATE.users[ai], balance: admEB};
         }
@@ -12810,20 +12911,31 @@ async function adminResolve(id,result){
         description:`💰 Spreads acumulados · "${titleShort}"`
       });
       await db.from("markets").update({spread_pool:0}).eq("id",id);
+      mmGrandTotal = Math.round((mmGrandTotal + spreadToCredit) * 100) / 100;
       const ai = STATE.users.findIndex(u=>String(u.id)===adminId);
       if(ai>=0) STATE.users[ai]={...STATE.users[ai], balance:admSBal};
     }
   }
 
+  // ══════════════════════════════════════════════════════════════════
+  // PASO 9 — Guardar historial: total recibido por el MM al resolver
+  // ══════════════════════════════════════════════════════════════════
+  await db.from("markets").update({
+    total_payout: mmGrandTotal,
+    resolved_at:  resolvedAt
+  }).eq("id", id);
+  STATE.markets[i] = {...STATE.markets[i], totalPayout: mmGrandTotal, resolvedAt: resolvedAt};
+
   // ── Notificación final ───────────────────────────────────────────
   notify(
     `✅ Resuelto ${result} · `+
-    `MM recibe: $${adminTotalPayout.toFixed(2)} (pool libre $${mmPoolReturn.toFixed(2)} + ${mmWinShares.toFixed(2)} sh × $1.00)` +
+    `MM recibe: $${mmGrandTotal.toFixed(2)} (pool libre $${mmPoolReturn.toFixed(2)} + ${mmWinShares.toFixed(2)} sh × $1.00)` +
     (mmLoseShares>0.001?` · MM pierde ${mmLoseShares.toFixed(2)} sh ${result==="YES"?"NO":"SÍ"} (riesgo asumido)`:"")+
     ` · ${totalWinners} usuario${totalWinners!==1?"s":""} pagado${totalWinners!==1?"s":""}` +
     (spreadToCredit>0.001 ? ` · Spreads: $${spreadToCredit.toFixed(2)}` : "")
   );
   console.log(`[Resolve] MM: pool_libre=$${mmPoolReturn.toFixed(2)} + win_shares=${mmWinShares.toFixed(4)}×$1=$${mmWinPayout.toFixed(2)} | lose_shares=${mmLoseShares.toFixed(4)}×$0`);
+  console.log(`[Resolve] Total guardado en historial (total_payout): $${mmGrandTotal.toFixed(2)}`);
   render();
 }
 
