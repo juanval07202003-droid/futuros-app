@@ -8252,11 +8252,13 @@ async function fetchCryptoPrices(){
   if(!STATE.maticPrice) STATE.maticPrice = 0.10;
   if(!STATE.solPrice)   STATE.solPrice   = 130;
 
-  // Refrescar el modal si está abierto en el paso de pago
-  if(STATE.depositOpen && STATE.depositStep===2){
-    const sc=document.getElementById("deposit-step-content");
-    if(sc) sc.innerHTML=renderDepositStep();
-  }
+  // NOTA: antes esto intentaba refrescar el paso 2 (monto en USD) cada
+  // vez que llegaba el precio de MATIC/SOL — pero renderDepositStep2()
+  // nunca muestra ese precio (solo se usa en el paso 3, donde sí se
+  // lee STATE.maticPrice/solPrice directamente al renderizarse), así
+  // que ese refresco no aportaba nada visible y solo causaba que el
+  // <input> de monto personalizado se reconstruyera mientras el
+  // usuario tecleaba, cerrando el teclado virtual en móvil. Se quitó.
 }
 function closeDepositModal(){
   STATE.depositOpen=false;
@@ -8264,6 +8266,21 @@ function closeDepositModal(){
 }
 
 function renderDepositModal(){
+  // Si el usuario está escribiendo en el campo de monto personalizado
+  // justo en este instante, no reconstruir el modal — cualquier
+  // render() global (Realtime, refresco de precios cada 30s, etc.)
+  // mientras el modal de depósito está abierto pasaba por aquí y
+  // destruía/recreaba el <input> con innerHTML, lo que hacía que el
+  // navegador perdiera la referencia al elemento enfocado y cerrara el
+  // teclado virtual en móvil — incluso sin relación con lo que el
+  // usuario estaba haciendo. El modal ya está correctamente pintado en
+  // este caso, así que no hay nada que ganar reconstruyéndolo.
+  const activeEl = document.activeElement;
+  const existingModal = document.getElementById("deposit-overlay");
+  if(existingModal && activeEl && activeEl.tagName==="INPUT" && existingModal.contains(activeEl)){
+    return;
+  }
+
   const existing=document.getElementById("deposit-overlay");if(existing)existing.remove();
   const html=`<div class="overlay" id="deposit-overlay" onclick="closeDepositIfBg(event)">
     <div class="modal modal-lg" onclick="event.stopPropagation()" style="max-height:90vh;overflow-y:auto">
