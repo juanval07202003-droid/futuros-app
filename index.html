@@ -10900,6 +10900,7 @@ function renderAdminHistory(){
 }
 
 function renderAdminResolve(){
+  const paused   = STATE.markets.filter(m => m.manualPaused && !m.resolved);
   const locked   = STATE.markets.filter(m => m.oracleLocked && !m.manualPaused && !m.resolved);
   const pending  = STATE.markets.filter(m => !m.oracleLocked && !m.manualPaused && !m.resolved);
   const resolved = STATE.markets.filter(m => m.resolved);
@@ -11244,6 +11245,13 @@ function renderAdminResolve(){
   }, 15000);
 
   return`<div>
+    ${paused.length?`<div style="background:rgba(245,158,11,.06);border:1px solid rgba(245,158,11,.25);
+        border-radius:12px;padding:12px 16px;margin-bottom:16px">
+      <div style="font-size:13px;font-weight:700;color:#f59e0b;margin-bottom:8px">
+        ⏸ ${paused.length} mercado${paused.length>1?"s":""} pausado${paused.length>1?"s":""} manualmente — puedes reanudarlo o resolverlo directamente
+      </div>
+      ${paused.map(m=>renderRow(m)).join("")}
+    </div>`:""}
     ${locked.length?`<div style="background:rgba(239,0,39,.06);border:1px solid rgba(239,0,39,.2);
         border-radius:12px;padding:12px 16px;margin-bottom:16px">
       <div style="font-size:13px;font-weight:700;color:var(--no);margin-bottom:8px">
