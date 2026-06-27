@@ -1147,7 +1147,6 @@ input, select, textarea{
 </footer>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
 <script>
 
 // ═══════════════════════════════════════════════════════════════════
@@ -8259,9 +8258,6 @@ function closeDepositIfBg(e){if(e.target.id==="deposit-overlay")closeDepositModa
 
 function renderDepositStep(){
   if(STATE.depositStep===3){
-    // El QR ya no se dibuja automáticamente al entrar a este paso —
-    // ahora es una opción aparte que se despliega bajo demanda desde
-    // toggleDepositQR(), que es quien llama a drawDepositQR().
     return renderDepositStep3();
   }
   if(STATE.depositStep===1) return renderDepositStep1();
@@ -8381,25 +8377,6 @@ function renderPolygonStep(amt,token){
   const displayAmt = isPoly
     ? (maticAmt ? maticAmt+" MATIC" : "Cargando precio…")
     : amt.toFixed(2)+" "+token;
-  const qrId = "deposit-qr-"+token;
-  // Para tokens ERC-20 (USDC/USDT) usamos el estándar EIP-681 para pagos:
-  // ethereum:<contrato>@<chainId>/transfer?address=<destino>&uint256=<monto_en_unidades_mínimas>
-  // Esto permite que wallets compatibles (MetaMask Mobile, algunas Trust
-  // Wallet) prellenen automáticamente el token y el monto al escanear,
-  // no solo la dirección. Para MATIC nativo, el estándar es más simple:
-  // ethereum:<destino>@<chainId>?value=<monto_en_wei>
-  const POLYGON_CHAIN_ID = 137;
-  let qrPayload;
-  if(isStable && contractAddr){
-    const decimals = 6; // USDC/USDT en Polygon usan 6 decimales
-    const amountUnits = Math.round(amt * Math.pow(10, decimals));
-    qrPayload = `ethereum:${contractAddr}@${POLYGON_CHAIN_ID}/transfer?address=${addr}&uint256=${amountUnits}`;
-  } else if(isPoly && maticAmt){
-    const amountWei = BigInt(Math.round(parseFloat(maticAmt) * 1e18)).toString();
-    qrPayload = `ethereum:${addr}@${POLYGON_CHAIN_ID}?value=${amountWei}`;
-  } else {
-    qrPayload = addr; // fallback simple: solo la dirección
-  }
 
   return`
   <div>
@@ -8413,24 +8390,9 @@ function renderPolygonStep(amt,token){
       <span>⬡</span> ${isPoly&&!maticAmt?"Obteniendo precio…":"Enviar "+displayAmt+" desde mi wallet"}
     </button>
 
-    <!-- Opción aparte: pagar escaneando un código QR desde otra wallet móvil.
-         Oculta por defecto — el botón morado de arriba es la acción principal.
-         El contenedor del QR se mantiene en el DOM (solo oculto) para que
-         drawDepositQR lo siga encontrando cuando el usuario lo despliegue. -->
-    <button onclick="toggleDepositQR('${qrId}')" style="width:100%;background:transparent;border:1px dashed var(--border);border-radius:10px;padding:10px;font-size:12px;color:var(--muted);cursor:pointer;margin-bottom:10px;display:flex;align-items:center;justify-content:center;gap:6px">
-      <span>📱</span> <span id="${qrId}-toggle-label">Pagar con código QR desde otra wallet</span>
+    <button onclick="copyDepositAddress('${addr}')" style="width:100%;background:transparent;border:none;color:var(--accent);font-size:12px;cursor:pointer;text-decoration:underline;margin-bottom:10px;padding:4px">
+      Copiar dirección manualmente
     </button>
-    <div id="${qrId}-wrap" style="display:none;flex-direction:column;align-items:center;margin-bottom:16px;padding:16px;background:var(--card2);border:1px solid var(--border);border-radius:14px">
-      <div id="${qrId}" data-payload="${escHtml(qrPayload)}" style="width:180px;height:180px;display:flex;align-items:center;justify-content:center;background:#fff;border-radius:10px;padding:8px">
-        <span style="font-size:11px;color:var(--muted)">Generando QR…</span>
-      </div>
-      <div style="font-size:11px;color:var(--muted);margin-top:10px;text-align:center;max-width:260px">
-        📱 Escanea con tu app de wallet (Trust Wallet, MetaMask Mobile, Binance, etc.) para autocompletar el envío
-      </div>
-      <button onclick="copyDepositAddress('${addr}')" style="margin-top:8px;background:transparent;border:none;color:var(--accent);font-size:11px;cursor:pointer;text-decoration:underline">
-        Copiar dirección manualmente
-      </button>
-    </div>
 
     <div class="info-box" style="margin-top:14px;margin-bottom:10px">
       <strong>${t("deposit_warning")}:</strong><br>
@@ -8470,17 +8432,6 @@ function renderSolanaStep(amt, token){
     ? (solAmt ? solAmt+" SOL" : "Cargando precio…")
     : amt.toFixed(2)+" "+tokenName;
 
-  // Solana Pay: solana:<dirección>?amount=<monto>&spl-token=<mint_del_token>
-  // Para SOL nativo no se incluye spl-token. Wallets compatibles (Phantom,
-  // Solflare) prellenan automáticamente monto y token al escanear.
-  const qrIdSol = "deposit-qr-"+token;
-  let qrPayloadSol = `solana:${addr}`;
-  const qrParams = [];
-  if(isSOL && solAmt) qrParams.push(`amount=${solAmt}`);
-  else if(!isSOL) qrParams.push(`amount=${amt.toFixed(2)}`);
-  if(mintAddr) qrParams.push(`spl-token=${mintAddr}`);
-  if(qrParams.length) qrPayloadSol += "?" + qrParams.join("&");
-
   return`
   <div>
     <div style="text-align:center;margin-bottom:16px">
@@ -8492,22 +8443,6 @@ function renderSolanaStep(amt, token){
     <button class="btn-polygon" style="background:linear-gradient(135deg,#9945ff,#7c3aed);width:100%;margin-bottom:10px" onclick="sendSolanaDeposit('${token}',${amt})" ${isSOL&&!solAmt?"disabled style='opacity:.5;cursor:not-allowed'":""}>
       <span>◎</span> ${isSOL&&!solAmt?"Obteniendo precio…":"Enviar "+displayAmt+" desde "+(detectSolanaProvider()?.name||"tu wallet")}
     </button>
-
-    <!-- Opción aparte: pagar escaneando un código QR (Solana Pay) desde otra
-         wallet móvil. Oculta por defecto — el botón morado de arriba es la
-         acción principal. El contenedor del QR se mantiene en el DOM (solo
-         oculto) para que drawDepositQR lo siga encontrando al desplegarlo. -->
-    <button onclick="toggleDepositQR('${qrIdSol}')" style="width:100%;background:transparent;border:1px dashed var(--border);border-radius:10px;padding:10px;font-size:12px;color:var(--muted);cursor:pointer;margin-bottom:10px;display:flex;align-items:center;justify-content:center;gap:6px">
-      <span>📱</span> <span id="${qrIdSol}-toggle-label">Pagar con código QR desde otra wallet</span>
-    </button>
-    <div id="${qrIdSol}-wrap" style="display:none;flex-direction:column;align-items:center;margin-bottom:16px;padding:16px;background:var(--card2);border:1px solid var(--border);border-radius:14px">
-      <div id="${qrIdSol}" data-payload="${escHtml(qrPayloadSol)}" style="width:180px;height:180px;display:flex;align-items:center;justify-content:center;background:#fff;border-radius:10px;padding:8px">
-        <span style="font-size:11px;color:var(--muted)">Generando QR…</span>
-      </div>
-      <div style="font-size:11px;color:var(--muted);margin-top:10px;text-align:center;max-width:260px">
-        📱 Escanea con Phantom, Solflare u otra wallet de Solana para autocompletar el envío
-      </div>
-    </div>
 
     <div class="lbl">Dirección Solana de la plataforma</div>
     <div class="crypto-addr-box" style="font-size:11px">${addr}</div>
@@ -8543,47 +8478,6 @@ function updateDepositAmountDisplay(){
 }
 function depositNextStep(){if(STATE.depositStep<3){STATE.depositStep++;document.getElementById("deposit-step-content").innerHTML=renderDepositStep();}}
 function depositPrevStep(){if(STATE.depositStep>1){STATE.depositStep--;document.getElementById("deposit-step-content").innerHTML=renderDepositStep();}}
-
-// ── Mostrar/ocultar la opción aparte de pago por código QR ─────────
-// El QR ya no se dibuja de entrada: solo cuando el usuario despliega
-// este panel, para que el botón morado (wallet conectada) sea la
-// acción principal del paso de pago.
-function toggleDepositQR(qrId){
-  const wrap = document.getElementById(qrId+"-wrap");
-  const label = document.getElementById(qrId+"-toggle-label");
-  if(!wrap) return;
-  const isHidden = wrap.style.display==="none" || !wrap.style.display;
-  wrap.style.display = isHidden ? "flex" : "none";
-  if(label) label.textContent = isHidden ? "Ocultar código QR" : "Pagar con código QR desde otra wallet";
-  if(isHidden) drawDepositQR();
-}
-
-// ── Dibuja el código QR del paso 3 de depósito ──────────────────────
-// Se llama después de insertar el HTML en el DOM (innerHTML no ejecuta
-// dibujo de canvas automáticamente). Usa la librería QRCode (cargada
-// por CDN) para renderizar dentro del div con id que coincide con el
-// patrón "deposit-qr-<token>" generado en renderPolygonStep/renderSolanaStep.
-function drawDepositQR(){
-  const m = STATE.depositMethod;
-  const tokenMap = {polygon:"MATIC", usdc:"USDC", usdt:"USDT", sol:"SOL", "usdc-sol":"USDC-SOL", "usdt-sol":"USDT-SOL"};
-  const token = tokenMap[m] || "MATIC";
-  const qrId = "deposit-qr-"+token;
-  const container = document.getElementById(qrId);
-  if(!container) return;
-  const payload = container.getAttribute("data-payload");
-  if(!payload || typeof QRCode === "undefined"){
-    container.innerHTML = `<span style="font-size:10px;color:var(--no);padding:8px;text-align:center">QR no disponible — usa la dirección de abajo</span>`;
-    return;
-  }
-  container.innerHTML = "";
-  QRCode.toCanvas(payload, {width:164, margin:1, color:{dark:"#000000", light:"#ffffff"}}, (err, canvas)=>{
-    if(err){
-      container.innerHTML = `<span style="font-size:10px;color:var(--no);padding:8px;text-align:center">Error generando QR</span>`;
-      return;
-    }
-    container.appendChild(canvas);
-  });
-}
 
 function copyDepositAddress(addr){
   navigator.clipboard.writeText(addr).then(()=>{
