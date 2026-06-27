@@ -12843,23 +12843,29 @@ async function adminResolve(id,result){
   //     - El MM queda con shares NO comprometidos (positions.no_shares)
   // - La pool disponible (lp_yes + lp_no) = lo que NO se ha comprometido aún
   //
-  // Al resolver:
-  // 1. Pool disponible (lp_yes + lp_no) → devolver íntegro al MM (nunca estuvo en riesgo)
-  // 2. Shares MM lado GANADOR → cobran $1 por share (sin fee, el MM es proveedor)
-  // 3. Shares MM lado PERDEDOR → $0 (los usuarios del lado ganador se quedan ese dinero)
-  //
-  // IMPORTANTE: los shares perdedores del MM representan el riesgo asumido.
-  // Ese capital ya fue recibido de los usuarios ganadores cuando compraron.
-  // Por eso los usuarios ganadores cobran $0.98 (el 2% es el fee del MM).
+  // Al resolver, el MM recibe:
+  // 1. Pool disponible (lp_yes + lp_no) — nunca estuvo en riesgo
+  // 2. Sus shares del lado GANADOR × $0.98 — igual que cualquier usuario
+  // 3. Spread pool completo (2% de entrada + ganancias de reventa + 3%
+  //    de ventas anticipadas) — se acredita más abajo en otro paso
+  // 4. $0.02 por cada contrato creado (sobrante de que SÍ+NO pagan
+  //    $0.98 cada uno pero el contrato vale $1.00 entre los dos) — esto
+  //    es justamente el 2% de "fee resolución" que se cobra a cada
+  //    usuario ganador, acreditado al MM como pieza SEPARADA, no como
+  //    compensación implícita del punto 2.
+  // El MM solo pierde: sus shares del lado PERDEDOR → $0.
 
   const mmPoolReturn  = Math.round((lpYes + lpNo) * 100) / 100;
   const mmWinShares   = result==="YES" ? adminSI : adminNO;
   const mmLoseShares  = result==="YES" ? adminNO : adminSI;
 
-  // El MM cobra $1 por share ganador (no paga fee de resolución — él es el proveedor)
-  const mmWinPayout   = Math.round(mmWinShares * 1.00 * 100) / 100;
+  // El MM cobra $0.98 por share ganadora — igual que cualquier usuario,
+  // sin excepción. El $0.02 restante por contrato se acredita aparte,
+  // en el PASO 6 más abajo, vía el fee de resolución 2% de cada
+  // usuario ganador (esa pieza ya existe y sigue intacta).
+  const mmWinPayout   = Math.round(mmWinShares * 0.98 * 100) / 100;
 
-  // Total MM = pool disponible (capital no comprometido) + shares ganadores × $1
+  // Total MM = pool disponible (capital no comprometido) + shares ganadoras × $0.98
   // Los shares perdedores = $0 (ese riesgo ya fue absorbido, lo cobran los ganadores)
   const adminTotalPayout = Math.round((mmPoolReturn + mmWinPayout) * 100) / 100;
 
@@ -12890,12 +12896,13 @@ async function adminResolve(id,result){
     if(admFresh){
       const admNewBal = Math.round(((admFresh.balance||0) + adminTotalPayout) * 100) / 100;
       await db.from("users").update({balance: admNewBal}).eq("id", adminId);
-      await db.from("transactions").insert({
-        user_id: adminId, id: "tx_"+genId(), type: "deposit",
+      const {error: mmTxErr} = await db.from("transactions").insert({
+        user_id: adminId, type: "deposit",
         amount: adminTotalPayout, network: "internal", status: "confirmed",
         created_at: resolvedAt,
         description: `✅ Resolución MM · "${titleShort}" · Pool $${mmPoolReturn} + ${mmWinShares.toFixed(2)} shares ${result} × $1 = $${mmWinPayout} | Perdidos: ${mmLoseShares.toFixed(2)} shares`
       });
+      if(mmTxErr) console.error("[Resolve] Error guardando tx de pago MM:",mmTxErr.message);
       const ai = STATE.users.findIndex(u=>String(u.id)===adminId);
       if(ai>=0) STATE.users[ai]={...STATE.users[ai], balance: admNewBal};
     }
@@ -12906,6 +12913,11 @@ async function adminResolve(id,result){
   // ══════════════════════════════════════════════════════════════════
   // PASO 6 — Usuarios ganadores → $0.98 por share
   // ══════════════════════════════════════════════════════════════════
+  // Ya NO se cobra un "fee de resolución" individual por usuario ganador
+  // — el $0.02/share sobrante se calcula una sola vez, agregado sobre
+  // TODOS los contratos del mercado (ver PASO 6B más abajo), sin
+  // importar si cada contrato lo ganó un usuario o el propio MM. Esto
+  // es más simple de auditar y trata a todos los contratos por igual.
   const userIds = [...new Set((positions||[])
     .filter(p=>String(p.user_id)!==adminId)
     .map(p=>String(p.user_id)))];
@@ -12923,45 +12935,59 @@ async function adminResolve(id,result){
 
     if(winShares > 0.001){
       totalWinners++;
-      // 2% comisión de resolución al admin, usuario recibe 98%
-      const exitFee = Math.round(winShares * 0.02 * 100) / 100;
       const payout  = Math.round(winShares * 0.98 * 100) / 100;
       const newBal  = Math.round(((uw.balance||0) + payout) * 100) / 100;
 
       await db.from("users").update({balance: newBal}).eq("id", uid);
-      await db.from("transactions").insert({
-        user_id: uid, id: "tx_"+genId(), type: "deposit", amount: payout,
+      const {error: winTxErr} = await db.from("transactions").insert({
+        user_id: uid, type: "deposit", amount: payout,
         network: "internal", status: "confirmed", created_at: resolvedAt,
-        description: `✅ Ganaste · "${titleShort}" · ${winShares.toFixed(4)} shares × $0.98 (2% fee resolución)`
+        description: `✅ Ganaste · "${titleShort}" · ${winShares.toFixed(4)} shares × $0.98`
       });
-
-      // 2% comisión resolución → admin
-      if(exitFee > 0.001){
-        const {data:admE} = await db.from("users").select("balance").eq("id",adminId).maybeSingle();
-        if(admE){
-          const admEB = Math.round(((admE.balance||0) + exitFee) * 100) / 100;
-          await db.from("users").update({balance: admEB}).eq("id", adminId);
-          await db.from("transactions").insert({
-            user_id: adminId, id: "tx_"+genId(), type: "deposit", amount: exitFee,
-            network: "internal", status: "confirmed", created_at: resolvedAt,
-            description: `💰 Fee resolución 2% · "${titleShort}" · ${winShares.toFixed(2)} shares ganadores @${uid.slice(0,6)}`
-          });
-          mmGrandTotal = Math.round((mmGrandTotal + exitFee) * 100) / 100;
-          const ai = STATE.users.findIndex(u=>String(u.id)===adminId);
-          if(ai>=0) STATE.users[ai]={...STATE.users[ai], balance: admEB};
-        }
-      }
+      if(winTxErr) console.error("[Resolve] Error guardando tx de ganancia para",uid,":",winTxErr.message);
 
       const ui = STATE.users.findIndex(u=>String(u.id)===uid);
       if(ui>=0) STATE.users[ui]={...STATE.users[ui], balance: newBal};
     }
 
     if(loseShares > 0.001){
-      await db.from("transactions").insert({
-        user_id: uid, id: "tx_"+genId(), type: "loss", amount: 0,
+      const {error: lossTxErr} = await db.from("transactions").insert({
+        user_id: uid, type: "loss", amount: 0,
         network: "internal", status: "confirmed", created_at: resolvedAt,
         description: `❌ Perdiste · "${titleShort}" · ${loseShares.toFixed(4)} shares ${result==="YES"?"NO":"SÍ"}`
       });
+      if(lossTxErr) console.error("[Resolve] Error guardando tx de pérdida para",uid,":",lossTxErr.message);
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // PASO 6B — $0.02 por cada contrato creado, sin excepción
+  // ══════════════════════════════════════════════════════════════════
+  // Cada contrato SÍ+NO vale $1.00 entre los dos lados; como cada lado
+  // se paga a $0.98 si gana, sobra $0.02 por contrato. Esto se cobra
+  // SIEMPRE — sobre absolutamente todos los contratos del mercado,
+  // incluyendo aquellos donde el MM es una de las dos partes (gane o
+  // pierda) — no es un "fee cobrado al ganador", es un sobrante fijo
+  // por contrato existente, calculado una sola vez de forma agregada.
+  const {data:allContracts} = await db.from("contracts")
+    .select("shares").eq("market_id", id).eq("status","active");
+  const totalContractShares = (allContracts||[]).reduce((s,c)=>s+(Number(c.shares)||0), 0);
+  const contractsFee = Math.round(totalContractShares * 0.02 * 100) / 100;
+
+  if(contractsFee > 0.001){
+    const {data:admC} = await db.from("users").select("balance").eq("id",adminId).maybeSingle();
+    if(admC){
+      const admCBal = Math.round(((admC.balance||0) + contractsFee) * 100) / 100;
+      await db.from("users").update({balance: admCBal}).eq("id", adminId);
+      const {error: contractsFeeTxErr} = await db.from("transactions").insert({
+        user_id: adminId, type: "deposit", amount: contractsFee,
+        network: "internal", status: "confirmed", created_at: resolvedAt,
+        description: `💰 Sobrante $0.02 × ${totalContractShares.toFixed(2)} contratos · "${titleShort}"`
+      });
+      if(contractsFeeTxErr) console.error("[Resolve] Error guardando tx de contratos:",contractsFeeTxErr.message);
+      mmGrandTotal = Math.round((mmGrandTotal + contractsFee) * 100) / 100;
+      const ai = STATE.users.findIndex(u=>String(u.id)===adminId);
+      if(ai>=0) STATE.users[ai]={...STATE.users[ai], balance: admCBal};
     }
   }
 
@@ -13006,11 +13032,12 @@ async function adminResolve(id,result){
     if(!ow) continue;
     const newBal = Math.round(((ow.balance||0)+refund)*100)/100;
     await db.from("users").update({balance:newBal}).eq("id",uid);
-    await db.from("transactions").insert({
-      user_id:uid, id:"tx_"+genId(), type:"deposit", amount:refund,
+    const {error: refundTxErr} = await db.from("transactions").insert({
+      user_id:uid, type:"deposit", amount:refund,
       network:"internal", status:"confirmed", created_at:resolvedAt,
       description:`♻️ Devolución orden pendiente · "${titleShort}"`
     });
+    if(refundTxErr) console.error("[Resolve] Error guardando tx de devolución para",uid,":",refundTxErr.message);
     const ui = STATE.users.findIndex(u=>String(u.id)===uid);
     if(ui>=0) STATE.users[ui]={...STATE.users[ui], balance:newBal};
   }
@@ -13024,12 +13051,13 @@ async function adminResolve(id,result){
     if(admS){
       const admSBal = Math.round(((admS.balance||0)+spreadToCredit)*100)/100;
       await db.from("users").update({balance:admSBal}).eq("id",adminId);
-      await db.from("transactions").insert({
-        user_id:adminId, id:"tx_"+genId(), type:"deposit",
+      const {error: spreadTxErr} = await db.from("transactions").insert({
+        user_id:adminId, type:"deposit",
         amount:spreadToCredit, network:"internal", status:"confirmed",
         created_at:resolvedAt,
         description:`💰 Spreads acumulados · "${titleShort}"`
       });
+      if(spreadTxErr) console.error("[Resolve] Error guardando tx de spread:",spreadTxErr.message);
       await db.from("markets").update({spread_pool:0}).eq("id",id);
       mmGrandTotal = Math.round((mmGrandTotal + spreadToCredit) * 100) / 100;
       const ai = STATE.users.findIndex(u=>String(u.id)===adminId);
