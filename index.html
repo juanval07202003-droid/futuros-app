@@ -286,6 +286,30 @@ button:active{transform:scale(.97);}
   .carousel-prob-yes{font-size:38px;}
 }
 
+/* ─── PORTFOLIO HEADER — reordenar en móvil ──────────────── */
+/* En desktop es una fila (avatar | info | balance). En pantallas
+   angostas eso aprieta tres bloques distintos en una sola línea y se
+   ve desordenado — aquí pasa a layout vertical: avatar+info arriba,
+   balance abajo en su propia franja, full width y alineado a la
+   izquierda (más legible que forzarlo a la derecha en una columna
+   estrecha). */
+@media(max-width:520px){
+  .portfolio-header{
+    flex-wrap:wrap;
+    gap:12px;
+  }
+  .portfolio-header-avatar{order:1;}
+  .portfolio-header-info{order:2; flex:1; min-width:0;}
+  .portfolio-header-balance{
+    order:3;
+    flex-basis:100%;
+    text-align:left !important;
+    border-top:1px solid var(--border);
+    padding-top:12px;
+    margin-top:4px;
+  }
+}
+
 
 /* ─── PAYMENT METHOD SELECTOR ────────────────── */
 .pay-methods{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:20px;margin-top:12px;}
@@ -1794,6 +1818,68 @@ function mkSparklineSVG(history,color="#00e5a0"){
   const W=110,H=36,mn=Math.min(...history)-0.01,mx=Math.max(...history)+0.01,rng=mx-mn||0.01;
   const pts=history.map((v,i)=>`${(i/(history.length-1))*W},${H-((v-mn)/rng)*(H-4)-2}`).join(" ");
   return`<svg width="${W}" height="${H}" style="overflow:visible;display:block"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linejoin="round"/></svg>`;
+}
+// ── Gráfica grande de progreso de un trader (balance + posiciones) ───
+// history: [{date:"2026-06-27", value:29595.26}, ...] ya ordenado ASC.
+// Estilo Polymarket: área rellena con gradiente, color según si el
+// valor final quedó por encima o por debajo del primero, eje X con
+// unas pocas fechas espaciadas (no todas, para no saturar).
+function mkProfitChartSVG(history, gradId){
+  const W=700, H=220, padL=8, padR=8, padT=16, padB=28;
+  if(!history || history.length===0){
+    return`<div style="width:100%;height:${H}px;display:flex;align-items:center;justify-content:center;
+        color:var(--muted);font-size:13px;text-align:center;padding:0 20px">
+      Sin historial todavía — el progreso se registra una vez al día,<br>vuelve pronto para ver la curva.
+    </div>`;
+  }
+  if(history.length===1){
+    const v = history[0].value;
+    return`<div style="width:100%;height:${H}px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px">
+      <div style="font-size:28px;font-weight:900;color:var(--text)">${usd(v)}</div>
+      <div style="color:var(--muted);font-size:12px">Primer registro · ${formatShortDate(history[0].date)} — vuelve mañana para ver la curva</div>
+    </div>`;
+  }
+
+  const values = history.map(h=>h.value);
+  const mn = Math.min(...values), mx = Math.max(...values);
+  const rng = (mx-mn) || 1;
+  const innerW = W-padL-padR, innerH = H-padT-padB;
+  const n = history.length;
+
+  const xAt = i => padL + (i/(n-1))*innerW;
+  const yAt = v => padT + innerH - ((v-mn)/rng)*innerH;
+
+  const linePts = history.map((h,i)=>`${xAt(i).toFixed(1)},${yAt(h.value).toFixed(1)}`).join(" ");
+  const areaPts = `${xAt(0).toFixed(1)},${(padT+innerH).toFixed(1)} ${linePts} ${xAt(n-1).toFixed(1)},${(padT+innerH).toFixed(1)}`;
+
+  const isUp = values[n-1] >= values[0];
+  const color = isUp ? "#00c896" : "#ef4444";
+
+  // Eje X: máximo ~5 etiquetas de fecha, espaciadas uniformemente
+  const labelCount = Math.min(5, n);
+  const labelIdx = Array.from({length:labelCount}, (_,k)=>Math.round(k*(n-1)/(labelCount-1||1)));
+  const xLabels = [...new Set(labelIdx)].map(i=>
+    `<text x="${xAt(i).toFixed(1)}" y="${H-8}" font-size="10" fill="var(--muted)" text-anchor="middle">${formatShortDate(history[i].date)}</text>`
+  ).join("");
+
+  const lastX = xAt(n-1), lastY = yAt(values[n-1]);
+
+  return`<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:${H}px;overflow:visible;display:block">
+    <defs>
+      <linearGradient id="${gradId}" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="${color}" stop-opacity="0.28"/>
+        <stop offset="100%" stop-color="${color}" stop-opacity="0"/>
+      </linearGradient>
+    </defs>
+    <polygon points="${areaPts}" fill="url(#${gradId})"/>
+    <polyline points="${linePts}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <circle cx="${lastX.toFixed(1)}" cy="${lastY.toFixed(1)}" r="3.5" fill="${color}"/>
+    ${xLabels}
+  </svg>`;
+}
+function formatShortDate(isoDate){
+  const d = new Date(isoDate+"T00:00:00");
+  return d.toLocaleDateString("es-CO",{day:"2-digit",month:"short"});
 }
 function mkTag(text,color="#00e5a0"){return`<span class="tag" style="background:${color}22;color:${color}">${escHtml(text)}</span>`;}
 const CAT_COLOR={Deportes:"#00b4d8",Economía:"#ffc800",Cultura:"#c864ff",Tecnología:"#00e5a0",Política:"#ff6b35",Todos:"#00e5a0",Breaking:"#e05c2a",Trending:"#00b4d8"};
@@ -4126,6 +4212,20 @@ async function authConnectSolana(){
   }
 }
 
+// Detecta qué wallet de Solana está realmente inyectada en el
+// navegador, en vez de asumir siempre Phantom. Usado en el flujo de
+// DEPÓSITO (sendSolanaDeposit y su botón), no en el login — ahí se
+// mantiene el flujo específico de Phantom que ya existía.
+function detectSolanaProvider(){
+  if(window.phantom?.solana)  return {provider: window.phantom.solana,  name: "Phantom"};
+  if(window.solflare)         return {provider: window.solflare,        name: "Solflare"};
+  if(window.backpack?.solana) return {provider: window.backpack.solana, name: "Backpack"};
+  if(window.solana?.isTrust || window.trustwallet?.solana)
+                               return {provider: window.solana || window.trustwallet.solana, name: "Trust Wallet"};
+  if(window.solana)           return {provider: window.solana, name: window.solana.isPhantom ? "Phantom" : "tu wallet"};
+  return null;
+}
+
 async function loadSolanaWeb3(){
   if(window.solanaWeb3) return window.solanaWeb3;
   return new Promise((resolve,reject)=>{
@@ -4152,8 +4252,9 @@ function splLog(msg){
 }
 
 async function sendSolanaDeposit(token, amountUSD){
-  const solProvider = window.phantom?.solana || window.solana;
-  if(!solProvider?.isPhantom){ notify("Phantom no detectado","error"); return; }
+  const sol = detectSolanaProvider();
+  if(!sol){ notify("No se detectó ninguna wallet de Solana instalada","error"); return; }
+  const solProvider = sol.provider;
   if(!solProvider.publicKey){ notify("Conecta tu wallet Solana primero","error"); return; }
 
   try{
@@ -4198,12 +4299,16 @@ async function sendSolanaDeposit(token, amountUSD){
 
       const { blockhash } = await connection.getLatestBlockhash("confirmed");
 
-      // Agregar memo con userId para identificar al usuario aunque envíe desde otra wallet
+      // Agregar memo con userId para identificar al usuario aunque envíe desde otra wallet.
+      // Usamos TextEncoder (nativo del navegador) en vez de Buffer.from —
+      // Buffer es una API de Node.js que no existe en el navegador sin un
+      // polyfill, y este archivo no usa bundler que lo inyecte. El
+      // resultado es el mismo: un Uint8Array con los bytes UTF-8 del string.
       const userId = STATE.session || "";
       const memoIx = {
         keys: [],
         programId: new PublicKey("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"),
-        data: Buffer.from(`statwaves:${userId}`, "utf8"),
+        data: new TextEncoder().encode(`statwaves:${userId}`),
       };
 
       const tx = new Transaction().add(
@@ -4213,7 +4318,7 @@ async function sendSolanaDeposit(token, amountUSD){
       tx.recentBlockhash = blockhash;
       tx.feePayer = fromPubkey;
 
-      notify("Abriendo Phantom para confirmar…","info");
+      notify(`Abriendo ${sol.name} para confirmar…`,"info");
       const { signature } = await solProvider.signAndSendTransaction(tx);
       notify(`✅ SOL enviado · ${signature.slice(0,16)}…`,"success");
       notify("Tu balance se acreditará en unos segundos","info");
@@ -4247,7 +4352,7 @@ function showSolanaPaymentInstructions(tokenName, amount, address, userId, usern
       <div style="font-size:40px;margin-bottom:8px">◎</div>
       <h3 style="margin-bottom:4px">Envía ${tokenName} en Solana</h3>
       <p style="color:var(--muted);font-size:13px;margin-bottom:20px">
-        Abre <strong>Phantom → Send</strong> y envía exactamente:
+        Abre tu wallet de Solana (Phantom, Solflare, Backpack, etc.) y envía exactamente:
       </p>
       <div style="background:linear-gradient(135deg,#9945ff15,#9945ff08);border:2px solid #9945ff33;border-radius:16px;padding:16px;margin-bottom:16px">
         <div style="font-size:36px;font-weight:900;color:#9945ff">${amount.toFixed(2)} ${tokenName}</div>
@@ -4266,13 +4371,13 @@ function showSolanaPaymentInstructions(tokenName, amount, address, userId, usern
           <div style="color:var(--accent);font-size:11px;margin-top:4px;font-weight:400">Toca para copiar</div>
         </div>
         <div style="font-size:11px;color:#6b21a8">
-          En Phantom: <strong>Send → campo "Memo/Reference"</strong> → pega este texto exacto
+          En tu wallet: <strong>Send → campo "Memo/Reference"</strong> → pega este texto exacto
         </div>
       </div>
 
       <div style="background:#fff8e6;border-radius:10px;padding:12px;font-size:12px;color:#b36000;margin-bottom:16px;text-align:left">
         <strong>⚠️ Sin el memo, el depósito NO se acreditará automáticamente.</strong><br><br>
-        • Abre Phantom → <strong>Send</strong><br>
+        • Abre tu wallet de Solana → <strong>Send</strong><br>
         • Selecciona <strong>${tokenName}</strong> en red <strong>Solana</strong><br>
         • Pega la dirección destino<br>
         • Busca el campo <strong>Memo</strong> y pega el código de arriba<br>
@@ -7154,6 +7259,25 @@ function renderCopyTraderView(){
   const isFollowing = STATE.following.includes(trader.id);
   const tab = STATE.profileTab || "activity";
 
+  // ── Historial de progreso (balance + posiciones) para la gráfica ───
+  // Se cachea por usuario en STATE.traderHistoryCache para no repetir
+  // la consulta en cada render() mientras se navega entre tabs.
+  STATE.traderHistoryCache = STATE.traderHistoryCache || {};
+  if(STATE.traderHistoryCache[trader.id] === undefined){
+    STATE.traderHistoryCache[trader.id] = null; // marca "cargando" para no disparar 2 veces
+    db.rpc("get_trader_history",{p_user_id:trader.id, p_days:365}).then(({data,error})=>{
+      STATE.traderHistoryCache[trader.id] = (!error && data && !data.error) ? (data.history||[]) : [];
+      if(STATE.copyTraderView===trader.id) render();
+    });
+  }
+  const traderHistory = STATE.traderHistoryCache[trader.id];
+  const histLoading = traderHistory === null;
+  const histList = traderHistory || [];
+  const histStart = histList.length>0 ? histList[0].value : null;
+  const histEnd   = histList.length>0 ? histList[histList.length-1].value : null;
+  const histDelta = (histStart!==null && histEnd!==null) ? (histEnd-histStart) : null;
+  const histDeltaPct = (histDelta!==null && histStart>0.01) ? (histDelta/histStart*100) : null;
+
   const allPositions = Object.entries(trader.positions||{});
   const activePos = allPositions.filter(([mid,p])=>{
     const m=getMarket(mid); return m&&!m.resolved&&((p.YES||0)>0||(p.NO||0)>0);
@@ -7217,6 +7341,21 @@ function renderCopyTraderView(){
         <div style="text-align:center"><div style="font-size:22px;font-weight:900">${userComments.length}</div><div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">Comentarios</div></div>
       </div>
     </div>
+
+    <!-- Gráfica de progreso (balance + posiciones, snapshot diario) -->
+    <div class="card" style="margin-bottom:20px;padding:20px">
+      <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:4px">
+        <span style="font-size:12px;color:var(--muted);font-weight:600">📈 Progreso</span>
+        ${histDelta!==null?`<span style="font-size:11px;font-weight:700;color:${histDelta>=0?"var(--yes)":"var(--no)"}">
+          ${histDelta>=0?"+":""}${usd(histDelta)} (${histDeltaPct!==null?(histDelta>=0?"+":"")+histDeltaPct.toFixed(1)+"%":"—"}) · último año
+        </span>`:""}
+      </div>
+      ${histEnd!==null?`<div style="font-size:28px;font-weight:900;margin-bottom:8px">${usd(histEnd)}</div>`:""}
+      ${histLoading
+        ? `<div style="height:220px;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:13px">Cargando progreso…</div>`
+        : mkProfitChartSVG(histList, "grad-"+trader.id.replace(/[^a-zA-Z0-9]/g,""))}
+    </div>
+
     <div style="display:flex;gap:0;border-bottom:2px solid var(--border);margin-bottom:20px;overflow-x:auto;scrollbar-width:none">
       ${tabs.map(tb=>`<button onclick="STATE.profileTab='${tb.id}';render()" style="padding:10px 16px;font-size:13px;font-weight:${tab===tb.id?"700":"500"};border:none;background:transparent;cursor:pointer;font-family:inherit;white-space:nowrap;color:${tab===tb.id?"var(--yes)":"var(--muted)"};border-bottom:${tab===tb.id?"2px solid var(--yes)":"2px solid transparent"};margin-bottom:-2px">${tb.label}</button>`).join("")}
     </div>
@@ -7677,8 +7816,14 @@ function renderFeed(){
           ${item.market?`
           <div style="background:var(--card2);border-radius:10px;padding:10px 12px;
             border-left:3px solid ${isYes?"var(--yes)":"var(--no)"}">
-            <div style="font-size:11px;color:var(--muted);margin-bottom:4px">
-              ${en?"Market":"Mercado"}
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+              <div style="font-size:11px;color:var(--muted)">
+                ${en?"Market":"Mercado"}
+              </div>
+              <div style="font-size:11px;color:var(--accent);font-weight:700;display:flex;align-items:center;gap:3px">
+                ${en?"View market":"Ver mercado"}
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+              </div>
             </div>
             <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:6px">
               ${escHtml(mTitle(item.market).slice(0,70))}${mTitle(item.market).length>70?"…":""}
@@ -7732,9 +7877,10 @@ function renderFeed(){
               <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;padding:5px 8px;
                 background:var(--card2);border-radius:8px;border:1px solid var(--border)">
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="var(--muted)" stroke-width="2" stroke-linecap="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
-                <span style="font-size:11px;color:var(--accent);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+                <span style="font-size:11px;color:var(--accent);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">
                   ${escHtml(mTitle(item.market).slice(0,55))}${mTitle(item.market).length>55?"…":""}
                 </span>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
               </div>
               <!-- Texto del comentario -->
               <div style="font-size:13px;color:var(--text);line-height:1.5;padding:10px 12px;
@@ -7771,9 +7917,9 @@ function renderPortfolio(){
 
   <!-- Perfil de usuario -->
   <div class="card" style="margin-bottom:24px;padding:20px">
-    <div style="display:flex;align-items:center;gap:16px">
+    <div class="portfolio-header" style="display:flex;align-items:center;gap:16px">
       <!-- Avatar: clic abre perfil, botón de cámara cambia foto -->
-        <div style="position:relative;display:inline-block">
+        <div style="position:relative;display:inline-block" class="portfolio-header-avatar">
           <div style="cursor:pointer" onclick="STATE.copyTraderView='${u.id}';STATE.profileTab='activity';render()" title="Ver mi perfil">
             ${renderAvatar(u.username, u.avatarUrl, 64, 26)}
           </div>
@@ -7788,7 +7934,7 @@ function renderPortfolio(){
           </button>
         </div>
       <!-- Info -->
-      <div style="flex:1;min-width:0">
+      <div style="flex:1;min-width:0" class="portfolio-header-info">
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
           <div style="font-weight:900;font-size:18px">@${escHtml(u.username)}</div>
           <button onclick="STATE.copyTraderView='${u.id}';STATE.profileTab='activity';render()"
@@ -7804,7 +7950,7 @@ function renderPortfolio(){
         <div style="font-size:11px;color:var(--muted);margin-top:4px">Miembro desde ${u.createdAt?new Date(u.createdAt).toLocaleDateString("es-CO",{month:"short",year:"numeric"}):"—"}</div>
       </div>
       <!-- Balance -->
-      <div style="text-align:right;flex-shrink:0">
+      <div style="text-align:right;flex-shrink:0" class="portfolio-header-balance">
         <div style="font-size:11px;color:var(--muted);margin-bottom:2px">${t("wallet_balance")}</div>
         <div style="font-size:22px;font-weight:900;color:var(--yes)">${usd(u.balance)}</div>
         <div style="font-size:11px;color:var(--muted);margin-top:4px">${t("position_value")}: <strong style="color:var(--accent)">${usd(totalValue)}</strong></div>
@@ -8304,7 +8450,7 @@ function renderSolanaStep(amt, token){
     </div>
 
     <button class="btn-polygon" style="background:linear-gradient(135deg,#9945ff,#7c3aed);width:100%;margin-bottom:10px" onclick="sendSolanaDeposit('${token}',${amt})" ${isSOL&&!solAmt?"disabled style='opacity:.5;cursor:not-allowed'":""}>
-      <span>◎</span> ${isSOL&&!solAmt?"Obteniendo precio…":"Enviar "+displayAmt+" desde Phantom"}
+      <span>◎</span> ${isSOL&&!solAmt?"Obteniendo precio…":"Enviar "+displayAmt+" desde "+(detectSolanaProvider()?.name||"tu wallet")}
     </button>
 
     <!-- Opción aparte: pagar escaneando un código QR (Solana Pay) desde otra
