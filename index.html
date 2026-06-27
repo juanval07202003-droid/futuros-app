@@ -2902,7 +2902,9 @@ function render(){
         }
       })();
       break;
-    case"wallet":   app.innerHTML=renderWallet();   break;
+    case"wallet":   app.innerHTML=renderWallet();
+      (()=>{ const wu=getUser(); if(wu) loadUserTransactions(STATE.walletViewUserId||wu.id); })();
+      break;
     case"admin":    app.innerHTML=renderAdmin();    break;
     case"bemm":     app.innerHTML=renderBeMM();     startBeMMCountdown(); loadSTWNotifyCount(); break;
     case"terms":    app.innerHTML=renderPolicy("terms");    break;
@@ -8102,14 +8104,21 @@ function renderWallet(){
     const isBuy  = tx.description?.includes("Compra");
     const isSell = tx.description?.includes("Venta");
     const isLoss = tx.type==="loss";
-    const typeColor  = tx.type==="deposit"?"var(--yes)":tx.type==="withdraw"||isLoss?"var(--no)":isSell?"var(--yes)":"var(--text)";
+    // Las ganancias de resolución se guardan con type:"deposit" (para que
+    // el balance suba igual que un depósito real), pero deben verse
+    // distintas — adminResolve() ya las marca con "✅ Ganaste" en la
+    // descripción, así que las detectamos por ahí en vez de por el tipo.
+    const isWin  = tx.type==="deposit" && tx.description?.includes("✅ Ganaste");
+    const isRealDeposit = tx.type==="deposit" && !isWin;
+    const typeColor  = isWin?"#00c896":isRealDeposit?"var(--yes)":tx.type==="withdraw"||isLoss?"var(--no)":isSell?"var(--yes)":"var(--text)";
     const typePrefix = tx.type==="deposit"?"+":tx.type==="withdraw"||isLoss?"-":isSell?"+":"-";
-    const typeLabel  = tx.type==="deposit"?t("wallet_deposit_label")
+    const typeLabel  = isWin?(STATE.lang==="en"?"Won":"Ganancia")
+                      :isRealDeposit?t("wallet_deposit_label")
                       :tx.type==="withdraw"?t("wallet_withdraw_label")
                       :isLoss?(STATE.lang==="en"?"Loss":"Pérdida")
                       :isSell?"Venta":"Compra";
-    const badgeBg    = isLoss?"rgba(224,40,74,.10)":isSell?"rgba(0,168,112,.12)":"";
-    const badgeColor = isLoss?"var(--no)":isSell?"var(--yes)":"";
+    const badgeBg    = isWin?"rgba(0,200,150,.12)":isLoss?"rgba(224,40,74,.10)":isSell?"rgba(0,168,112,.12)":"";
+    const badgeColor = isWin?"#00c896":isLoss?"var(--no)":isSell?"var(--yes)":"";
     const amountStr  = isLoss && tx.amount===0 ? "—" : typePrefix+usd(tx.amount);
     return`<div class="tx-row">
       <div>
@@ -11155,20 +11164,6 @@ function renderAdminResolve(){
           <!-- Comprometidos en tiempo real (desde DB) -->
           <div id="mm-committed-${m.id}" style="margin-top:8px"></div>
 
-          <!-- Órdenes MM — desplegable -->
-          <div style="margin-top:8px">
-            <button onclick="toggleMMOrders('${m.id}')"
-              style="width:100%;display:flex;justify-content:space-between;align-items:center;
-                padding:8px 10px;background:var(--card2);border:1px solid var(--border);
-                border-radius:8px;cursor:pointer;font-family:inherit">
-              <span style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">
-                🏦 Posiciones & órdenes del MM
-              </span>
-              <span id="mm-orders-arrow-${m.id}" style="color:var(--muted);font-size:12px">▼</span>
-            </button>
-            <div id="mm-orders-${m.id}" style="display:none;margin-top:4px"></div>
-          </div>
-
           <!-- Posiciones de participantes — desplegable -->
           <div style="margin-top:8px">
             <button onclick="toggleAdminPos('${m.id}')"
@@ -11251,6 +11246,45 @@ function renderAdminResolve(){
         </div>
       </div>`).join("")}`:""}
   </div>`;
+}
+
+// Pausar/reanudar manualmente un mercado. El campo manual_paused ya
+// existe en el esquema y ya lo respeta match_order del lado del RPC
+// (bloquea nuevas compras/ventas) y el indicador visual "⏸ Pausado" en
+// el panel — solo faltaban estas dos funciones, el botón llamaba a
+// adminPauseMarket() sin que existiera en ningún lado (ReferenceError
+// silencioso, por eso el botón no respondía).
+async function adminPauseMarket(id){
+  if(!isAdmin()) return notify("Sin permisos","error");
+  const i = STATE.markets.findIndex(m=>m.id===id);
+  if(i<0) return notify("Mercado no encontrado","error");
+  const m = STATE.markets[i];
+  const reason = prompt(`Pausar "${m.title}"\n\nMotivo (opcional, visible para otros admins):`, m.pauseReason||"");
+  if(reason===null) return; // canceló el prompt
+
+  await db.from("markets").update({
+    manual_paused: true,
+    pause_reason: reason || null,
+  }).eq("id", id);
+
+  STATE.markets[i] = {...STATE.markets[i], manualPaused:true, pauseReason: reason || null};
+  notify("⏸ Mercado pausado — las compras y ventas quedan bloqueadas","info");
+  render();
+}
+
+async function adminUnpauseMarket(id){
+  if(!isAdmin()) return notify("Sin permisos","error");
+  const i = STATE.markets.findIndex(m=>m.id===id);
+  if(i<0) return notify("Mercado no encontrado","error");
+
+  await db.from("markets").update({
+    manual_paused: false,
+    pause_reason: null,
+  }).eq("id", id);
+
+  STATE.markets[i] = {...STATE.markets[i], manualPaused:false, pauseReason:null};
+  notify("▶ Mercado reanudado — las compras y ventas están activas de nuevo","info");
+  render();
 }
 
 async function adminUnlockMarket(id){
@@ -11638,202 +11672,6 @@ async function removeSimilarMarket(marketId, relatedId){
     }).join("") || '<span style="font-size:10px;color:var(--muted)">Sin mercados relacionados</span>';
   }
   notify(`✅ Mercado relacionado eliminado`);
-}
-
-// ── MM Orders panel ─────────────────────────────────────────────────
-function toggleMMOrders(marketId){
-  const el    = document.getElementById("mm-orders-"+marketId);
-  const arrow = document.getElementById("mm-orders-arrow-"+marketId);
-  if(!el) return;
-  const isOpen = el.style.display !== "none";
-  if(isOpen){
-    el.style.display = "none";
-    if(arrow) arrow.textContent = "▼";
-    // Clear refresh interval if any
-    if(window._mmOrdersInterval) { clearInterval(window._mmOrdersInterval); window._mmOrdersInterval = null; }
-  } else {
-    el.style.display = "block";
-    if(arrow) arrow.textContent = "▲";
-    loadMMOrders(marketId);
-    // Auto-refresh every 8s while open
-    if(window._mmOrdersInterval) clearInterval(window._mmOrdersInterval);
-    window._mmOrdersInterval = setInterval(()=>{
-      if(document.getElementById("mm-orders-"+marketId)?.style.display !== "none"){
-        loadMMOrders(marketId);
-      } else {
-        clearInterval(window._mmOrdersInterval);
-        window._mmOrdersInterval = null;
-      }
-    }, 8000);
-  }
-}
-
-async function loadMMOrders(marketId){
-  const el = document.getElementById("mm-orders-"+marketId);
-  if(!el) return;
-  el.innerHTML = `<div style="font-size:11px;color:var(--muted);padding:8px">⏳ Cargando…</div>`;
-
-  const m    = STATE.markets.find(x=>x.id===marketId);
-  const tick = m?.tick || 0.01;
-  const pYes = m?.priceYes || 0.5;
-
-  // ── 1. Get admin user (try STATE first, fallback to DB)
-  let adminId = STATE.users?.find(u=>u.role==='admin')?.id || null;
-  if(!adminId){
-    const {data:admins} = await db.from("users").select("id").eq("role","admin").limit(1);
-    adminId = admins?.[0]?.id || null;
-  }
-  if(!adminId){
-    el.innerHTML = `<div style="color:var(--no);font-size:11px;padding:8px">⚠️ No se encontró usuario admin</div>`;
-    return;
-  }
-
-  // ── 2. Fetch MM position (shares in wallet)
-  const {data: pos} = await db.from("positions")
-    .select("yes_shares,no_shares")
-    .eq("market_id", marketId)
-    .eq("user_id", adminId)
-    .maybeSingle();
-
-  // ── 3. Fetch MM open/partial sell orders
-  const {data: sellOrders, error: sellErr} = await db.from("orders")
-    .select("side,price,shares,filled,status,created_at")
-    .eq("market_id", marketId)
-    .eq("is_mm", true)
-    .in("status", ["open","partial"])
-    .order("side", {ascending:true})
-    .order("price", {ascending:false});   // highest price first
-
-  // ── 4. Fetch MM executed BUY orders to compute avg buy price per side
-  // Buy orders for MM are market/limit buys that are now "filled"
-  const {data: buyOrders} = await db.from("orders")
-    .select("side,price,shares,filled")
-    .eq("market_id", marketId)
-    .eq("is_mm", true)
-    .eq("status", "filled")
-    .order("created_at", {ascending:true});
-
-  // Compute avg buy price per side
-  const calcAvg = (side) => {
-    const list = (buyOrders||[]).filter(o=>o.side===side && (o.filled||o.shares)>0);
-    const totalShares = list.reduce((s,o)=>s+(o.filled||o.shares),0);
-    const totalCost   = list.reduce((s,o)=>s+(o.filled||o.shares)*o.price,0);
-    return totalShares > 0 ? totalCost/totalShares : null;
-  };
-  const avgBuyYes = calcAvg("YES");
-  const avgBuyNo  = calcAvg("NO");
-
-  const mmYes = pos?.yes_shares || 0;
-  const mmNo  = pos?.no_shares  || 0;
-
-  const pct  = v => (Math.round(v*1000)/10).toFixed(1)+"%";
-  const usdF = v => "$"+(Math.round(v*100)/100).toFixed(2);
-
-  const yesOrders = (sellOrders||[]).filter(o=>o.side==="YES");
-  const noOrders  = (sellOrders||[]).filter(o=>o.side==="NO");
-
-  // ── Render an order row with buy price + min sell price
-  const renderOrderRow = (o, color, bg, avgBuy) => {
-    const rem = (o.shares||0) - (o.filled||0);
-    const val = rem * o.price;
-    const minSell = avgBuy !== null ? Math.max(avgBuy - tick, tick) : null;
-    const isProfitable = minSell !== null ? o.price >= minSell : true;
-    const profitPerShare = avgBuy !== null ? o.price - avgBuy : null;
-    return `<div style="padding:6px 8px;background:${bg};border-radius:6px;margin-bottom:4px;
-        border-left:3px solid ${isProfitable?"var(--yes)":"var(--no)"}">
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:6px">
-        <!-- Precio venta -->
-        <div>
-          <div style="font-size:11px;color:var(--muted);line-height:1">precio venta</div>
-          <div style="font-size:14px;font-weight:800;color:${color}">${pct(o.price)}</div>
-        </div>
-        <!-- Precio compra -->
-        <div style="text-align:center">
-          <div style="font-size:11px;color:var(--muted);line-height:1">precio compra</div>
-          <div style="font-size:13px;font-weight:700;color:var(--text)">${avgBuy!==null?pct(avgBuy):"—"}</div>
-        </div>
-        <!-- Mín. venta rentable -->
-        <div style="text-align:center">
-          <div style="font-size:11px;color:var(--muted);line-height:1">mín. venta</div>
-          <div style="font-size:13px;font-weight:700;color:${isProfitable?"var(--yes)":"var(--no)"}">${minSell!==null?pct(minSell):"—"}</div>
-        </div>
-        <!-- Shares y valor -->
-        <div style="text-align:right">
-          <div style="font-size:12px;font-weight:700;color:var(--text)">${rem.toFixed(2)} sh</div>
-          <div style="font-size:11px;color:var(--muted)">${usdF(val)}</div>
-        </div>
-      </div>
-      ${profitPerShare!==null?`
-      <div style="margin-top:4px;font-size:10px;color:${profitPerShare>=0?"var(--yes)":"var(--no)"}">
-        ${profitPerShare>=0?"✅":"⚠️"} ${profitPerShare>=0?"Ganancia":"Pérdida"} por share: ${profitPerShare>=0?"+":""}${pct(profitPerShare)}
-        ${o.status==="partial"?` · parcial (${(o.filled||0).toFixed(2)} ej.)`:""}
-      </div>`
-      :o.status==="partial"?`<div style="font-size:10px;color:var(--muted);margin-top:3px">parcial (${(o.filled||0).toFixed(2)} ej.)</div>`:""}
-    </div>`;
-  };
-
-  const renderSide = (list, color, bg, avgBuy, label) => {
-    if(!list.length) return `<div style="font-size:11px;color:var(--muted);padding:4px 6px;font-style:italic">Sin órdenes activas</div>`;
-    return list.map(o=>renderOrderRow(o, color, bg, avgBuy)).join("");
-  };
-
-  el.innerHTML = `
-    <!-- Posición actual del MM -->
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:8px 0 6px">
-      <div style="background:rgba(0,168,112,.08);border:1px solid rgba(0,168,112,.2);border-radius:8px;padding:8px 10px">
-        <div style="font-size:10px;color:var(--muted);margin-bottom:2px;font-weight:600;text-transform:uppercase;letter-spacing:.3px">Shares SÍ en cartera</div>
-        <div style="font-size:18px;font-weight:900;color:var(--yes)">${mmYes.toFixed(2)}</div>
-        <div style="font-size:10px;color:var(--muted)">val. mercado: ${usdF(mmYes * pYes)}</div>
-        ${avgBuyYes!==null?`<div style="font-size:10px;color:var(--muted);margin-top:2px">precio compra prom: <strong style="color:var(--text)">${pct(avgBuyYes)}</strong></div>`:""}
-      </div>
-      <div style="background:rgba(224,40,74,.08);border:1px solid rgba(224,40,74,.2);border-radius:8px;padding:8px 10px">
-        <div style="font-size:10px;color:var(--muted);margin-bottom:2px;font-weight:600;text-transform:uppercase;letter-spacing:.3px">Shares NO en cartera</div>
-        <div style="font-size:18px;font-weight:900;color:var(--no)">${mmNo.toFixed(2)}</div>
-        <div style="font-size:10px;color:var(--muted)">val. mercado: ${usdF(mmNo * (1-pYes))}</div>
-        ${avgBuyNo!==null?`<div style="font-size:10px;color:var(--muted);margin-top:2px">precio compra prom: <strong style="color:var(--text)">${pct(avgBuyNo)}</strong></div>`:""}
-      </div>
-    </div>
-
-    <!-- Órdenes de venta activas -->
-    <div style="margin-top:4px">
-      <div style="font-size:10px;font-weight:700;color:var(--muted);letter-spacing:.5px;text-transform:uppercase;margin-bottom:6px">
-        📋 Órdenes de venta activas · precio compra · mín. rentable
-      </div>
-
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-        <div>
-          <div style="font-size:10px;font-weight:700;color:var(--yes);margin-bottom:4px">
-            SÍ — ${yesOrders.length} orden${yesOrders.length!==1?"es":""}
-          </div>
-          ${renderSide(yesOrders,"var(--yes)","rgba(0,168,112,.06)",avgBuyYes,"SÍ")}
-        </div>
-        <div>
-          <div style="font-size:10px;font-weight:700;color:var(--no);margin-bottom:4px">
-            NO — ${noOrders.length} orden${noOrders.length!==1?"es":""}
-          </div>
-          ${renderSide(noOrders,"var(--no)","rgba(224,40,74,.06)",avgBuyNo,"NO")}
-        </div>
-      </div>
-
-      <!-- Regla precio mínimo -->
-      <div style="margin-top:8px;font-size:10px;color:var(--muted);background:var(--card2);
-          border-radius:6px;padding:6px 8px;line-height:1.6">
-        📌 <strong>Mín. venta</strong> = max(precio_compra − 1 tick, tick)<br>
-        <span style="color:var(--accent)">SÍ actual: ${pct(pYes)} · NO actual: ${pct(1-pYes)} · Tick: ${(tick*100).toFixed(2)}%</span><br>
-        ${avgBuyYes!==null?`SÍ mín. rentable: <strong style="color:var(--yes)">${pct(Math.max(avgBuyYes-tick,tick))}</strong> · `:""}
-        ${avgBuyNo!==null?`NO mín. rentable: <strong style="color:var(--no)">${pct(Math.max(avgBuyNo-tick,tick))}</strong>`:""}
-      </div>
-    </div>
-
-    ${sellErr?`<div style="color:var(--no);font-size:10px;margin-top:4px">⚠️ Error cargando órdenes: ${sellErr.message}</div>`:""}
-
-    <div style="text-align:right;margin-top:4px">
-      <button onclick="loadMMOrders('${marketId}')"
-        style="font-size:10px;color:var(--muted);background:none;border:none;cursor:pointer;padding:0">
-        🔄 Actualizar
-      </button>
-    </div>
-  `;
 }
 
 function toggleAdminPos(marketId){
