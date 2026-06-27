@@ -8109,17 +8109,39 @@ function renderWallet(){
     // distintas — adminResolve() ya las marca con "✅ Ganaste" en la
     // descripción, así que las detectamos por ahí en vez de por el tipo.
     const isWin  = tx.type==="deposit" && tx.description?.includes("✅ Ganaste");
-    const isRealDeposit = tx.type==="deposit" && !isWin;
-    const typeColor  = isWin?"#00c896":isRealDeposit?"var(--yes)":tx.type==="withdraw"||isLoss?"var(--no)":isSell?"var(--yes)":"var(--text)";
-    const typePrefix = tx.type==="deposit"?"+":tx.type==="withdraw"||isLoss?"-":isSell?"+":"-";
+    const isReferral = tx.type==="deposit" && tx.description?.includes("🎁 Comisión de referidos");
+    const isRefund = tx.type==="deposit" && tx.description?.includes("Devolución retiro");
+    const isRealDeposit = tx.type==="deposit" && !isWin && !isReferral && !isRefund;
+    // Ajustes manuales del admin (adminAdjustBalance): el balance siempre
+    // debe ser igual a la suma del historial, así que un ajuste +$X debe
+    // verse como ingreso (verde, +) y uno -$X como egreso (rojo, -) — el
+    // signo real lo trae tx.amount, no hay que asumirlo por el tipo.
+    const isAdjustment = tx.type==="adjustment";
+    const isPositiveAdj = isAdjustment && tx.amount>=0;
+    const typeColor  = isWin?"#00c896":isReferral?"#a855f7":isRefund?"var(--accent)"
+                      :isAdjustment?(isPositiveAdj?"var(--yes)":"var(--no)")
+                      :isRealDeposit?"var(--yes)":tx.type==="withdraw"||isLoss?"var(--no)":isSell?"var(--yes)":"var(--text)";
+    const typePrefix = isAdjustment?(isPositiveAdj?"+":"-")
+                      :tx.type==="deposit"?"+":tx.type==="withdraw"||isLoss?"-":isSell?"+":"-";
     const typeLabel  = isWin?(STATE.lang==="en"?"Won":"Ganancia")
+                      :isReferral?(STATE.lang==="en"?"Referral":"Referido")
+                      :isRefund?(STATE.lang==="en"?"Refund":"Devolución")
+                      :isAdjustment?(STATE.lang==="en"?"Admin adjustment":"Ajuste admin")
                       :isRealDeposit?t("wallet_deposit_label")
                       :tx.type==="withdraw"?t("wallet_withdraw_label")
                       :isLoss?(STATE.lang==="en"?"Loss":"Pérdida")
                       :isSell?"Venta":"Compra";
-    const badgeBg    = isWin?"rgba(0,200,150,.12)":isLoss?"rgba(224,40,74,.10)":isSell?"rgba(0,168,112,.12)":"";
-    const badgeColor = isWin?"#00c896":isLoss?"var(--no)":isSell?"var(--yes)":"";
-    const amountStr  = isLoss && tx.amount===0 ? "—" : typePrefix+usd(tx.amount);
+    const badgeBg    = isWin?"rgba(0,200,150,.12)":isReferral?"rgba(168,85,247,.12)":isRefund?"rgba(0,180,216,.12)"
+                      :isAdjustment?(isPositiveAdj?"rgba(0,168,112,.12)":"rgba(224,40,74,.10)")
+                      :isLoss?"rgba(224,40,74,.10)":isSell?"rgba(0,168,112,.12)":"";
+    const badgeColor = isWin?"#00c896":isReferral?"#a855f7":isRefund?"var(--accent)"
+                      :isAdjustment?(isPositiveAdj?"var(--yes)":"var(--no)")
+                      :isLoss?"var(--no)":isSell?"var(--yes)":"";
+    // tx.amount ya trae el signo real en los ajustes — no forzar prefijo
+    // duplicado (ej. evitar "+-50" o perder el signo negativo)
+    const amountStr  = isLoss && tx.amount===0 ? "—"
+                      : isAdjustment ? (isPositiveAdj?"+":"-")+usd(tx.amount)
+                      : typePrefix+usd(tx.amount);
     return`<div class="tx-row">
       <div>
         <div style="font-weight:600;font-size:13px">${escHtml(tx.description||"")}</div>
@@ -14194,6 +14216,14 @@ async function adminPayReferral(referrerId){
   if(!confirm(`Pagar ${usd(total)} a @${u.username}?\nSe acreditará a su saldo.`)) return;
   await db.from("referral_commissions").update({status:"paid"}).in("id",pending.map(c=>c.id));
   await dbUpdateBalanceAtomic(referrerId,total);
+  // Registrar la transacción — sin esto el balance sube sin dejar
+  // rastro en el historial, rompiendo la igualdad balance = Σhistorial.
+  const tx={id:"tx_"+genId(),type:"deposit",amount:total,network:"internal",
+    description:`🎁 Comisión de referidos pagada · ${pending.length} comisión${pending.length!==1?"es":""}`,
+    date:new Date().toISOString(),status:"confirmed"};
+  await dbSaveTransaction(referrerId, tx);
+  const ri=STATE.users.findIndex(x=>x.id===referrerId);
+  if(ri>=0) STATE.users[ri]={...STATE.users[ri],transactions:[tx,...(STATE.users[ri].transactions||[])]};
   notify(`✅ ${usd(total)} pagados a @${u.username}`,"success");
   STATE.adminReferralsLoaded=false; STATE.adminReferralsData=null;
   render();
