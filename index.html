@@ -8905,6 +8905,15 @@ async function submitWithdraw(){
 
 function openTrade(marketId,side,mode){
   if(mode==="sell"&&!getUser()){navigate("auth");return;}
+  // Cooldown de 10s entre operaciones (buy/sell), por usuario, en toda
+  // la plataforma — la validación real vive en el RPC match_order (no
+  // es evadible), esto es solo feedback inmediato antes de llenar el
+  // formulario, para no hacer esperar al usuario hasta confirmar.
+  const cooldownLeft = getTradeCooldownSecsLeft();
+  if(cooldownLeft > 0){
+    notify(`⏳ Espera ${cooldownLeft}s antes de tu próxima operación`,"info");
+    return;
+  }
   STATE.tradeMarketId=marketId;STATE.tradeSide=side;STATE.tradeMode=mode;
   STATE.tradeDollars="";STATE.tradeShares="";
   STATE.tradeOpen=true;
@@ -8917,6 +8926,15 @@ function openTrade(marketId,side,mode){
     await refreshMarketPrices();
     if(STATE.tradeOpen) updateTradePreview();
   }, PRICE_REFRESH_TRADE_INTERVAL);
+}
+
+// Segundos restantes del cooldown del usuario actual (0 si no aplica
+// o si ya pasó). STATE.tradeCooldownUntil se fija tras cada operación
+// exitosa en executeTrade().
+function getTradeCooldownSecsLeft(){
+  if(!STATE.tradeCooldownUntil) return 0;
+  const left = Math.ceil((STATE.tradeCooldownUntil - Date.now())/1000);
+  return left > 0 ? left : 0;
 }
 
 function renderTradeModal(){
@@ -9551,13 +9569,15 @@ function handleLogout(){
 // ═══════════════════════════════════════════════════════════════════
 // TRADE ACTIONS
 // ═══════════════════════════════════════════════════════════════════
-// Rate limiting para trades (max 1 trade cada 2 segundos)
-let _lastTradeTime = 0;
+// Cooldown real de 10s entre operaciones (buy/sell) — la validación
+// que de verdad importa vive en el RPC match_order, vía la tabla
+// user_cooldowns. STATE.tradeCooldownUntil (ver getTradeCooldownSecsLeft
+// más arriba) es solo la capa visual: feedback inmediato sin tener que
+// intentar la operación y esperar el error del servidor.
 
 async function executeTrade(){
-  const now = Date.now();
-  if(now - _lastTradeTime < 2000) return notify("Espera un momento antes de hacer otro trade","error");
-  _lastTradeTime = now;
+  const cooldownLeft = getTradeCooldownSecsLeft();
+  if(cooldownLeft > 0) return notify(`⏳ Espera ${cooldownLeft}s antes de tu próxima operación`,"error");
   const u=getUser();if(!u)return;
   const{tradeSide:side,tradeMode:mode,tradeMarketId:marketId}=STATE;
   const ui=STATE.users.findIndex(x=>x.id===u.id);
@@ -9593,6 +9613,12 @@ async function executeTrade(){
         return;
       }
       if(rpcData.error){
+        // Si el rechazo fue por cooldown, sincronizar el reloj visual con
+        // el valor real del servidor (puede haber quedado desfasado si el
+        // usuario opera desde otra pestaña/dispositivo).
+        if(rpcData.cooldown_remaining != null){
+          STATE.tradeCooldownUntil = Date.now() + rpcData.cooldown_remaining*1000;
+        }
         notify(rpcData.error,"error");
         if(btnEl){ btnEl.disabled=false; btnEl.textContent=`${t("trade_confirm_buy")}`; }
         return;
@@ -9642,6 +9668,7 @@ async function executeTrade(){
       }
 
       recordBuyTime(u.id, marketId);
+      STATE.tradeCooldownUntil = Date.now() + 10000;
       closeTradeModal(); render();
       setTimeout(()=>{ loadPendingOrders(marketId); loadMyTrades(marketId); }, 400);
 
@@ -9693,6 +9720,9 @@ async function executeTrade(){
         return;
       }
       if(sellData.error){
+        if(sellData.cooldown_remaining != null){
+          STATE.tradeCooldownUntil = Date.now() + sellData.cooldown_remaining*1000;
+        }
         notify(sellData.error,"error");
         if(btnSell){ btnSell.disabled=false; btnSell.textContent=t("trade_confirm_sell"); }
         return;
@@ -9742,6 +9772,7 @@ async function executeTrade(){
         STATE.markets[idx]={...STATE.markets[idx], ...dbRowToMarket(freshMktSell.data)};
       }
 
+      STATE.tradeCooldownUntil = Date.now() + 10000;
       closeTradeModal(); render();
       setTimeout(()=>{ loadPendingOrders(marketId); loadMyTrades(marketId); }, 400);
 
