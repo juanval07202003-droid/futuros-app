@@ -634,7 +634,7 @@ td{padding:12px;vertical-align:middle;color:var(--text-2);}
 
 /* ─── SHARE BUTTON ───────────────────────────── */
 .share-section{
-  margin-top:24px;padding-top:24px;
+  margin-top:24px;padding-top:24px;padding-bottom:32px;
   border-top:1px solid var(--border);
   display:flex;align-items:center;justify-content:space-between;
   flex-wrap:wrap;gap:12px;
@@ -5190,10 +5190,9 @@ function renderMarket(){
       </div>`;
   // ── Order book snapshot ───────────────────────────────────────────
 
-  return`<div class="fade-up" style="max-width:1100px;margin:0 auto;padding:0 16px">
+  return`<div class="fade-up" style="max-width:1100px;margin:0 auto;padding:16px 16px 0">
   <!-- TÍTULO + META -->
   <div style="margin-bottom:20px">
-    ${mkCatTag(m.category,cc)}
     <h1 style="font-size:clamp(20px,3vw,28px);font-weight:900;margin:8px 0 12px;line-height:1.25;color:var(--text)">${escHtml(mTitle(m))}</h1>
     <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;font-size:13px;color:var(--muted)">
       <span>📊 Vol: <strong style="color:var(--text)">${fmtVol((m.totalVolume||0)+(m.seedLiquidity||0))}</strong></span>
@@ -6922,7 +6921,9 @@ function showCopied(marketId){
 async function dbLoadFeed(){
   const u = getUser();
   if(!u) return;
-  loadFollowing();
+  await loadFollowing(); // esperar de verdad — antes esto no se esperaba y
+                          // STATE.following seguía vacío al construir allIds,
+                          // por eso el feed solo traía transacciones propias
 
   const followedUsers = STATE.users.filter(x=>STATE.following.includes(x.id));
   // Incluir al propio usuario para ver su propia actividad en el feed
@@ -7132,23 +7133,23 @@ async function followTrader(userId){
 // vez disparan la carga async y re-renderizan cuando llega; las
 // siguientes veces ya usan STATE.following cacheado.
 function loadFollowing(){
-  const u = getUser(); if(!u) return;
-  if(STATE._followingLoadedFor === u.id) return; // ya cargado para este usuario
-  if(STATE._followingLoading) return; // ya hay una carga en curso
-  STATE._followingLoading = true;
+  const u = getUser(); if(!u) return Promise.resolve();
+  if(STATE._followingLoadedFor === u.id) return Promise.resolve(); // ya cargado para este usuario
+  if(STATE._followingLoading) return STATE._followingLoading; // ya hay una carga en curso — reutilizar la misma promesa
 
-  db.from("follows").select("following_id").eq("follower_id", u.id)
+  STATE._followingLoading = db.from("follows").select("following_id").eq("follower_id", u.id)
     .then(({data, error})=>{
-      STATE._followingLoading = false;
+      STATE._followingLoading = null;
       if(error){ console.error("[Follow] error cargando:", error.message); return; }
       STATE.following = (data||[]).map(r=>r.following_id);
       STATE._followingLoadedFor = u.id;
       render();
     })
     .catch(e=>{
-      STATE._followingLoading = false;
+      STATE._followingLoading = null;
       console.error("[Follow] excepción cargando:", e?.message||e);
     });
+  return STATE._followingLoading;
 }
 
 function renderTraderProfile(userId){
@@ -7183,8 +7184,10 @@ function renderLeaderboard(){
       winRate: resolvedTotal>0 ? Math.round((resolvedWins/resolvedTotal)*100) : null,
     };
   }).filter(u=>{
-    const hasActivity = u.activePositions>0||u.wins>0;
-    if(!hasActivity) return false;
+    // Leaderboard de TODOS los usuarios de la plataforma, con o sin
+    // actividad — antes se excluía a quien no tuviera posiciones ni
+    // mercados ganados, por eso el buscador no encontraba a nadie sin
+    // operar todavía.
     if(!q) return true;
     return u.username.toLowerCase().includes(q) || (u.email||"").toLowerCase().includes(q);
   }).sort((a,b)=>b.portfolioValue-a.portfolioValue).slice(0,50);
@@ -7200,7 +7203,7 @@ function renderLeaderboard(){
       </svg>
       <input type="text" placeholder="Buscar trader por @username…"
         value="${escHtml(STATE.leaderboardQ||"")}"
-        oninput="STATE.leaderboardQ=this.value;document.getElementById('lb-results').innerHTML=renderLeaderboard()"
+        oninput="STATE.leaderboardQ=this.value;document.getElementById('lb-results').innerHTML=renderLeaderboardResults()"
         style="width:100%;padding:10px 12px 10px 36px;border-radius:12px;border:1.5px solid var(--border);
         background:var(--card);font-size:13px;color:var(--text);font-family:inherit;box-sizing:border-box;outline:none"
         onfocus="this.style.borderColor='var(--yes)'" onblur="this.style.borderColor='var(--border)'"/>
@@ -7209,11 +7212,49 @@ function renderLeaderboard(){
         background:none;color:var(--muted);cursor:pointer;font-size:16px;padding:0">✕</button>`:""}
     </div>
 
-    <div id="lb-results">
-    ${traders.length===0
+    <div id="lb-results">${renderLeaderboardResultsHtml(traders, currentUser, q)}</div>
+  </div>`;
+}
+
+// Separado de renderLeaderboard() para que el oninput del buscador
+// pueda re-renderizar SOLO los resultados (#lb-results) sin volver a
+// insertar el input completo dentro de sí mismo — eso era lo que
+// duplicaba la barra de búsqueda en cada tecla presionada.
+function renderLeaderboardResults(){
+  const q = (STATE.leaderboardQ||"").toLowerCase().trim();
+  const traders = STATE.users.map(u=>{
+    const positions = Object.entries(u.positions||{}).filter(([,p])=>(p.YES||0)>0||(p.NO||0)>0);
+    const totalValue = positions.reduce((sum,[mid,pos])=>{
+      const m=getMarket(mid); if(!m) return sum;
+      return sum + (pos.YES>0?calcSellReturn(m,"YES",pos.YES):0) + (pos.NO>0?calcSellReturn(m,"NO",pos.NO):0);
+    },0);
+    const resolvedWins = Object.entries(u.positions||{}).filter(([mid,pos])=>{
+      const m=getMarket(mid); if(!m||!m.resolved) return false;
+      return (m.resolution==="YES"&&(pos.YES||0)>0)||(m.resolution==="NO"&&(pos.NO||0)>0);
+    }).length;
+    const resolvedTotal = Object.entries(u.positions||{}).filter(([mid])=>{
+      const m=getMarket(mid); return m&&m.resolved;
+    }).length;
+    return {
+      ...u,
+      activePositions: positions.length,
+      portfolioValue: totalValue,
+      wins: resolvedWins,
+      total: resolvedTotal,
+      winRate: resolvedTotal>0 ? Math.round((resolvedWins/resolvedTotal)*100) : null,
+    };
+  }).filter(u=>{
+    if(!q) return true;
+    return u.username.toLowerCase().includes(q) || (u.email||"").toLowerCase().includes(q);
+  }).sort((a,b)=>b.portfolioValue-a.portfolioValue).slice(0,50);
+  return renderLeaderboardResultsHtml(traders, getUser(), q);
+}
+
+function renderLeaderboardResultsHtml(traders, currentUser, q){
+  return`${traders.length===0
       ? `<div style="text-align:center;padding:48px;color:var(--muted)">
           <div style="font-size:32px;margin-bottom:12px">🔍</div>
-          <div style="font-weight:600">${q?"Sin resultados para \""+escHtml(q)+"\"":"Aún no hay traders con actividad"}</div>
+          <div style="font-weight:600">${q?"Sin resultados para \""+escHtml(q)+"\"":"Aún no hay traders registrados"}</div>
          </div>`
       : traders.map((trader,i)=>{
           const isSelf = currentUser&&trader.id===currentUser.id;
@@ -7245,9 +7286,8 @@ function renderLeaderboard(){
               ${isFollowing?"✓ Siguiendo":"+ Seguir"}
             </button>`:""}
           </div>`;
-        }).join("")}
-    </div>
-  </div>`;
+        }).join("")
+      }`;
 }
 
 function renderCopyTraderView(){
@@ -11948,8 +11988,14 @@ async function adminDeleteMarket(id){
   if(!confirm(`¿Eliminar permanentemente "${m.title}"? Esta acción no se puede deshacer.`)) return;
   await db.from("positions").delete().eq("market_id",id);
   await db.from("orders").delete().eq("market_id",id);
+  // Limpiar también las secciones (Última hora / Tendencias) — si no se
+  // borra aquí, el market_id queda huérfano en market_sections y el
+  // contador de esas pestañas sigue mostrando mercados ya eliminados.
+  await db.from("market_sections").delete().eq("market_id",id);
   await db.from("markets").delete().eq("id",id);
   STATE.markets = STATE.markets.filter(x=>x.id!==id);
+  STATE.breakingIds = (STATE.breakingIds||[]).filter(mid=>mid!==id);
+  STATE.trendingIds = (STATE.trendingIds||[]).filter(mid=>mid!==id);
   notify("🗑 Mercado eliminado correctamente","info");
   render();
 }
