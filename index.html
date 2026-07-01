@@ -4740,18 +4740,90 @@ function renderProPanel(){
   </div>`;
 }
 
-// Gráfico grande para Modo Pro — usa viewBox para escalar correctamente
-// al ancho del panel, a diferencia de mkSparklineSVG (pensado para
-// tarjetas pequeñas con dimensiones fijas en píxeles).
-function mkProChartSVG(history, color="#00e5a0"){
-  if(!history || history.length<2) return `<div style="height:120px;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:12px">Sin datos suficientes</div>`;
-  const W=600, H=120;
-  const mn=Math.min(...history)-0.01, mx=Math.max(...history)+0.01, rng=mx-mn||0.01;
-  const pts=history.map((v,i)=>`${(i/(history.length-1))*W},${H-((v-mn)/rng)*(H-8)-4}`).join(" ");
-  const lastY = H-((history[history.length-1]-mn)/rng)*(H-8)-4;
-  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:120px;display:block;overflow:visible">
-    <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
-    <circle cx="${W}" cy="${lastY.toFixed(1)}" r="3" fill="${color}"/>
+// Gráfico de VELAS (candlestick) para Modo Pro.
+// Agrupa el priceHistory en N velas, calculando Open/High/Low/Close
+// de cada grupo, y las dibuja con colores verde (vela alcista, Close>=Open)
+// y rojo (vela bajista, Close<Open), con mecha superior e inferior.
+function mkProChartSVG(history, _color){
+  if(!history || history.length < 2){
+    return `<div style="height:180px;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:12px">Sin datos suficientes para velas</div>`;
+  }
+
+  const W = 600, H = 180, PAD_L = 36, PAD_R = 8, PAD_T = 10, PAD_B = 24;
+  const chartW = W - PAD_L - PAD_R;
+  const chartH = H - PAD_T - PAD_B;
+
+  // Agrupar en velas: máximo 40, mínimo 1 punto por vela
+  const NUM_CANDLES = Math.min(40, Math.floor(history.length / 2));
+  const groupSize   = Math.max(1, Math.floor(history.length / NUM_CANDLES));
+  const candles = [];
+  for(let i = 0; i < history.length; i += groupSize){
+    const slice = history.slice(i, i + groupSize);
+    if(!slice.length) continue;
+    candles.push({
+      o: slice[0],
+      h: Math.max(...slice),
+      l: Math.min(...slice),
+      c: slice[slice.length - 1],
+    });
+  }
+
+  const allVals = candles.flatMap(c=>[c.h,c.l]);
+  const mn = Math.min(...allVals);
+  const mx = Math.max(...allVals);
+  const rng = mx - mn || 0.01;
+
+  const yPos = v => PAD_T + (1 - (v - mn) / rng) * chartH;
+  const candleW = Math.max(2, Math.floor(chartW / candles.length) - 2);
+  const gap     = (chartW - candles.length * candleW) / Math.max(candles.length - 1, 1);
+
+  // Líneas de precio en el eje Y (grid horizontal)
+  const gridLines = [0, 0.25, 0.5, 0.75, 1].map(f => {
+    const val = mn + f * rng;
+    const y   = yPos(val);
+    return `<line x1="${PAD_L}" y1="${y.toFixed(1)}" x2="${W - PAD_R}" y2="${y.toFixed(1)}"
+      stroke="var(--border)" stroke-width="0.5" stroke-dasharray="3,3"/>
+    <text x="${(PAD_L - 3).toFixed(0)}" y="${(y + 3.5).toFixed(1)}" fill="var(--muted)"
+      font-size="8" text-anchor="end">${Math.round(val * 100)}%</text>`;
+  }).join("");
+
+  // Velas SVG
+  const candleSvgs = candles.map((c, i) => {
+    const x    = PAD_L + i * (candleW + gap);
+    const bull = c.c >= c.o;
+    const col  = bull ? "#00c896" : "#e0284a";
+    const bodyTop    = yPos(Math.max(c.o, c.c));
+    const bodyBot    = yPos(Math.min(c.o, c.c));
+    const bodyH      = Math.max(1, bodyBot - bodyTop);
+    const cx         = (x + candleW / 2).toFixed(1);
+    return `
+      <line x1="${cx}" y1="${yPos(c.h).toFixed(1)}" x2="${cx}" y2="${bodyTop.toFixed(1)}"
+        stroke="${col}" stroke-width="1"/>
+      <rect x="${x.toFixed(1)}" y="${bodyTop.toFixed(1)}" width="${candleW}" height="${bodyH.toFixed(1)}"
+        fill="${col}" rx="0.5"/>
+      <line x1="${cx}" y1="${bodyBot.toFixed(1)}" x2="${cx}" y2="${yPos(c.l).toFixed(1)}"
+        stroke="${col}" stroke-width="1"/>`;
+  }).join("");
+
+  // Precio actual (última vela)
+  const lastC = candles[candles.length - 1];
+  const lastY = yPos(lastC.c);
+  const lastCol = lastC.c >= lastC.o ? "#00c896" : "#e0284a";
+
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"
+      style="width:100%;height:180px;display:block;overflow:visible">
+    ${gridLines}
+    ${candleSvgs}
+    <!-- Línea del precio actual -->
+    <line x1="${PAD_L}" y1="${lastY.toFixed(1)}" x2="${W - PAD_R}" y2="${lastY.toFixed(1)}"
+      stroke="${lastCol}" stroke-width="0.8" stroke-dasharray="4,3" opacity="0.6"/>
+    <!-- Etiqueta del precio actual -->
+    <rect x="${(W - PAD_R - 34).toFixed(0)}" y="${(lastY - 8).toFixed(1)}"
+      width="34" height="14" fill="${lastCol}" rx="3"/>
+    <text x="${(W - PAD_R - 17).toFixed(0)}" y="${(lastY + 3).toFixed(1)}"
+      fill="white" font-size="9" text-anchor="middle" font-weight="700">
+      ${Math.round(lastC.c * 100)}%
+    </text>
   </svg>`;
 }
 
@@ -4880,11 +4952,17 @@ function renderProOrderBookHTML(orders, trades){
 
   const tapeRows = trades.slice(0,12).map(tr=>{
     const ago = timeAgo(tr.updated_at || tr.created_at);
-    // El "precio" de la operación, visto desde SÍ, es yes_price
-    const tradeSide = tr.yes_price >= 0.5 ? "yes-leaning" : "no-leaning";
-    return `<div style="display:grid;grid-template-columns:50px 1fr 55px;gap:4px;font-size:10px;padding:3px 0;border-bottom:1px solid var(--border)">
+    // yes_price >= 0.5 indica que el comprador apostó SÍ (pagó más del 50% por ese lado)
+    const isSide = tr.yes_price >= 0.5 ? "YES" : "NO";
+    const sideColor = isSide === "YES" ? "var(--yes)" : "var(--no)";
+    const sideBg    = isSide === "YES" ? "rgba(0,200,150,.12)" : "rgba(224,40,74,.10)";
+    const displayPrice = isSide === "YES" ? tr.yes_price : (1 - tr.yes_price);
+    return `<div style="display:grid;grid-template-columns:40px 38px 1fr 50px;gap:3px;font-size:10px;
+        padding:3px 0;border-bottom:1px solid var(--border);align-items:center">
       <div style="color:var(--muted)">${ago}</div>
-      <div style="font-weight:700;color:${tr.yes_price>=0.5?"var(--yes)":"var(--no)"}">${pct(tr.yes_price)}</div>
+      <div style="font-size:9px;font-weight:800;color:${sideColor};background:${sideBg};
+          border-radius:4px;text-align:center;padding:1px 3px">${isSide}</div>
+      <div style="font-weight:700;color:${sideColor}">${pct(displayPrice)}</div>
       <div style="color:var(--muted);text-align:right">${(tr.shares||0).toFixed(1)} sh</div>
     </div>`;
   }).join("");
@@ -4893,9 +4971,11 @@ function renderProOrderBookHTML(orders, trades){
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
     <!-- Libro de órdenes real: bids y asks con profundidad acumulada -->
     <div>
-      <div style="display:flex;justify-content:space-between;font-size:9px;color:var(--muted);
-          text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px;padding:0 2px">
-        <span>Compra (SÍ)</span><span>Acum.</span>
+      <!-- Header Compra SÍ -->
+      <div style="display:flex;justify-content:space-between;font-size:9px;font-weight:800;
+          text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px;padding:3px 6px;
+          background:rgba(0,200,150,.10);border-radius:4px;border-left:3px solid var(--yes)">
+        <span style="color:var(--yes)">▲ Compra (SÍ)</span><span style="color:var(--muted)">Acum.</span>
       </div>
       ${bidsWithDepth.length ? bidsWithDepth.map(b=>row(b,"bid")).join("") : `<div style="text-align:center;color:var(--muted);font-size:11px;padding:14px 0">Sin órdenes de compra</div>`}
 
@@ -4907,18 +4987,21 @@ function renderProOrderBookHTML(orders, trades){
           : `<div style="font-size:11px;color:var(--muted)">Sin spread visible</div>`}
       </div>
 
-      <div style="display:flex;justify-content:space-between;font-size:9px;color:var(--muted);
-          text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px;padding:0 2px">
-        <span>Cant.</span><span>Venta (SÍ)</span>
+      <!-- Header Venta SÍ -->
+      <div style="display:flex;justify-content:space-between;font-size:9px;font-weight:800;
+          text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px;padding:3px 6px;
+          background:rgba(224,40,74,.10);border-radius:4px;border-left:3px solid var(--no)">
+        <span style="color:var(--muted)">Cant.</span><span style="color:var(--no)">▼ Venta (SÍ)</span>
       </div>
       ${asksWithDepth.length ? asksWithDepth.map(a=>row(a,"ask")).join("") : `<div style="text-align:center;color:var(--muted);font-size:11px;padding:14px 0">Sin órdenes de venta</div>`}
     </div>
 
     <!-- Cinta de últimas operaciones reales -->
     <div>
-      <div style="display:grid;grid-template-columns:50px 1fr 55px;gap:4px;font-size:9px;color:var(--muted);
-          text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px;padding:0 2px">
-        <span>Hace</span><span>Precio</span><span style="text-align:right">Shares</span>
+      <div style="display:grid;grid-template-columns:40px 38px 1fr 50px;gap:3px;font-size:9px;
+          color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px;
+          padding:3px 6px;background:var(--card2);border-radius:4px">
+        <span>Hace</span><span>Lado</span><span>Precio</span><span style="text-align:right">Shares</span>
       </div>
       ${tapeRows || `<div style="text-align:center;color:var(--muted);font-size:11px;padding:14px 0">Sin operaciones recientes</div>`}
     </div>
