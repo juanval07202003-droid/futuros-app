@@ -4763,16 +4763,46 @@ const PRO_PERIODS = {
 
 // Carga trades con timestamp desde contracts y dibuja las velas
 async function loadProChart(marketId){
-  const {data} = await db.from('contracts')
-    .select('yes_price, updated_at')
+  // Fuente correcta para las velas: órdenes ejecutadas del mercado.
+  // Los contratos (contracts.yes_price) NO son la fuente correcta porque
+  // yes_price solo se actualiza cuando se compra el lado YES de ese
+  // contrato específico — en compras NO queda con el precio viejo de
+  // cuando el contrato fue creado, produciendo velas desincronizadas con
+  // el precio real del mercado.
+  // Las órdenes ejecutadas (filled/partial) sí tienen el precio real
+  // del mercado en el momento de cada operación, y su created_at es el
+  // timestamp real de cuando ocurrió.
+  const {data} = await db.from('orders')
+    .select('price, side, created_at')
     .eq('market_id', marketId)
-    .order('updated_at', {ascending: true})
-    .limit(2000);
+    .in('status', ['filled','partial'])
+    .neq('order_type', 'mm')      // excluir órdenes internas del MM (no reflejan precio de mercado)
+    .order('created_at', {ascending: true})
+    .limit(5000);
 
   PRO_CHART_STATE.trades = (data||[]).map(r=>({
-    price: r.yes_price,
-    ts:    new Date(r.updated_at).getTime(),
-  }));
+    // Normalizar siempre a precio SÍ: si la orden es del lado NO,
+    // el precio real de SÍ es (1 - price_NO)
+    price: r.side === 'YES' ? r.price : Math.round((1 - r.price) * 10000) / 10000,
+    ts:    new Date(r.created_at).getTime(),
+  })).filter(r => r.price > 0 && r.price < 1);
+
+  // Fallback: si no hay órdenes ejecutadas aún, usar price_history del mercado
+  // interpolando timestamps uniformemente
+  if(PRO_CHART_STATE.trades.length < 2){
+    const m = getMarket(marketId);
+    const hist = m?.priceHistory || [];
+    if(hist.length >= 2){
+      const now   = Date.now();
+      const start = m?.createdAt ? new Date(m.createdAt).getTime() : now - hist.length * 60000;
+      const step  = (now - start) / Math.max(hist.length - 1, 1);
+      PRO_CHART_STATE.trades = hist.map((price, i) => ({
+        price,
+        ts: start + i * step,
+      }));
+    }
+  }
+
   PRO_CHART_STATE.marketId = marketId;
   renderProChartInPlace();
 }
