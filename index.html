@@ -2904,6 +2904,7 @@ function render(){
             if(pu) loadPendingOrders(pm.id);
             if(pu) startSellRefresh(pm.id);
             if(pu) loadProMyTrades(pm.id);
+            loadProSentiment(pm.id);
           }, 150);
         }
       })();
@@ -4600,6 +4601,7 @@ function selectProMarket(marketId){
   PRO_CHART_STATE.trades = [];
   PRO_CHART_STATE.marketId = null;
   PRO_CHART_STATE.offset = 0;
+  PRO_CHART_STATE.zoomSlot = 12;
   render();
   setTimeout(()=>{
     startProObRefresh(marketId);
@@ -4607,6 +4609,7 @@ function selectProMarket(marketId){
     if(getUser()) loadPendingOrders(marketId);
     if(getUser()) startSellRefresh(marketId);
     if(getUser()) loadProMyTrades(marketId);
+    loadProSentiment(marketId);
     // loadProChart se llama automáticamente desde mkProChartSVG vía setTimeout
   }, 150);
 }
@@ -4731,29 +4734,13 @@ function renderProPanel(){
           <div id="inline-trade-${m.id}">${renderInlineTrade(m, tab.side, tab.mode, u, pos)}</div>
         </div>
 
-        <!-- Sentimiento del mercado -->
-        ${(()=>{
-          const qY = m.qYes||0;
-          const qN = m.qNo||0;
-          const total = qY + qN;
-          const pctY = total>0 ? Math.round(qY/total*100) : 50;
-          const pctN = 100 - pctY;
-          return `<div class="card" style="padding:14px">
-            <div style="font-weight:700;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin-bottom:10px">📊 Sentimiento del mercado</div>
-            <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:5px">
-              <span style="color:var(--yes);font-weight:700">SÍ ${pctY}%</span>
-              <span style="color:var(--no);font-weight:700">NO ${pctN}%</span>
-            </div>
-            <div style="height:8px;border-radius:20px;background:var(--no-bg);overflow:hidden;margin-bottom:6px">
-              <div style="height:100%;border-radius:20px;background:var(--yes);width:${pctY}%;transition:width .4s"></div>
-            </div>
-            <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted)">
-              <span>$${usd(qY).replace('$','')} invertido en SÍ</span>
-              <span>$${usd(qN).replace('$','')} invertido en NO</span>
-            </div>
-            ${total===0?`<div style="font-size:10px;color:var(--muted);text-align:center;margin-top:4px">Sin compras de usuarios aún</div>`:''}
-          </div>`;
-        })()}
+        <!-- Sentimiento del mercado (cargado asíncrono con conteo real de compras) -->
+        <div class="card" style="padding:14px">
+          <div style="font-weight:700;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin-bottom:10px">📊 Sentimiento del mercado</div>
+          <div id="pro-sentiment-${m.id}">
+            <div style="text-align:center;color:var(--muted);font-size:11px;padding:6px 0">⏳ Cargando…</div>
+          </div>
+        </div>
 
         <!-- Posiciones detalladas (del usuario en este mercado) -->
         <div class="card" style="padding:14px;overflow-y:auto;max-height:420px">
@@ -4937,7 +4924,7 @@ function buildCandleSVG(trades, period){
   PRO_CHART_STATE._totalCandles = allCandles.length;
 
   // ── Viewport: cuántas velas caben y qué offset ───────────────────
-  const CANDLE_SLOT = 12; // px por vela (slot fijo)
+  const CANDLE_SLOT = PRO_CHART_STATE.zoomSlot || 12; // px por vela, controlado por zoom
   const maxVisible  = Math.floor(chartW / CANDLE_SLOT);
   const offset      = Math.max(0, Math.min(PRO_CHART_STATE.offset||0, allCandles.length - 1));
   // Las velas visibles: desde (total-maxVisible-offset) hasta (total-offset)
@@ -5018,10 +5005,8 @@ function buildCandleSVG(trades, period){
   // ── Indicador de scroll ──────────────────────────────────────────
   const canScrollLeft  = startIdx > 0;
   const canScrollRight = offset > 0;
-  const scrollHint = canScrollLeft || canScrollRight
-    ? `<text x="${W/2}" y="${H-2}" fill="var(--muted)" font-size="7.5" text-anchor="middle">
-        ← scroll para navegar →</text>`
-    : '';
+  const scrollHint = `<text x="${W/2}" y="${H-2}" fill="var(--muted)" font-size="7.5" text-anchor="middle">
+      scroll = zoom · Ctrl+scroll = navegar</text>`;
 
   return `
     ${gridLines}
@@ -5038,18 +5023,34 @@ function buildCandleSVG(trades, period){
 
 function handleProChartScroll(e){
   e.preventDefault();
-  const delta = e.deltaY > 0 ? -3 : 3; // scroll down = ir al pasado, up = ir al presente
-  const totalCandles = PRO_CHART_STATE._totalCandles || 0;
-  PRO_CHART_STATE.offset = Math.max(0, Math.min(
-    PRO_CHART_STATE.offset - delta,
-    Math.max(0, totalCandles - 10)
-  ));
+  // Scroll = zoom (más/menos velas visibles cambiando el tamaño de cada slot)
+  // Ctrl+Scroll = navegar al pasado/presente
+  if(e.ctrlKey || e.shiftKey){
+    // Navegar: Ctrl+scroll mueve el viewport al pasado/presente
+    const delta = e.deltaY > 0 ? -3 : 3;
+    const totalCandles = PRO_CHART_STATE._totalCandles || 0;
+    PRO_CHART_STATE.offset = Math.max(0, Math.min(
+      (PRO_CHART_STATE.offset||0) - delta,
+      Math.max(0, totalCandles - 5)
+    ));
+  } else {
+    // Zoom: scroll hacia arriba = velas más grandes (menos visibles)
+    //       scroll hacia abajo  = velas más pequeñas (más visibles)
+    const zoomIn  = e.deltaY < 0; // subir rueda = acercar = velas más anchas
+    const current = PRO_CHART_STATE.zoomSlot || 12;
+    // Rango: 5px (muy lejano, 100+ velas) a 40px (muy cerca, ~15 velas)
+    const next = zoomIn
+      ? Math.min(40, Math.round(current * 1.2))
+      : Math.max(5,  Math.round(current / 1.2));
+    PRO_CHART_STATE.zoomSlot = next;
+  }
   renderProChartInPlace();
 }
 
 function setProChartPeriod(period){
   PRO_CHART_STATE.period = period;
-  PRO_CHART_STATE.offset = 0; // resetear al más reciente al cambiar período
+  PRO_CHART_STATE.offset = 0;
+  PRO_CHART_STATE.zoomSlot = 12; // resetear zoom al cambiar período
   Object.keys(PRO_PERIODS).forEach(p => {
     const btn = document.getElementById('pro-period-'+p);
     if(btn){
@@ -8243,30 +8244,73 @@ async function loadUserPnlHistory(userId){
     }).join("")}`;
 }
 
+// Sentimiento del mercado: cuenta cuántas COMPRAS (órdenes filled/partial)
+// se han generado por lado (SÍ vs NO), excluyendo al MM. No es el dinero
+// invertido sino el número de operaciones — refleja el sentimiento real.
+async function loadProSentiment(marketId){
+  const el = document.getElementById("pro-sentiment-"+marketId);
+  if(!el){ setTimeout(()=>loadProSentiment(marketId),200); return; }
+
+  const {data} = await db.from("orders")
+    .select("side")
+    .eq("market_id", marketId)
+    .eq("is_mm", false)
+    .eq("is_mirror", false)
+    .neq("order_type","sell")
+    .in("status",["filled","partial"]);
+
+  const countY = (data||[]).filter(o=>o.side==="YES").length;
+  const countN = (data||[]).filter(o=>o.side==="NO").length;
+  const total  = countY + countN;
+  const pctY   = total>0 ? Math.round(countY/total*100) : 50;
+  const pctN   = 100 - pctY;
+
+  if(total===0){
+    el.innerHTML=`<div style="text-align:center;color:var(--muted);font-size:11px;padding:4px 0">Sin compras de usuarios aún</div>`;
+    return;
+  }
+
+  el.innerHTML=`
+    <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:5px">
+      <span style="color:var(--yes);font-weight:700">SÍ ${pctY}%</span>
+      <span style="color:var(--no);font-weight:700">NO ${pctN}%</span>
+    </div>
+    <div style="height:8px;border-radius:20px;background:var(--no-bg);overflow:hidden;margin-bottom:6px">
+      <div style="height:100%;border-radius:20px;background:var(--yes);width:${pctY}%;transition:width .4s"></div>
+    </div>
+    <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted)">
+      <span>${countY} compra${countY!==1?"s":""} de SÍ</span>
+      <span>${countN} compra${countN!==1?"s":""} de NO</span>
+    </div>`;
+}
+
 // Carga posiciones detalladas en el panel Pro (misma lógica que loadMyTrades
 // del panel normal, pero apunta al contenedor pro-my-trades-{marketId}).
 // Esto muestra cada entrada individual con precio, shares, P&L estimado, y
 // las órdenes de venta activas con botón × para cancelar.
-async function loadProMyTrades(marketId){
+async function loadProMyTrades(marketId, _retry=0){
   const el = document.getElementById("pro-my-trades-"+marketId);
   if(!el){
-    // retry si el DOM todavía no tiene el contenedor
-    setTimeout(()=>loadProMyTrades(marketId), 200);
+    if(_retry < 8) setTimeout(()=>loadProMyTrades(marketId, _retry+1), 250);
     return;
   }
   const u = getUser(); if(!u){ el.innerHTML=""; return; }
   const m = getMarket(marketId); if(!m){ el.innerHTML=""; return; }
 
-  // Cargar trades del usuario en este mercado
-  const [{data:tradesRaw}, {data:sellOrdersRaw}] = await Promise.all([
+  // Cargar posición real desde DB (no solo STATE que puede estar desactualizado)
+  const [
+    {data:tradesRaw},
+    {data:sellOrdersRaw},
+    {data:posDB},
+  ] = await Promise.all([
     db.from("orders")
       .select("id,side,price,shares,filled,created_at,order_type,status,is_mm,mm_order_id")
       .eq("market_id", marketId)
       .eq("user_id", u.id)
       .eq("is_mm", false)
       .eq("is_mirror", false)
-      .in("order_type", ["limit","sell","market"])
-      .in("status", ["filled","partial","open"])
+      .neq("order_type","sell")
+      .in("status", ["filled","partial"])
       .order("created_at", {ascending:true}),
     db.from("orders")
       .select("id,side,shares,filled,price,status,created_at")
@@ -8276,15 +8320,18 @@ async function loadProMyTrades(marketId){
       .eq("is_mm", false)
       .in("status", ["open","partial"])
       .order("created_at", {ascending:true}),
+    db.from("positions")
+      .select("yes_shares,no_shares")
+      .eq("market_id", marketId)
+      .eq("user_id", u.id)
+      .maybeSingle(),
   ]);
 
-  const pYes = getPrice(m,"YES");
-  const pos  = (u.positions||{})[marketId] || {YES:0, NO:0};
+  const yesShares = posDB?.yes_shares || 0;
+  const noShares  = posDB?.no_shares  || 0;
 
-  // Separar compras ejecutadas (filled/partial) por lado
-  const buyTrades = (tradesRaw||[]).filter(o =>
-    o.order_type !== "sell" && o.filled > 0 && !o.mm_order_id
-  );
+  // Compras ejecutadas por lado (filled > 0, excluir órdenes del MM y puente)
+  const buyTrades = (tradesRaw||[]).filter(o => o.filled > 0 && !o.mm_order_id);
   const yesTrades = buyTrades.filter(t=>t.side==="YES");
   const noTrades  = buyTrades.filter(t=>t.side==="NO");
 
@@ -8293,8 +8340,34 @@ async function loadProMyTrades(marketId){
     NO:  (sellOrdersRaw||[]).filter(o=>o.side==="NO"),
   };
 
+  // Si no hay trades detallados pero sí hay posición real, mostrar resumen simplificado
   if(!yesTrades.length && !noTrades.length){
-    el.innerHTML=`<div style="text-align:center;color:var(--muted);font-size:12px;padding:14px 0">Sin posiciones en este mercado</div>`;
+    if(yesShares < 0.001 && noShares < 0.001){
+      el.innerHTML=`<div style="text-align:center;color:var(--muted);font-size:12px;padding:14px 0">Sin posiciones en este mercado</div>`;
+      return;
+    }
+    // Tiene posición pero no historial detallado — mostrar resumen con datos de positions
+    const pYes2 = getPrice(m,"YES");
+    el.innerHTML = `
+      ${yesShares>0.001?`<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border-radius:8px;background:var(--yes-bg);margin-bottom:6px">
+        <div><div style="font-size:10px;color:var(--muted)">SÍ</div><div style="font-weight:700;font-size:13px;color:var(--yes)">${yesShares.toFixed(2)} sh</div></div>
+        <div style="text-align:right"><div style="font-size:10px;color:var(--muted)">valor est.</div><div style="font-weight:700;color:var(--yes)">${usd(calcSellReturn(m,"YES",yesShares))}</div></div>
+      </div>`:""}
+      ${noShares>0.001?`<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border-radius:8px;background:var(--no-bg)">
+        <div><div style="font-size:10px;color:var(--muted)">NO</div><div style="font-weight:700;font-size:13px;color:var(--no)">${noShares.toFixed(2)} sh</div></div>
+        <div style="text-align:right"><div style="font-size:10px;color:var(--muted)">valor est.</div><div style="font-weight:700;color:var(--no)">${usd(calcSellReturn(m,"NO",noShares))}</div></div>
+      </div>`:""}
+      ${(sellBySide.YES.length||sellBySide.NO.length)?
+        `<div style="margin-top:8px">${[...sellBySide.YES,...sellBySide.NO].map(o=>{
+          const pending=Math.max(0,(o.shares||0)-(o.filled||0));
+          if(pending<0.001) return "";
+          const col=o.side==="YES"?"var(--yes)":"var(--no)";
+          return `<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;background:rgba(76,175,80,.07);border-radius:6px;margin-bottom:4px">
+            <span style="font-size:10px;font-weight:700;color:${col}">🏷️ ${pending.toFixed(2)} sh ${o.side} en venta</span>
+            <button onclick="cancelPendingOrder('${o.id}','${marketId}','sell')"
+              style="font-size:13px;width:22px;height:22px;border-radius:50%;border:1px solid var(--border);background:var(--card);color:var(--muted);cursor:pointer">×</button>
+          </div>`;
+        }).join("")}</div>`:""}`;
     return;
   }
 
