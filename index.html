@@ -2739,6 +2739,9 @@ function navigate(view,opts={}){
     return;
   }
   stopCarousel();
+  // Si el usuario sale de la vista de mercado, detener el monitor de
+  // ventas pendientes — se reactiva automáticamente al volver
+  if(view !== "market") stopSellRefresh();
   if(view !== "home") STATE.marketSearch = "";
   STATE.view=view;
   if(opts.marketId) STATE.selectedMarket=opts.marketId;
@@ -2883,6 +2886,7 @@ function render(){
           setTimeout(()=>{
             if(mu) loadPendingOrders(mm.id);
             if(mu) loadMyTrades(mm.id);
+            if(mu) startSellRefresh(mm.id);
             startObRefresh(mm.id);
           }, 150);
         }
@@ -4763,46 +4767,62 @@ const PRO_PERIODS = {
 
 // Carga trades con timestamp desde contracts y dibuja las velas
 async function loadProChart(marketId){
-  // Fuente correcta para las velas: órdenes ejecutadas del mercado.
-  // Los contratos (contracts.yes_price) NO son la fuente correcta porque
-  // yes_price solo se actualiza cuando se compra el lado YES de ese
-  // contrato específico — en compras NO queda con el precio viejo de
-  // cuando el contrato fue creado, produciendo velas desincronizadas con
-  // el precio real del mercado.
-  // Las órdenes ejecutadas (filled/partial) sí tienen el precio real
-  // del mercado en el momento de cada operación, y su created_at es el
-  // timestamp real de cuando ocurrió.
-  const {data} = await db.from('orders')
-    .select('price, side, created_at')
+  // Estrategia: combinar dos fuentes complementarias
+  // 1. price_history del mercado: tiene los precios EXACTOS del RPC (v_new_price_yes
+  //    después de mover ticks) — es la fuente más confiable para el precio correcto.
+  // 2. orders ejecutadas: tienen los timestamps REALES de cada operación.
+  // Al combinarlas, cada punto del price_history se empareja con el timestamp
+  // de la orden correspondiente, dando velas sincronizadas con el precio real.
+
+  const m = getMarket(marketId);
+  const priceHist = m?.priceHistory || [];
+
+  // Cargar órdenes ejecutadas reales (excluyendo las internas del MM)
+  // para obtener timestamps reales de cada operación
+  const {data: orders} = await db.from('orders')
+    .select('created_at, side, price')
     .eq('market_id', marketId)
-    .in('status', ['filled','partial'])
-    .neq('order_type', 'mm')      // excluir órdenes internas del MM (no reflejan precio de mercado)
+    .in('status', ['filled', 'partial'])
+    .neq('order_type', 'mm')
+    .neq('is_mm', true)
     .order('created_at', {ascending: true})
     .limit(5000);
 
-  PRO_CHART_STATE.trades = (data||[]).map(r=>({
-    // Normalizar siempre a precio SÍ: si la orden es del lado NO,
-    // el precio real de SÍ es (1 - price_NO)
-    price: r.side === 'YES' ? r.price : Math.round((1 - r.price) * 10000) / 10000,
-    ts:    new Date(r.created_at).getTime(),
-  })).filter(r => r.price > 0 && r.price < 1);
+  const orderTs = (orders||[]).map(o => new Date(o.created_at).getTime());
 
-  // Fallback: si no hay órdenes ejecutadas aún, usar price_history del mercado
-  // interpolando timestamps uniformemente
-  if(PRO_CHART_STATE.trades.length < 2){
-    const m = getMarket(marketId);
-    const hist = m?.priceHistory || [];
-    if(hist.length >= 2){
-      const now   = Date.now();
-      const start = m?.createdAt ? new Date(m.createdAt).getTime() : now - hist.length * 60000;
-      const step  = (now - start) / Math.max(hist.length - 1, 1);
-      PRO_CHART_STATE.trades = hist.map((price, i) => ({
-        price,
-        ts: start + i * step,
-      }));
-    }
+  let trades = [];
+
+  if(priceHist.length >= 2 && orderTs.length >= 1){
+    // Emparejar cada punto del price_history con el timestamp de la orden
+    // correspondiente. Si hay más puntos que órdenes (o viceversa),
+    // interpolar uniformemente el que sobra.
+    const histLen = priceHist.length;
+    const tsLen   = orderTs.length;
+
+    // Usar el mínimo como referencia principal
+    const count = Math.min(histLen, tsLen + 1); // +1 porque price_history incluye el precio inicial
+    const startTs = m?.createdAt ? new Date(m.createdAt).getTime() : orderTs[0] || Date.now();
+
+    trades = priceHist.slice(0, count).map((price, i) => {
+      // El primer punto es el precio inicial (antes de cualquier operación)
+      const ts = i === 0 ? startTs : (orderTs[i - 1] || orderTs[orderTs.length - 1]);
+      return { price, ts };
+    });
+  } else if(priceHist.length >= 2){
+    // Fallback: no hay órdenes aún, interpolar timestamps uniformemente
+    const now   = Date.now();
+    const start = m?.createdAt ? new Date(m.createdAt).getTime() : now - priceHist.length * 300000;
+    const step  = priceHist.length > 1 ? (now - start) / (priceHist.length - 1) : 60000;
+    trades = priceHist.map((price, i) => ({ price, ts: start + i * step }));
   }
 
+  // Asegurar que el último punto siempre tenga el precio actual exacto del mercado
+  if(trades.length > 0 && m?.priceYes != null){
+    trades[trades.length - 1].price = m.priceYes;
+    trades[trades.length - 1].ts    = Date.now();
+  }
+
+  PRO_CHART_STATE.trades   = trades.filter(t => t.price > 0 && t.price < 1);
   PRO_CHART_STATE.marketId = marketId;
   renderProChartInPlace();
 }
@@ -6420,6 +6440,90 @@ function stopObRefresh(marketId){
   }
 }
 
+// ── Refresco automático de ventas activas ────────────────────────────
+// Cuando el usuario pone shares a la venta, P2 puede ejecutar partes
+// de esa venta en cualquier momento (cuando llegue un comprador).
+// Sin este refresco, el badge "X sh a la venta" no se actualiza solo
+// — el usuario tendría que salir y volver para ver el progreso.
+// Este timer corre cada 8s mientras el usuario esté en la vista del
+// mercado y tenga órdenes de venta activas, actualizando el badge y
+// notificando cuando hay ejecuciones parciales o totales.
+let _sellRefreshTimer = null;
+let _sellRefreshLastFilled = {}; // { orderId: filledAmount } — detecta cambios
+
+function startSellRefresh(marketId){
+  stopSellRefresh();
+  _sellRefreshTimer = setInterval(()=>{ checkSellProgress(marketId); }, 8000);
+}
+
+function stopSellRefresh(){
+  if(_sellRefreshTimer){ clearInterval(_sellRefreshTimer); _sellRefreshTimer=null; }
+  _sellRefreshLastFilled = {};
+}
+
+async function checkSellProgress(marketId){
+  const u = getUser();
+  if(!u) return;
+
+  const {data:sells} = await db.from("orders")
+    .select("id,side,shares,filled,status,created_at")
+    .eq("market_id", marketId)
+    .eq("user_id", u.id)
+    .eq("order_type", "sell")
+    .eq("is_mm", false)
+    .in("status", ["open","partial","filled"]);
+
+  if(!sells?.length){ stopSellRefresh(); return; }
+
+  let changed = false;
+  let totalNewlyFilled = 0;
+
+  for(const o of sells){
+    const prevFilled = _sellRefreshLastFilled[o.id] ?? o.filled;
+    const newFilled  = o.filled || 0;
+    const delta      = newFilled - prevFilled;
+
+    if(delta > 0.001){
+      changed = true;
+      totalNewlyFilled += delta;
+      _sellRefreshLastFilled[o.id] = newFilled;
+
+      // Notificar al usuario que se ejecutó parte de su venta
+      const sideLabel = o.side==="YES" ? "SÍ" : "NO";
+      const isComplete = o.status === "filled";
+      if(isComplete){
+        notify(`✅ Venta completada: ${(o.shares||0).toFixed(2)} shares ${sideLabel} vendidas`, "success");
+        // Recargar historial de transacciones si está en billetera
+        const walletUi = getUser();
+        if(walletUi) loadUserTransactions(walletUi.id);
+      } else {
+        notify(`⚡ Venta parcial: ${delta.toFixed(2)} shares ${sideLabel} ejecutadas`, "info");
+      }
+    } else {
+      _sellRefreshLastFilled[o.id] = newFilled;
+    }
+  }
+
+  // Si hubo cambios, refrescar el badge de posiciones
+  if(changed){
+    loadMyTrades(marketId);
+    loadPendingOrders(marketId);
+    // Recargar balance también
+    const {data:freshUser} = await db.from("users").select("balance").eq("id", u.id).maybeSingle();
+    if(freshUser){
+      const ui = STATE.users.findIndex(x=>String(x.id)===String(u.id));
+      if(ui>=0) STATE.users[ui]={...STATE.users[ui], balance: freshUser.balance};
+      // Actualizar el balance en la barra superior sin re-render completo
+      const balEl = document.querySelector(".balance-pill, [class*='balance']");
+      if(balEl) render();
+    }
+  }
+
+  // Detener el timer si ya no hay órdenes activas
+  const stillActive = sells.some(o => o.status==="open" || o.status==="partial");
+  if(!stillActive) stopSellRefresh();
+}
+
 async function loadPendingOrders(marketId){
   const u = getUser();
   if(!u) return;
@@ -7436,6 +7540,7 @@ function renderTraderProfile(userId){
   const trader = STATE.users.find(u=>u.id===userId);
   if(!trader) return;
   STATE.copyTraderView = userId;
+  STATE._pnlLoadedFor = null; // forzar recarga del historial P&L
   render();
 }
 
@@ -7694,7 +7799,11 @@ function renderCopyTraderView(){
       return"";
     }).join("")||`<div style="text-align:center;padding:48px;color:var(--muted)">Sin actividad aún</div>`:""}
     ${tab==="positions"?activePos.length===0?`<div style="text-align:center;padding:48px;color:var(--muted)">Sin posiciones activas</div>`:activePos.map(([mid,pos])=>{const m=getMarket(mid);if(!m)return"";const pYes=getPrice(m,"YES");const val=(pos.YES>0?calcSellReturn(m,"YES",pos.YES):0)+(pos.NO>0?calcSellReturn(m,"NO",pos.NO):0);return`<div class="card" style="margin-bottom:10px;cursor:pointer" onclick="navigate('market',{marketId:'${m.id}'})"><div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:10px"><div style="font-weight:700;font-size:14px;flex:1">${escHtml(mTitle(m))}</div><div style="text-align:right;flex-shrink:0"><div style="font-weight:800;color:var(--yes);font-size:15px">${pct(pYes)}</div><div style="font-size:10px;color:var(--muted)">prob YES</div></div></div><div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:${!isSelf?"10":"0"}px">${pos.YES>0?`<span style="padding:5px 12px;border-radius:20px;background:var(--yes-bg);color:var(--yes);font-size:12px;font-weight:700">YES · ${pos.YES.toFixed(1)} shares · ${usd(calcSellReturn(m,"YES",pos.YES))}</span>`:""}${pos.NO>0?`<span style="padding:5px 12px;border-radius:20px;background:var(--no-bg);color:var(--no);font-size:12px;font-weight:700">NO · ${pos.NO.toFixed(1)} shares · ${usd(calcSellReturn(m,"NO",pos.NO))}</span>`:""}</div>${!isSelf?`<div style="display:flex;gap:8px">${pos.YES>0?`<button onclick="event.stopPropagation();openTrade('${m.id}','YES','buy')" style="flex:1;padding:8px;border-radius:10px;background:var(--yes-bg);color:var(--yes);font-size:12px;font-weight:700;border:1px solid var(--yes);cursor:pointer">Copiar → YES</button>`:""}${pos.NO>0?`<button onclick="event.stopPropagation();openTrade('${m.id}','NO','buy')" style="flex:1;padding:8px;border-radius:10px;background:var(--no-bg);color:var(--no);font-size:12px;font-weight:700;border:1px solid var(--no);cursor:pointer">Copiar → NO</button>`:""}</div>`:""}</div>`;}).join(""):""}
-    ${tab==="history"?resolvedPos.length===0?`<div style="text-align:center;padding:48px;color:var(--muted)">Sin historial</div>`:resolvedPos.map(([mid,pos])=>{const m=getMarket(mid);if(!m)return"";const won=(m.resolution==="YES"&&(pos.YES||0)>0)||(m.resolution==="NO"&&(pos.NO||0)>0);return`<div class="card" style="margin-bottom:8px;cursor:pointer;opacity:.85" onclick="navigate('market',{marketId:'${m.id}'})"><div style="display:flex;align-items:center;gap:12px"><div style="width:40px;height:40px;border-radius:10px;flex-shrink:0;background:${won?"var(--yes-bg)":"var(--no-bg)"};display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:900;color:${won?"var(--yes)":"var(--no)"}">${won?"✓":"✗"}</div><div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13px;margin-bottom:4px">${escHtml(mTitle(m))}</div><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span style="font-size:11px;padding:3px 10px;border-radius:20px;font-weight:700;background:${won?"var(--yes-bg)":"var(--no-bg)"};color:${won?"var(--yes)":"var(--no)"}">${won?"Ganó":"Perdió"} · ${m.resolution}</span>${pos.YES>0?`<span style="font-size:11px;color:var(--muted)">YES · ${pos.YES.toFixed(1)} shares</span>`:""}${pos.NO>0?`<span style="font-size:11px;color:var(--muted)">NO · ${pos.NO.toFixed(1)} shares</span>`:""}</div></div></div></div>`;}).join(""):""}
+    ${tab==="history"?`<div id="user-pnl-history">
+      <div style="text-align:center;padding:20px;color:var(--muted);font-size:12px">⏳ Cargando historial…</div>
+    </div>`:""}
+    ${tab==="history" && !STATE._pnlLoadedFor?((()=>{ setTimeout(()=>loadUserPnlHistory(trader.id),100); return ""; })()):""}
+
     ${tab==="comments"?userComments.length===0?`<div style="text-align:center;padding:48px;color:var(--muted)">Sin comentarios aún</div>`:userComments.map(c=>`<div style="display:flex;gap:12px;padding:14px;background:var(--card);border-radius:14px;margin-bottom:8px;border:1px solid var(--border);cursor:pointer" onclick="navigate('market',{marketId:'${c.marketId}'})">${renderAvatar(trader.username,trader.avatarUrl||null,40,16)}<div style="flex:1;min-width:0"><div style="font-size:11px;color:var(--accent);font-weight:600;margin-bottom:6px">${escHtml(mTitle(c.market).slice(0,50))}${mTitle(c.market).length>50?"…":""}</div><div style="font-size:13px;color:var(--text);line-height:1.5">${escHtml(c.text)}</div></div><div style="font-size:10px;color:var(--muted);flex-shrink:0;white-space:nowrap;margin-left:8px">${timeAgo(c.ts)}</div></div>`).join(""):""}
     ${tab==="mentions"?(()=>{
       const myMentions = (STATE.mentions[trader.id]||[]).slice().reverse();
@@ -7979,6 +8088,84 @@ async function registerSTWNotifyClick(){
   }catch(e){
     console.warn("[STW Notify Count] error guardando:", e?.message||e);
   }
+}
+
+// ── Historial P&L persistente del usuario ───────────────────────────
+// Carga desde user_market_pnl — persiste aunque el mercado sea eliminado.
+async function loadUserPnlHistory(userId){
+  const el = document.getElementById("user-pnl-history");
+  if(!el) return;
+  STATE._pnlLoadedFor = userId;
+
+  const {data, error} = await db.from("user_market_pnl")
+    .select("*")
+    .eq("user_id", userId)
+    .order("resolved_at", {ascending: false})
+    .limit(100);
+
+  if(error){ el.innerHTML=`<div style="color:var(--no);font-size:12px;padding:12px">⚠️ ${error.message}</div>`; return; }
+  if(!data?.length){
+    el.innerHTML=`<div style="text-align:center;padding:48px;color:var(--muted)">
+      <div style="font-size:32px;margin-bottom:12px">📊</div>
+      <div style="font-weight:600">Sin historial de mercados resueltos</div>
+      <div style="font-size:13px;margin-top:8px">Aquí aparecerán los mercados en los que participaste cuando se resuelvan</div>
+    </div>`;
+    return;
+  }
+
+  const totalWin    = data.filter(h=>h.outcome==="WIN").length;
+  const totalPayout = data.reduce((s,h)=>s+(h.payout||0),0);
+  const winRate     = data.length > 0 ? Math.round(totalWin/data.length*100) : 0;
+
+  el.innerHTML = `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;margin-bottom:16px">
+      <div class="card" style="padding:12px;text-align:center">
+        <div style="font-size:20px;font-weight:900;color:var(--yes)">${winRate}%</div>
+        <div style="font-size:10px;color:var(--muted)">Win rate</div>
+      </div>
+      <div class="card" style="padding:12px;text-align:center">
+        <div style="font-size:20px;font-weight:900">${totalWin}/${data.length}</div>
+        <div style="font-size:10px;color:var(--muted)">Ganados/total</div>
+      </div>
+      <div class="card" style="padding:12px;text-align:center">
+        <div style="font-size:20px;font-weight:900;color:var(--yes)">${usd(totalPayout)}</div>
+        <div style="font-size:10px;color:var(--muted)">Total recibido</div>
+      </div>
+    </div>
+    ${data.map(h => {
+      const isWin  = h.outcome === "WIN";
+      const wCol   = isWin ? "var(--yes)" : "var(--no)";
+      const wBg    = isWin ? "var(--yes-bg)" : "var(--no-bg)";
+      const date   = new Date(h.resolved_at).toLocaleDateString("es-CO",{day:"2-digit",month:"short",year:"numeric"});
+      const shares = [h.yes_shares>0.001?`${h.yes_shares.toFixed(1)} sh SÍ`:"",h.no_shares>0.001?`${h.no_shares.toFixed(1)} sh NO`:""].filter(Boolean).join(" · ");
+      const marketExists = !!STATE.markets.find(m=>m.id===h.market_id);
+      return `<div class="card" style="margin-bottom:8px;padding:14px;border-left:3px solid ${wCol}${marketExists?";cursor:pointer":""}"
+          ${marketExists?`onclick="navigate('market',{marketId:'${h.market_id}'})"`:""}>
+        <div style="display:flex;align-items:center;gap:12px">
+          <div style="width:40px;height:40px;border-radius:10px;flex-shrink:0;background:${wBg};
+              display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:900;color:${wCol}">
+            ${isWin?"✓":"✗"}
+          </div>
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:600;font-size:13px;margin-bottom:4px">
+              ${escHtml(h.market_title)}
+              ${!marketExists?`<span style="font-size:9px;color:var(--muted);font-weight:400"> (eliminado)</span>`:""}
+            </div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+              <span style="font-size:11px;padding:2px 8px;border-radius:20px;font-weight:700;background:${wBg};color:${wCol}">
+                ${isWin?"Ganaste":"Perdiste"} · Ganó ${h.result}
+              </span>
+              ${h.category?`<span style="font-size:10px;color:var(--muted);background:var(--card2);padding:1px 6px;border-radius:10px">${escHtml(h.category)}</span>`:""}
+              <span style="font-size:10px;color:var(--muted)">${shares}</span>
+            </div>
+          </div>
+          <div style="text-align:right;flex-shrink:0">
+            <div style="font-size:16px;font-weight:900;color:${wCol}">${isWin?"+"+usd(h.payout):"$0.00"}</div>
+            <div style="font-size:10px;color:var(--muted)">${date}</div>
+          </div>
+        </div>
+      </div>`;
+    }).join("")}`;
 }
 
 function renderFeed(){
@@ -10070,7 +10257,11 @@ async function executeTrade(){
 
       STATE.tradeCooldownUntil = Date.now() + 10000;
       closeTradeModal(); render();
-      setTimeout(()=>{ loadPendingOrders(marketId); loadMyTrades(marketId); }, 400);
+      setTimeout(()=>{
+        loadPendingOrders(marketId);
+        loadMyTrades(marketId);
+        startSellRefresh(marketId); // monitorear progreso de la venta
+      }, 400);
 
       const sellOrderId = sellData.order_id;
       const sellInShares = false;
@@ -10226,7 +10417,10 @@ function renderAdmin(){
   if(STATE.adminTab==="stats")      content=renderAdminStats();
   if(STATE.adminTab==="markets")    content=renderAdminMarkets();
   if(STATE.adminTab==="featured")   content=renderAdminFeatured();
-  if(STATE.adminTab==="resolve")    content=renderAdminResolve();
+  if(STATE.adminTab==="resolve"){
+    content=renderAdminResolve();
+    setTimeout(loadAdminResolutionHistory, 200);
+  }
   if(STATE.adminTab==="history")    content=renderAdminHistory();
   if(STATE.adminTab==="withdrawals")content=renderAdminWithdrawals();
   if(STATE.adminTab==="deposits")   content=renderAdminDeposits();
@@ -11587,22 +11781,84 @@ function renderAdminResolve(){
       ${locked.map(m=>renderRow(m,true)).join("")}
     </div>`:""}
     ${sectionHtml("Pendientes de resolución", pending)}
-    ${resolved.length?`
-    <div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin:16px 0 10px">
-      Resueltos (${resolved.length})
-    </div>
-    ${resolved.map(m=>`
-      <div class="card" style="margin-bottom:8px;opacity:.8">
-        <div style="display:flex;align-items:center;gap:10px">
-          <div style="flex:1;font-size:13px;font-weight:600">${escHtml(m.title)}</div>
-          <div class="resolved-banner" style="font-size:12px;padding:3px 10px">
-            ${m.resolution==="YES"?"✅ SÍ":"❌ NO"}
-          </div>
-          <button class="btn-ghost" style="font-size:11px;padding:4px 10px;color:var(--no);border-color:var(--no)"
-            onclick="adminDeleteMarket('${m.id}')">🗑 Eliminar</button>
+    <div id="admin-resolution-history" style="margin-top:16px">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+        <div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">
+          📜 Historial de mercados resueltos
         </div>
-      </div>`).join("")}`:""}
+        <button onclick="loadAdminResolutionHistory()" style="font-size:10px;color:var(--muted);background:none;
+            border:1px solid var(--border);border-radius:4px;cursor:pointer;padding:2px 6px">🔄</button>
+      </div>
+      <div id="admin-resolution-history-rows">
+        <div style="text-align:center;padding:20px;color:var(--muted);font-size:12px">⏳ Cargando historial…</div>
+      </div>
+    </div>
   </div>`;
+}
+
+// ── Historial persistente de mercados resueltos (admin) ─────────────
+async function loadAdminResolutionHistory(){
+  const el = document.getElementById("admin-resolution-history-rows");
+  if(!el) return;
+  el.innerHTML = `<div style="text-align:center;padding:20px;color:var(--muted);font-size:12px">⏳ Cargando…</div>`;
+
+  const {data, error} = await db.from("market_resolution_history")
+    .select("*")
+    .order("resolved_at", {ascending: false})
+    .limit(100);
+
+  if(error){ el.innerHTML=`<div style="color:var(--no);font-size:12px;padding:12px">⚠️ ${error.message}</div>`; return; }
+  if(!data?.length){ el.innerHTML=`<div style="text-align:center;padding:20px;color:var(--muted);font-size:12px">Sin mercados resueltos aún</div>`; return; }
+
+  el.innerHTML = data.map(h => {
+    const resultColor = h.result==="YES" ? "var(--yes)" : "var(--no)";
+    const resultLabel = h.result==="YES" ? "✅ SÍ" : "❌ NO";
+    const date = new Date(h.resolved_at).toLocaleDateString("es-CO",{day:"2-digit",month:"short",year:"numeric"});
+    const netResult = Math.round((h.mm_grand_total - h.seed_liquidity) * 100) / 100;
+    const netColor  = netResult >= 0 ? "var(--yes)" : "var(--no)";
+    return `<div class="card" style="margin-bottom:8px;padding:14px;opacity:.95">
+      <div style="display:flex;align-items:flex-start;gap:10px">
+        <div style="flex:1;min-width:0">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap">
+            <span style="font-size:13px;font-weight:700;color:var(--text)">${escHtml(h.title)}</span>
+            <span style="background:${h.result==="YES"?"rgba(0,168,112,.12)":"rgba(224,40,74,.10)"};
+                color:${resultColor};font-size:10px;font-weight:800;padding:2px 8px;border-radius:10px">${resultLabel}</span>
+            ${h.category?`<span style="font-size:10px;color:var(--muted);background:var(--card2);padding:1px 7px;border-radius:10px">${escHtml(h.category)}</span>`:""}
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:6px;font-size:11px">
+            <div><span style="color:var(--muted)">Volumen:</span> <strong>$${(h.total_volume||0).toFixed(2)}</strong></div>
+            <div><span style="color:var(--muted)">Pool seed:</span> <strong>$${(h.seed_liquidity||0).toFixed(2)}</strong></div>
+            <div><span style="color:var(--muted)">Pool libre:</span> <strong>$${(h.mm_pool_return||0).toFixed(2)}</strong></div>
+            <div><span style="color:var(--muted)">Spreads:</span> <strong>$${(h.spread_pool||0).toFixed(2)}</strong></div>
+            <div><span style="color:var(--muted)">Shares gana:</span> <strong>${(h.mm_win_shares||0).toFixed(2)} sh</strong></div>
+            <div><span style="color:var(--muted)">Shares pierde:</span> <strong style="color:var(--no)">${(h.mm_lose_shares||0).toFixed(2)} sh</strong></div>
+            <div><span style="color:var(--muted)">Total MM:</span> <strong>$${(h.mm_grand_total||0).toFixed(2)}</strong></div>
+            <div><span style="color:var(--muted)">Ganadores:</span> <strong>${h.total_winners||0} usuarios</strong></div>
+            <div><span style="color:var(--muted)">Resolución:</span> <span>${date}</span></div>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;flex-shrink:0">
+          <div style="font-size:18px;font-weight:900;color:${netColor}">
+            ${netResult>=0?"+":""}$${Math.abs(netResult).toFixed(2)}
+          </div>
+          <div style="font-size:9px;color:var(--muted)">resultado neto MM</div>
+          <button onclick="deleteResolutionHistoryEntry('${h.id}')"
+            style="font-size:11px;padding:3px 8px;border-radius:6px;border:1px solid var(--border);
+              background:transparent;color:var(--muted);cursor:pointer;margin-top:4px"
+            title="Eliminar del historial">✕</button>
+        </div>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+async function deleteResolutionHistoryEntry(histId){
+  if(!isAdmin()) return;
+  if(!confirm("¿Eliminar esta entrada del historial? Esta acción no se puede deshacer.")) return;
+  const {error} = await db.from("market_resolution_history").delete().eq("id", histId);
+  if(error){ notify("Error al eliminar: "+error.message,"error"); return; }
+  notify("✓ Eliminado del historial","info");
+  loadAdminResolutionHistory();
 }
 
 // Pausar/reanudar manualmente un mercado. El campo manual_paused ya
@@ -13369,6 +13625,81 @@ async function adminResolve(id,result){
     resolved_at:  resolvedAt
   }).eq("id", id);
   STATE.markets[i] = {...STATE.markets[i], totalPayout: mmGrandTotal, resolvedAt: resolvedAt};
+
+  // ══════════════════════════════════════════════════════════════════
+  // PASO 10 — Historial persistente: guardar datos del mercado y P&L
+  // de usuarios en tablas separadas que sobreviven aunque el mercado
+  // sea eliminado después. Esto permite al admin ver el historial de
+  // mercados resueltos y a cada usuario ver su historial de ganancias/
+  // pérdidas en su perfil, permanentemente.
+  // ══════════════════════════════════════════════════════════════════
+
+  // 10A: Historial del mercado (para el admin)
+  const {error: histMktErr} = await db.from("market_resolution_history").insert({
+    market_id:          id,
+    title:              m.title,
+    category:           m.category || null,
+    result:             result,
+    resolved_at:        resolvedAt,
+    seed_liquidity:     seedLiq,
+    total_volume:       m.totalVolume || 0,
+    spread_pool:        spreadToCredit || 0,
+    lp_yes_remaining:   lpYes,
+    lp_no_remaining:    lpNo,
+    mm_pool_return:     mmPoolReturn,
+    mm_win_shares:      mmWinShares,
+    mm_win_payout:      mmWinPayout,
+    mm_lose_shares:     mmLoseShares,
+    mm_grand_total:     mmGrandTotal,
+    contracts_fee:      contractsFee || 0,
+    total_winners:      totalWinners,
+    total_losers:       (positions||[]).filter(p=>String(p.user_id)!==adminId).length - totalWinners,
+    total_winner_payout:Math.round((positions||[]).filter(p=>String(p.user_id)!==adminId).reduce((s,p)=>{
+      const winShares = result==="YES" ? (p.yes_shares||0) : (p.no_shares||0);
+      return s + Math.round(winShares * 0.98 * 100)/100;
+    },0)*100)/100,
+  });
+  if(histMktErr) console.error("[Resolve] Error guardando historial de mercado:",histMktErr.message);
+
+  // 10B: P&L de cada usuario (para su perfil)
+  const pnlInserts = (positions||[])
+    .filter(p => String(p.user_id) !== adminId)
+    .map(p => {
+      const uid       = String(p.user_id);
+      const yesShares = p.yes_shares || 0;
+      const noShares  = p.no_shares  || 0;
+      const wonYes    = result === "YES" && yesShares > 0.001;
+      const wonNo     = result === "NO"  && noShares  > 0.001;
+      const lostYes   = result === "NO"  && yesShares > 0.001;
+      const lostNo    = result === "YES" && noShares  > 0.001;
+      const payout    = wonYes ? Math.round(yesShares*0.98*100)/100
+                      : wonNo  ? Math.round(noShares *0.98*100)/100
+                      : 0;
+      const outcome   = (wonYes || wonNo)  ? "WIN"
+                      : (lostYes || lostNo)? "LOSS"
+                      : "MIXED";
+      const userSide  = yesShares > 0.001 && noShares > 0.001 ? "BOTH"
+                      : yesShares > 0.001 ? "YES" : "NO";
+      return {
+        user_id:         uid,
+        market_id:       id,
+        market_title:    m.title,
+        market_category: m.category || null,
+        result:          result,
+        user_side:       userSide,
+        yes_shares:      yesShares,
+        no_shares:       noShares,
+        payout:          payout,
+        outcome:         outcome,
+        resolved_at:     resolvedAt,
+      };
+    });
+
+  if(pnlInserts.length > 0){
+    const {error: pnlErr} = await db.from("user_market_pnl")
+      .upsert(pnlInserts, {onConflict: "user_id,market_id"});
+    if(pnlErr) console.error("[Resolve] Error guardando P&L de usuarios:",pnlErr.message);
+  }
 
   // ── Notificación final ───────────────────────────────────────────
   notify(
