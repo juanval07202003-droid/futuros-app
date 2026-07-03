@@ -2902,6 +2902,8 @@ function render(){
             startProObRefresh(pm.id);
             loadProOrderBook(pm.id);
             if(pu) loadPendingOrders(pm.id);
+            if(pu) startSellRefresh(pm.id);
+            if(pu) loadProMyTrades(pm.id);
           }, 150);
         }
       })();
@@ -4597,11 +4599,14 @@ function selectProMarket(marketId){
   stopProChartRefresh();
   PRO_CHART_STATE.trades = [];
   PRO_CHART_STATE.marketId = null;
+  PRO_CHART_STATE.offset = 0;
   render();
   setTimeout(()=>{
     startProObRefresh(marketId);
     loadProOrderBook(marketId);
     if(getUser()) loadPendingOrders(marketId);
+    if(getUser()) startSellRefresh(marketId);
+    if(getUser()) loadProMyTrades(marketId);
     // loadProChart se llama automáticamente desde mkProChartSVG vía setTimeout
   }, 150);
 }
@@ -4726,21 +4731,36 @@ function renderProPanel(){
           <div id="inline-trade-${m.id}">${renderInlineTrade(m, tab.side, tab.mode, u, pos)}</div>
         </div>
 
-        <!-- Posiciones (del usuario en este mercado) -->
-        <div class="card" style="padding:14px">
+        <!-- Sentimiento del mercado -->
+        ${(()=>{
+          const qY = m.qYes||0;
+          const qN = m.qNo||0;
+          const total = qY + qN;
+          const pctY = total>0 ? Math.round(qY/total*100) : 50;
+          const pctN = 100 - pctY;
+          return `<div class="card" style="padding:14px">
+            <div style="font-weight:700;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin-bottom:10px">📊 Sentimiento del mercado</div>
+            <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:5px">
+              <span style="color:var(--yes);font-weight:700">SÍ ${pctY}%</span>
+              <span style="color:var(--no);font-weight:700">NO ${pctN}%</span>
+            </div>
+            <div style="height:8px;border-radius:20px;background:var(--no-bg);overflow:hidden;margin-bottom:6px">
+              <div style="height:100%;border-radius:20px;background:var(--yes);width:${pctY}%;transition:width .4s"></div>
+            </div>
+            <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted)">
+              <span>$${usd(qY).replace('$','')} invertido en SÍ</span>
+              <span>$${usd(qN).replace('$','')} invertido en NO</span>
+            </div>
+            ${total===0?`<div style="font-size:10px;color:var(--muted);text-align:center;margin-top:4px">Sin compras de usuarios aún</div>`:''}
+          </div>`;
+        })()}
+
+        <!-- Posiciones detalladas (del usuario en este mercado) -->
+        <div class="card" style="padding:14px;overflow-y:auto;max-height:420px">
           <div style="font-weight:700;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin-bottom:10px">📌 Mis posiciones</div>
-          ${(pos.YES||0)<=0.001 && (pos.NO||0)<=0.001
-            ? `<div style="text-align:center;color:var(--muted);font-size:12px;padding:14px 0">Sin posiciones en este mercado</div>`
-            : `<div style="display:flex;flex-direction:column;gap:8px">
-                ${(pos.YES||0)>0.001?`<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border-radius:8px;background:var(--yes-bg)">
-                  <div><div style="font-size:11px;color:var(--muted)">SÍ</div><div style="font-weight:700;font-size:13px">${pos.YES.toFixed(2)} sh</div></div>
-                  <div style="text-align:right"><div style="font-size:11px;color:var(--muted)">valor est.</div><div style="font-weight:700;font-size:13px;color:var(--yes)">${usd(calcSellReturn(m,"YES",pos.YES))}</div></div>
-                </div>`:""}
-                ${(pos.NO||0)>0.001?`<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border-radius:8px;background:var(--no-bg)">
-                  <div><div style="font-size:11px;color:var(--muted)">NO</div><div style="font-weight:700;font-size:13px">${pos.NO.toFixed(2)} sh</div></div>
-                  <div style="text-align:right"><div style="font-size:11px;color:var(--muted)">valor est.</div><div style="font-weight:700;font-size:13px;color:var(--no)">${usd(calcSellReturn(m,"NO",pos.NO))}</div></div>
-                </div>`:""}
-              </div>`}
+          <div id="pro-my-trades-${m.id}">
+            <div style="text-align:center;color:var(--muted);font-size:12px;padding:14px 0">⏳ Cargando…</div>
+          </div>
           <div id="pending-orders-${m.id}" style="margin-top:8px"></div>
         </div>
       </div>
@@ -4751,9 +4771,10 @@ function renderProPanel(){
 // ── Estado de velas del Modo Pro ────────────────────────────────────
 const PRO_CHART_STATE = {
   marketId: null,
-  period: '1h',   // período activo: 5m 10m 30m 1h 4h 1d
-  trades: [],      // array de {price, ts} desde contracts
+  period: '1h',
+  trades: [],
   interval: null,
+  offset: 0,   // cuántas velas se ha desplazado hacia la izquierda (0 = más reciente)
 };
 
 const PRO_PERIODS = {
@@ -4837,10 +4858,18 @@ function renderProChartInPlace(){
   );
 }
 
-// Agrupa trades en velas OHLC por período y devuelve el SVG
+// Agrupa trades en velas OHLC por período y devuelve el SVG interior.
+// Diseño:
+//  - Velas contiguas (sin gap): cada vela ocupa su slot completo menos 1px
+//    de separación por lado — donde termina una empieza la siguiente.
+//  - Precio con decimales reales (sin Math.round): 36.5%, no 37%.
+//  - Navegación: el estado PRO_CHART_STATE.offset controla cuántas velas
+//    se han desplazado hacia la izquierda. El SVG tiene onwheel para
+//    actualizar el offset y redibujar.
+//  - La última vela visible siempre es la más reciente (offset=0 = ahora).
 function buildCandleSVG(trades, period){
   const periodMs = PRO_PERIODS[period]?.ms || 3600000;
-  const W=600, H=200, PAD_L=38, PAD_R=10, PAD_T=12, PAD_B=28;
+  const W=700, H=220, PAD_L=42, PAD_R=62, PAD_T=14, PAD_B=30;
   const chartW = W - PAD_L - PAD_R;
   const chartH = H - PAD_T - PAD_B;
 
@@ -4849,139 +4878,178 @@ function buildCandleSVG(trades, period){
       text-anchor="middle">Sin operaciones para mostrar velas</text>`;
   }
 
-  // Agrupar en velas por bucket de tiempo
+  // ── Construir velas completas desde todos los trades disponibles ──
   const now = Date.now();
-  // Mostrar las últimas N velas según el período
-  const maxCandles = 60;
-  const windowMs   = periodMs * maxCandles;
-  const startMs    = now - windowMs;
-
-  // Bucket de cada trade → índice de vela
   const bucketed = {};
   trades.forEach(t => {
-    if(t.ts < startMs) return;
     const bucket = Math.floor(t.ts / periodMs) * periodMs;
     if(!bucketed[bucket]) bucketed[bucket] = [];
     bucketed[bucket].push(t.price);
   });
 
-  // Si no hay trades en la ventana reciente, usar todos igualmente
-  let candles = [];
-  if(Object.keys(bucketed).length === 0){
-    // Fallback: agrupar todos en ventana más amplia
-    trades.forEach(t => {
-      const bucket = Math.floor(t.ts / periodMs) * periodMs;
-      if(!bucketed[bucket]) bucketed[bucket] = [];
-      bucketed[bucket].push(t.price);
-    });
-  }
-
-  const keys = Object.keys(bucketed).map(Number).sort((a,b)=>a-b);
-  candles = keys.map(bucket => {
+  let allCandles = Object.keys(bucketed).map(Number).sort((a,b)=>a-b).map(bucket => {
     const prices = bucketed[bucket];
+    const prev   = allPrev(bucket, bucketed, periodMs); // close de la vela anterior
     return {
       ts: bucket,
-      o: prices[0],
-      h: Math.max(...prices),
-      l: Math.min(...prices),
-      c: prices[prices.length-1],
+      o:  prev ?? prices[0],   // open = close de la anterior (velas encadenadas)
+      h:  Math.max(...prices),
+      l:  Math.min(...prices),
+      c:  prices[prices.length-1],
     };
-  }).slice(-maxCandles);
+  });
 
-  if(!candles.length){
+  // Función auxiliar para obtener el close de la vela anterior
+  function allPrev(bucket, bucketed, pms){
+    const prevBucket = bucket - pms;
+    const prevPrices = bucketed[prevBucket];
+    return prevPrices ? prevPrices[prevPrices.length-1] : null;
+  }
+
+  // Vela "en curso" al final
+  const currentBucket = Math.floor(now / periodMs) * periodMs;
+  const lastCandle    = allCandles[allCandles.length-1];
+  if(!bucketed[currentBucket] && lastCandle){
+    allCandles.push({
+      ts: currentBucket,
+      o: lastCandle.c, h: lastCandle.c, l: lastCandle.c, c: lastCandle.c,
+      current: true,
+    });
+  } else if(allCandles.length > 0){
+    allCandles[allCandles.length-1].current = true;
+  }
+
+  if(!allCandles.length){
     return `<text x="${W/2}" y="${H/2}" fill="var(--muted)" font-size="11"
       text-anchor="middle">Sin datos en este período</text>`;
   }
 
-  // Añadir una vela "en curso" al final para el período actual
-  const currentBucket = Math.floor(now / periodMs) * periodMs;
-  if(!bucketed[currentBucket]){
-    const lastClose = candles[candles.length-1].c;
-    candles.push({ ts: currentBucket, o: lastClose, h: lastClose, l: lastClose, c: lastClose, current: true });
-  } else {
-    if(candles[candles.length-1]) candles[candles.length-1].current = true;
+  // Asegurar que la última vela visible tenga el precio exacto actual
+  const m = getMarket(PRO_CHART_STATE.marketId);
+  if(m?.priceYes != null && allCandles.length){
+    const last = allCandles[allCandles.length-1];
+    last.c = m.priceYes;
+    last.h = Math.max(last.h, m.priceYes);
+    last.l = Math.min(last.l, m.priceYes);
   }
 
-  const mn  = Math.min(...candles.map(c=>c.l)) - 0.005;
-  const mx  = Math.max(...candles.map(c=>c.h)) + 0.005;
-  const rng = mx - mn || 0.01;
+  // Guardar total de velas para que el scroll conozca el límite
+  PRO_CHART_STATE._totalCandles = allCandles.length;
 
+  // ── Viewport: cuántas velas caben y qué offset ───────────────────
+  const CANDLE_SLOT = 12; // px por vela (slot fijo)
+  const maxVisible  = Math.floor(chartW / CANDLE_SLOT);
+  const offset      = Math.max(0, Math.min(PRO_CHART_STATE.offset||0, allCandles.length - 1));
+  // Las velas visibles: desde (total-maxVisible-offset) hasta (total-offset)
+  const endIdx   = allCandles.length - offset;
+  const startIdx = Math.max(0, endIdx - maxVisible);
+  const visible  = allCandles.slice(startIdx, endIdx);
+
+  if(!visible.length) return `<text x="${W/2}" y="${H/2}" fill="var(--muted)" font-size="11"
+    text-anchor="middle">Sin datos</text>`;
+
+  // ── Escala Y sobre las velas visibles ───────────────────────────
+  const mn  = Math.min(...visible.map(c=>c.l)) - 0.003;
+  const mx  = Math.max(...visible.map(c=>c.h)) + 0.003;
+  const rng = mx - mn || 0.01;
   const yPos = v => PAD_T + (1 - (v - mn) / rng) * chartH;
 
-  // Ancho de vela dinámico según cantidad
-  const totalC  = candles.length;
-  const candleW = Math.max(2, Math.min(14, Math.floor(chartW / totalC) - 1));
-  const step    = chartW / totalC;
-
-  // Grid Y
-  const gridSteps = 5;
+  // ── Grid Y con decimales reales ──────────────────────────────────
   let gridLines = '';
+  const gridSteps = 5;
   for(let i=0; i<=gridSteps; i++){
-    const val = mn + (i/gridSteps) * rng;
-    const y   = yPos(val);
+    const val  = mn + (i/gridSteps) * rng;
+    const y    = yPos(val);
+    const pStr = (val*100).toFixed(1) + '%';
     gridLines += `<line x1="${PAD_L}" y1="${y.toFixed(1)}" x2="${W-PAD_R}" y2="${y.toFixed(1)}"
-      stroke="var(--border)" stroke-width="0.5" stroke-dasharray="3,3"/>
-    <text x="${(PAD_L-4)}" y="${(y+3.5).toFixed(1)}" fill="var(--muted)"
-      font-size="8" text-anchor="end">${Math.round(val*100)}%</text>`;
+      stroke="rgba(128,128,128,0.15)" stroke-width="0.5"/>
+    <text x="${PAD_L-4}" y="${(y+3.5).toFixed(1)}" fill="var(--muted)"
+      font-size="8.5" text-anchor="end">${pStr}</text>`;
   }
 
-  // Etiquetas X (mostrar cada N velas para no saturar)
-  const labelEvery = Math.max(1, Math.floor(totalC / 6));
-  let xLabels = '';
-  candles.forEach((c,i) => {
-    if(i % labelEvery !== 0) return;
-    const x = PAD_L + i * step + step/2;
-    const d = new Date(c.ts);
-    let label;
-    if(periodMs < 86400000){
-      label = d.toLocaleTimeString('es-CO', {hour:'2-digit', minute:'2-digit'});
-    } else {
-      label = d.toLocaleDateString('es-CO', {day:'2-digit', month:'2-digit'});
-    }
-    xLabels += `<text x="${x.toFixed(1)}" y="${H - PAD_B + 12}" fill="var(--muted)"
-      font-size="7.5" text-anchor="middle">${label}</text>`;
-  });
-
-  // Velas SVG
+  // ── Velas contiguas ───────────────────────────────────────────────
+  const GAP   = 1;   // 1px de separación entre velas
+  const cW    = CANDLE_SLOT - GAP; // ancho del cuerpo/mecha
   let candleSvgs = '';
-  candles.forEach((c,i) => {
-    const x    = PAD_L + i * step + (step - candleW) / 2;
+  let xLabels    = '';
+  const labelEvery = Math.max(1, Math.floor(visible.length / 7));
+
+  visible.forEach((c, i) => {
+    const x    = PAD_L + i * CANDLE_SLOT;
+    const cx   = (x + cW/2).toFixed(1);
     const bull = c.c >= c.o;
-    const col  = c.current ? '#888' : (bull ? '#00c896' : '#e0284a');
-    const fill = c.current ? 'transparent' : col;
+    const col  = c.current ? '#888' : (bull ? '#26a69a' : '#ef5350');
     const bodyTop = yPos(Math.max(c.o, c.c));
     const bodyBot = yPos(Math.min(c.o, c.c));
-    const bodyH   = Math.max(1, bodyBot - bodyTop);
-    const cx      = (x + candleW/2).toFixed(1);
-    candleSvgs += `
-      <line x1="${cx}" y1="${yPos(c.h).toFixed(1)}" x2="${cx}" y2="${bodyTop.toFixed(1)}"
-        stroke="${col}" stroke-width="1"/>
-      <rect x="${x.toFixed(1)}" y="${bodyTop.toFixed(1)}" width="${candleW}"
-        height="${bodyH.toFixed(1)}" fill="${fill}" stroke="${col}" stroke-width="${c.current?1:0}" rx="0.5"/>
-      <line x1="${cx}" y1="${bodyBot.toFixed(1)}" x2="${cx}" y2="${yPos(c.l).toFixed(1)}"
-        stroke="${col}" stroke-width="1"/>`;
+    const bodyH   = Math.max(1.5, bodyBot - bodyTop);
+
+    // Mecha
+    candleSvgs += `<line x1="${cx}" y1="${yPos(c.h).toFixed(1)}" x2="${cx}" y2="${bodyTop.toFixed(1)}"
+      stroke="${col}" stroke-width="1.5"/>`;
+    // Cuerpo
+    if(c.current){
+      candleSvgs += `<rect x="${x}" y="${bodyTop.toFixed(1)}" width="${cW}" height="${bodyH.toFixed(1)}"
+        fill="none" stroke="${col}" stroke-width="1.5" rx="0.5"/>`;
+    } else {
+      candleSvgs += `<rect x="${x}" y="${bodyTop.toFixed(1)}" width="${cW}" height="${bodyH.toFixed(1)}"
+        fill="${col}" rx="0.5"/>`;
+    }
+    // Mecha inferior
+    candleSvgs += `<line x1="${cx}" y1="${bodyBot.toFixed(1)}" x2="${cx}" y2="${yPos(c.l).toFixed(1)}"
+      stroke="${col}" stroke-width="1.5"/>`;
+
+    // Etiqueta X
+    if(i % labelEvery === 0){
+      const d = new Date(c.ts);
+      const label = periodMs < 86400000
+        ? d.toLocaleTimeString('es-CO',{hour:'2-digit',minute:'2-digit'})
+        : d.toLocaleDateString('es-CO',{day:'2-digit',month:'2-digit'});
+      xLabels += `<text x="${(x+cW/2).toFixed(1)}" y="${H-PAD_B+13}" fill="var(--muted)"
+        font-size="8" text-anchor="middle">${label}</text>`;
+    }
   });
 
-  // Línea del precio actual
-  const lastC   = candles[candles.length-1];
-  const lastY   = yPos(lastC.c);
-  const lastCol = lastC.c >= lastC.o ? '#00c896' : '#e0284a';
+  // ── Precio actual: línea + etiqueta con decimal real ─────────────
+  const lastVis = visible[visible.length-1];
+  const lastY   = yPos(lastVis.c);
+  const lastCol = lastVis.c >= lastVis.o ? '#26a69a' : '#ef5350';
+  const priceLabel = (lastVis.c * 100).toFixed(1) + '%';
+
+  // ── Indicador de scroll ──────────────────────────────────────────
+  const canScrollLeft  = startIdx > 0;
+  const canScrollRight = offset > 0;
+  const scrollHint = canScrollLeft || canScrollRight
+    ? `<text x="${W/2}" y="${H-2}" fill="var(--muted)" font-size="7.5" text-anchor="middle">
+        ← scroll para navegar →</text>`
+    : '';
 
   return `
     ${gridLines}
-    ${xLabels}
-    ${candleSvgs}
     <line x1="${PAD_L}" y1="${lastY.toFixed(1)}" x2="${W-PAD_R}" y2="${lastY.toFixed(1)}"
-      stroke="${lastCol}" stroke-width="0.8" stroke-dasharray="4,3" opacity="0.6"/>
-    <rect x="${(W-PAD_R-36)}" y="${(lastY-8).toFixed(1)}" width="36" height="14"
+      stroke="${lastCol}" stroke-width="0.8" stroke-dasharray="3,2" opacity="0.7"/>
+    ${candleSvgs}
+    ${xLabels}
+    <rect x="${W-PAD_R+2}" y="${(lastY-9).toFixed(1)}" width="${PAD_R-4}" height="16"
       fill="${lastCol}" rx="3"/>
-    <text x="${(W-PAD_R-18)}" y="${(lastY+3).toFixed(1)}" fill="white"
-      font-size="9" text-anchor="middle" font-weight="700">${Math.round(lastC.c*100)}%</text>`;
+    <text x="${W-PAD_R+2+(PAD_R-4)/2}" y="${(lastY+3.5).toFixed(1)}" fill="white"
+      font-size="8.5" text-anchor="middle" font-weight="800">${priceLabel}</text>
+    ${scrollHint}`;
+}
+
+function handleProChartScroll(e){
+  e.preventDefault();
+  const delta = e.deltaY > 0 ? -3 : 3; // scroll down = ir al pasado, up = ir al presente
+  const totalCandles = PRO_CHART_STATE._totalCandles || 0;
+  PRO_CHART_STATE.offset = Math.max(0, Math.min(
+    PRO_CHART_STATE.offset - delta,
+    Math.max(0, totalCandles - 10)
+  ));
+  renderProChartInPlace();
 }
 
 function setProChartPeriod(period){
   PRO_CHART_STATE.period = period;
-  // Actualizar botones de período
+  PRO_CHART_STATE.offset = 0; // resetear al más reciente al cambiar período
   Object.keys(PRO_PERIODS).forEach(p => {
     const btn = document.getElementById('pro-period-'+p);
     if(btn){
@@ -5037,9 +5105,10 @@ function mkProChartSVG(market){
       <span style="font-size:10px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.4px;margin-right:2px">Período</span>
       ${periodBtns}
     </div>
-    <svg id="pro-chart-svg" viewBox="0 0 600 200" preserveAspectRatio="none"
-      style="width:100%;height:200px;display:block;overflow:visible">
-      <text x="300" y="100" fill="var(--muted)" font-size="11" text-anchor="middle">Cargando velas…</text>
+    <svg id="pro-chart-svg" viewBox="0 0 700 220" preserveAspectRatio="none"
+      style="width:100%;height:220px;display:block;overflow:visible;cursor:crosshair"
+      onwheel="handleProChartScroll(event)">
+      <text x="350" y="110" fill="var(--muted)" font-size="11" text-anchor="middle">Cargando velas…</text>
     </svg>`;
 }
 
@@ -6508,6 +6577,8 @@ async function checkSellProgress(marketId){
   if(changed){
     loadMyTrades(marketId);
     loadPendingOrders(marketId);
+    // Si estamos en Modo Pro, también recargar las posiciones detalladas del pro
+    if(STATE.view==="pro") loadProMyTrades(marketId);
     // Recargar balance también
     const {data:freshUser} = await db.from("users").select("balance").eq("id", u.id).maybeSingle();
     if(freshUser){
@@ -6524,11 +6595,15 @@ async function checkSellProgress(marketId){
   if(!stillActive) stopSellRefresh();
 }
 
-async function loadPendingOrders(marketId){
+async function loadPendingOrders(marketId, _retries=0){
   const u = getUser();
   if(!u) return;
   const el = document.getElementById("pending-orders-"+marketId);
-  if(!el) return;
+  if(!el){
+    // El contenedor puede no estar aún si render() todavía está procesando
+    if(_retries < 5) setTimeout(()=>loadPendingOrders(marketId, _retries+1), 200);
+    return;
+  }
 
   const {data:ordersRaw} = await db.from("orders")
     .select("id,side,price,shares,filled,status,order_type,is_mirror,is_mm,mm_order_id,created_at")
@@ -8166,6 +8241,143 @@ async function loadUserPnlHistory(userId){
         </div>
       </div>`;
     }).join("")}`;
+}
+
+// Carga posiciones detalladas en el panel Pro (misma lógica que loadMyTrades
+// del panel normal, pero apunta al contenedor pro-my-trades-{marketId}).
+// Esto muestra cada entrada individual con precio, shares, P&L estimado, y
+// las órdenes de venta activas con botón × para cancelar.
+async function loadProMyTrades(marketId){
+  const el = document.getElementById("pro-my-trades-"+marketId);
+  if(!el){
+    // retry si el DOM todavía no tiene el contenedor
+    setTimeout(()=>loadProMyTrades(marketId), 200);
+    return;
+  }
+  const u = getUser(); if(!u){ el.innerHTML=""; return; }
+  const m = getMarket(marketId); if(!m){ el.innerHTML=""; return; }
+
+  // Cargar trades del usuario en este mercado
+  const [{data:tradesRaw}, {data:sellOrdersRaw}] = await Promise.all([
+    db.from("orders")
+      .select("id,side,price,shares,filled,created_at,order_type,status,is_mm,mm_order_id")
+      .eq("market_id", marketId)
+      .eq("user_id", u.id)
+      .eq("is_mm", false)
+      .eq("is_mirror", false)
+      .in("order_type", ["limit","sell","market"])
+      .in("status", ["filled","partial","open"])
+      .order("created_at", {ascending:true}),
+    db.from("orders")
+      .select("id,side,shares,filled,price,status,created_at")
+      .eq("market_id", marketId)
+      .eq("user_id", u.id)
+      .eq("order_type", "sell")
+      .eq("is_mm", false)
+      .in("status", ["open","partial"])
+      .order("created_at", {ascending:true}),
+  ]);
+
+  const pYes = getPrice(m,"YES");
+  const pos  = (u.positions||{})[marketId] || {YES:0, NO:0};
+
+  // Separar compras ejecutadas (filled/partial) por lado
+  const buyTrades = (tradesRaw||[]).filter(o =>
+    o.order_type !== "sell" && o.filled > 0 && !o.mm_order_id
+  );
+  const yesTrades = buyTrades.filter(t=>t.side==="YES");
+  const noTrades  = buyTrades.filter(t=>t.side==="NO");
+
+  const sellBySide = {
+    YES: (sellOrdersRaw||[]).filter(o=>o.side==="YES"),
+    NO:  (sellOrdersRaw||[]).filter(o=>o.side==="NO"),
+  };
+
+  if(!yesTrades.length && !noTrades.length){
+    el.innerHTML=`<div style="text-align:center;color:var(--muted);font-size:12px;padding:14px 0">Sin posiciones en este mercado</div>`;
+    return;
+  }
+
+  const renderSide = (trades, side) => {
+    if(!trades.length) return "";
+    const color    = side==="YES"?"var(--yes)":"var(--no)";
+    const bg       = side==="YES"?"var(--yes-bg)":"var(--no-bg)";
+    const label    = side==="YES"?"SÍ":"NO";
+    const pWin     = side==="YES" ? pYes : (1-pYes);
+    const totalSh  = trades.reduce((s,t)=>s+t.filled,0);
+    const totalCost= trades.reduce((s,t)=>s+t.price*t.filled,0);
+    const avgPrice = totalSh>0 ? totalCost/totalSh : 0;
+    const estVal   = calcSellReturn(m,side,totalSh);
+    const pnl      = estVal - totalCost;
+    const pnlColor = pnl>=0?"var(--yes)":"var(--no)";
+
+    // Órdenes de venta activas de este lado
+    const sells = sellBySide[side]||[];
+
+    return `<div style="margin-bottom:10px">
+      <!-- Cabecera del lado -->
+      <div style="display:flex;justify-content:space-between;align-items:center;
+          padding:7px 9px;border-radius:8px 8px 0 0;background:${bg};border-bottom:1px solid var(--border)">
+        <div style="display:flex;align-items:center;gap:6px">
+          <span style="font-weight:800;font-size:12px;color:${color}">${label}</span>
+          <span style="font-size:10px;color:var(--muted)">${trades.length} entrada${trades.length!==1?"s":""} · ${totalSh.toFixed(2)} sh</span>
+        </div>
+        <div style="text-align:right">
+          <span style="font-size:11px;font-weight:700;color:${pnlColor}">${pnl>=0?"+":""}${usd(pnl)}</span>
+          <span style="font-size:9px;color:var(--muted);margin-left:4px">P&L est.</span>
+        </div>
+      </div>
+      <!-- Entradas individuales -->
+      <div style="border:1px solid var(--border);border-top:none;border-radius:0 0 8px 8px;overflow:hidden">
+        <div style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:0;padding:4px 8px;
+            background:var(--card2);border-bottom:1px solid var(--border)">
+          <span style="font-size:9px;color:var(--muted);font-weight:700;text-transform:uppercase">Shares / Fecha</span>
+          <span style="font-size:9px;color:var(--muted);font-weight:700;text-align:center">Precio</span>
+          <span style="font-size:9px;color:var(--muted);font-weight:700;text-align:center">Pagado</span>
+          <span style="font-size:9px;color:var(--muted);font-weight:700;text-align:right">P&L</span>
+        </div>
+        ${trades.map(t=>{
+          const cost   = t.price * t.filled;
+          const val    = calcSellReturn(m, side, t.filled);
+          const tPnl   = val - cost;
+          const tColor = tPnl>=0?"var(--yes)":"var(--no)";
+          const date   = new Date(t.created_at).toLocaleDateString("es-CO",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"});
+          return `<div style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:0;
+              padding:5px 8px;border-bottom:1px solid var(--border)">
+            <div>
+              <div style="font-size:11px;font-weight:700;color:${color}">${t.filled.toFixed(2)} sh</div>
+              <div style="font-size:9px;color:var(--muted)">${date}</div>
+            </div>
+            <div style="text-align:center;font-size:11px">${(t.price*100).toFixed(1)}%</div>
+            <div style="text-align:center;font-size:11px">${usd(cost)}</div>
+            <div style="text-align:right;font-size:11px;font-weight:700;color:${tColor}">${tPnl>=0?"+":""}${usd(tPnl)}</div>
+          </div>`;
+        }).join("")}
+        <!-- Órdenes de venta activas -->
+        ${sells.map(o=>{
+          const pending = Math.max(0,(o.shares||0)-(o.filled||0));
+          const sold    = o.filled||0;
+          if(pending<0.001) return "";
+          return `<div style="display:flex;justify-content:space-between;align-items:center;
+              padding:6px 8px;background:rgba(76,175,80,.07);border-bottom:1px solid var(--border)">
+            <div style="flex:1;min-width:0">
+              <div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap">
+                <span style="font-size:10px;font-weight:800;color:${color}">🏷️ ${pending.toFixed(2)} sh en venta</span>
+                <span style="font-size:9px;color:var(--muted)">${(o.price*100).toFixed(1)}%${sold>0?` · vendido ${sold.toFixed(2)}`:""}</span>
+              </div>
+            </div>
+            <button onclick="cancelPendingOrder('${o.id}','${marketId}','sell')"
+              title="Cancelar venta — las shares pendientes vuelven a tu posición"
+              style="font-size:13px;font-weight:800;width:22px;height:22px;border-radius:50%;
+                border:1px solid var(--border);background:var(--card);color:var(--muted);
+                cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center">×</button>
+          </div>`;
+        }).join("")}
+      </div>
+    </div>`;
+  };
+
+  el.innerHTML = renderSide(yesTrades,"YES") + renderSide(noTrades,"NO");
 }
 
 function renderFeed(){
@@ -10153,7 +10365,11 @@ async function executeTrade(){
       recordBuyTime(u.id, marketId);
       STATE.tradeCooldownUntil = Date.now() + 10000;
       closeTradeModal(); render();
-      setTimeout(()=>{ loadPendingOrders(marketId); loadMyTrades(marketId); }, 400);
+      setTimeout(()=>{
+        loadPendingOrders(marketId);
+        loadMyTrades(marketId);
+        if(STATE.view==="pro") loadProMyTrades(marketId);
+      }, 400);
 
       const orderId = rpcData.order_id;
       const spreadInfo = `· spread 2% en USD`;
@@ -10260,7 +10476,8 @@ async function executeTrade(){
       setTimeout(()=>{
         loadPendingOrders(marketId);
         loadMyTrades(marketId);
-        startSellRefresh(marketId); // monitorear progreso de la venta
+        startSellRefresh(marketId);
+        if(STATE.view==="pro") loadProMyTrades(marketId);
       }, 400);
 
       const sellOrderId = sellData.order_id;
