@@ -5669,7 +5669,7 @@ function renderMarket(){
       <div class="card" style="padding:16px;margin-top:12px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
           <div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">📊 Mis posiciones</div>
-          <button onclick="loadMyTrades('${m.id}')"
+          <button onclick="loadMyTrades('${m.id}');loadPendingOrders('${m.id}')"
             style="font-size:10px;color:var(--muted);background:none;border:none;cursor:pointer;padding:2px 6px;border-radius:4px;border:1px solid var(--border)">
             🔄
           </button>
@@ -5677,8 +5677,9 @@ function renderMarket(){
         <div id="my-trades-${m.id}">
           <div style="text-align:center;padding:14px;color:var(--muted);font-size:12px">⏳ Cargando...</div>
         </div>
+        <!-- Órdenes de venta activas: se llenan vía loadPendingOrders() -->
+        <div id="pending-orders-${m.id}"></div>
       </div>`:""}
-      ${u?`<div id="pending-orders-${m.id}" style="margin-top:8px"></div>`:""}
     </div>
   </div>
 </div>`;
@@ -5792,39 +5793,164 @@ async function loadMyTrades(marketId){
       if(currentNo  > 0.001) trades.push({side:"NO",  shares:currentNo,  dollars:currentNo*0.5,  price:0.5, date:null});
     }
   } else {
-    // ── USUARIO NORMAL: leer transacciones de tipo "trade"
-    const {data:txs, error} = await db.from("transactions")
-      .select("id,type,amount,description,created_at,network")
-      .eq("user_id", u.id)
-      .eq("type", "trade")
-      .order("created_at", {ascending: true});
+    // ── USUARIO NORMAL: usar contracts+positions como fuente de verdad ─
+    // Ya no dependemos de transactions tipo "trade" con regex frágil.
+    // contracts da el historial exacto de cada entrada con precio real.
+    // positions da las shares totales actuales.
+    const [{data:posDB},{data:contractsDB},{data:sellDB}] = await Promise.all([
+      db.from("positions")
+        .select("yes_shares,no_shares")
+        .eq("market_id", marketId)
+        .eq("user_id", u.id)
+        .maybeSingle(),
+      db.from("contracts")
+        .select("yes_user_id,no_user_id,yes_price,no_price,shares,created_at")
+        .eq("market_id", marketId)
+        .eq("status","active")
+        .or(`yes_user_id.eq.${u.id},no_user_id.eq.${u.id}`)
+        .order("created_at",{ascending:true})
+        .limit(200),
+      db.from("orders")
+        .select("id,side,shares,filled,price,status,created_at")
+        .eq("market_id", marketId)
+        .eq("user_id", u.id)
+        .eq("order_type","sell")
+        .eq("is_mm",false)
+        .in("status",["open","partial"])
+        .order("created_at",{ascending:true}),
+    ]);
 
-    if(error){
-      el.innerHTML = `<div style="color:var(--no);font-size:11px;padding:8px">⚠️ Error: ${error.message}</div>`;
+    const yesTotal  = posDB?.yes_shares || 0;
+    const noTotal   = posDB?.no_shares  || 0;
+    const sellBySide = {
+      YES: (sellDB||[]).filter(o=>o.side==="YES"),
+      NO:  (sellDB||[]).filter(o=>o.side==="NO"),
+    };
+
+    // Si no hay posición ni ventas activas → sin posiciones
+    if(yesTotal < 0.001 && noTotal < 0.001 && !sellDB?.length){
+      el.innerHTML = `<div style="text-align:center;padding:14px;color:var(--muted);font-size:12px">Sin posiciones abiertas en este mercado</div>`;
       return;
     }
 
-    const reBuy = /Compra\s+(YES|NO|SÍ|SI)\s+\$([\d.]+)\s*→\s*([\d.]+)\s*shares/i;
-    const mTitle = m ? (m.title||"").slice(0,10) : "";
-    const marketIdStr = String(marketId);
+    // Entradas individuales desde contracts
+    const yesEntries = (contractsDB||[])
+      .filter(c => c.yes_user_id === u.id)
+      .map(c => ({side:"YES", shares:c.shares, price:c.yes_price, dollars:c.shares*c.yes_price, date:c.created_at}));
+    const noEntries = (contractsDB||[])
+      .filter(c => c.no_user_id === u.id)
+      .map(c => ({side:"NO",  shares:c.shares, price:c.no_price,  dollars:c.shares*c.no_price,  date:c.created_at}));
 
-    for(const tx of (txs||[])){
-      const desc  = tx.description || "";
-      const match = desc.match(reBuy);
-      if(!match) continue;
+    const pct2  = v => (Math.round(v*1000)/10).toFixed(1)+"%";
+    const fmt2  = v => "$"+(Math.round(v*100)/100).toFixed(2);
 
-      const byId    = tx.network && tx.network === marketIdStr;
-      const byTitle = (!tx.network || tx.network === "internal") && mTitle.length >= 5
-        && desc.toLowerCase().includes(mTitle.toLowerCase());
-      if(!byId && !byTitle) continue;
+    const renderSellOrders = (side) => {
+      const orders = sellBySide[side]||[];
+      if(!orders.length) return "";
+      const color = side==="YES" ? "var(--yes)" : "var(--no)";
+      return orders.map(o => {
+        const pending = Math.max(0,(o.shares||0)-(o.filled||0));
+        const filled  = o.filled||0;
+        if(pending < 0.001) return "";
+        return `<div style="display:flex;justify-content:space-between;align-items:center;
+            padding:7px 10px;border-radius:8px;margin-bottom:4px;
+            background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.35)">
+          <div>
+            <div style="display:flex;align-items:center;gap:6px">
+              <span style="font-size:12px;font-weight:800;color:#f59e0b">🏷️ ${pending.toFixed(2)} sh en venta</span>
+              <span style="font-size:10px;color:var(--muted)">@ ${pct2(o.price||0)}</span>
+            </div>
+            ${filled>0?`<div style="font-size:10px;color:var(--muted);margin-top:2px">Ejecutado: ${filled.toFixed(2)} sh · pendiente: ${pending.toFixed(2)} sh</div>`:""}
+            <div style="font-size:9px;color:var(--muted)">Esperando comprador via P2</div>
+          </div>
+          <button onclick="cancelPendingOrder('${o.id}','${marketId}','sell')"
+            style="font-size:16px;font-weight:900;line-height:1;width:26px;height:26px;
+              border-radius:50%;border:1.5px solid var(--border);background:var(--card);
+              color:var(--muted);cursor:pointer;flex-shrink:0;
+              display:flex;align-items:center;justify-content:center">×</button>
+        </div>`;
+      }).join("");
+    };
 
-      const sideRaw = match[1].toUpperCase();
-      const side    = (sideRaw==="SI"||sideRaw==="SÍ") ? "YES" : sideRaw;
-      const dollars = parseFloat(match[2]) || 0;
-      const shares  = parseFloat(match[3]) || 0;
-      const price   = shares > 0 ? dollars / shares : 0;
-      trades.push({ side, dollars, shares, price, date: tx.created_at });
-    }
+    const renderEntriesSide = (entries, totalShares, side) => {
+      const sellOrders = sellBySide[side]||[];
+      const hasSells = sellOrders.length > 0;
+      if(totalShares < 0.001 && !hasSells) return "";
+      const color  = side==="YES" ? "var(--yes)" : "var(--no)";
+      const bg     = side==="YES" ? "rgba(0,168,112,.06)" : "rgba(224,40,74,.06)";
+      const border = side==="YES" ? "rgba(0,168,112,.25)" : "rgba(224,40,74,.25)";
+      const label  = side==="YES" ? "SÍ" : "NO";
+      const pWin   = side==="YES" ? pYes : (1-pYes);
+      const totalCost = entries.reduce((s,e)=>s+e.dollars,0);
+      const avgPrice  = totalShares>0 ? totalCost/totalShares : 0;
+      const estVal    = totalShares * pWin;
+      const pnl       = estVal - totalCost;
+
+      // Cuántas shares están reservadas en ventas activas
+      const sharesInSale = sellOrders.reduce((s,o)=>s+Math.max(0,(o.shares||0)-(o.filled||0)),0);
+      const sharesAvail  = Math.max(0, totalShares - sharesInSale);
+
+      return `<div style="margin-bottom:10px">
+        <!-- Cabecera del lado -->
+        <div style="padding:8px 10px;border-radius:8px;background:${bg};border:1px solid ${border};margin-bottom:6px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:${hasSells?"6":"0"}px">
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="font-size:13px;font-weight:900;color:${color}">${label}</span>
+              <span style="font-size:11px;color:var(--muted)">${totalShares.toFixed(2)} sh total</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="font-size:10px;color:var(--muted)">prom. <strong>${pct2(avgPrice)}</strong></span>
+              <span style="font-size:12px;font-weight:700;color:${pnl>=0?"var(--yes)":"var(--no)"}">${pnl>=0?"+":""}${fmt2(pnl)}</span>
+            </div>
+          </div>
+          ${hasSells?`<div style="display:flex;gap:8px;flex-wrap:wrap">
+            <span style="font-size:11px;background:rgba(0,168,112,.12);color:var(--yes);
+                padding:2px 8px;border-radius:20px;font-weight:700">
+              ✓ ${sharesAvail.toFixed(2)} sh disponibles
+            </span>
+            <span style="font-size:11px;background:rgba(245,158,11,.12);color:#f59e0b;
+                padding:2px 8px;border-radius:20px;font-weight:700">
+              🏷️ ${sharesInSale.toFixed(2)} sh en venta
+            </span>
+          </div>`:""}
+        </div>
+
+        <!-- Órdenes de venta activas — SIEMPRE VISIBLE SI EXISTEN -->
+        ${renderSellOrders(side)}
+
+        <!-- Entradas individuales de compra -->
+        ${entries.length>0?`
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:4px;
+            font-size:9px;font-weight:700;color:var(--muted);text-transform:uppercase;
+            padding:2px 8px;margin-bottom:3px">
+          <div>Shares/Fecha</div><div style="text-align:center">Precio</div>
+          <div style="text-align:center">Pagado</div><div style="text-align:right">P&L est.</div>
+        </div>
+        ${entries.map(e=>{
+          const valNow = e.shares * pWin;
+          const ePnl   = valNow - e.dollars;
+          const date   = e.date ? new Date(e.date).toLocaleDateString("es-CO",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"}) : "";
+          return `<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:4px;align-items:center;
+              padding:5px 8px;border-radius:6px;margin-bottom:3px;background:var(--card);border:1px solid var(--border)">
+            <div>
+              <div style="font-size:11px;font-weight:800;color:${color}">${e.shares.toFixed(2)} sh</div>
+              <div style="font-size:9px;color:var(--muted)">${date}</div>
+            </div>
+            <div style="text-align:center"><div style="font-size:12px;font-weight:700">${pct2(e.price)}</div></div>
+            <div style="text-align:center"><div style="font-size:11px;color:var(--muted)">${fmt2(e.dollars)}</div></div>
+            <div style="text-align:right"><div style="font-size:12px;font-weight:700;color:${ePnl>=0?"var(--yes)":"var(--no)"}">${ePnl>=0?"+":""}${fmt2(ePnl)}</div></div>
+          </div>`;
+        }).join("")}`
+        : totalShares>0.001?`<div style="font-size:10px;color:var(--muted);padding:4px 8px">
+            Historial de entradas no disponible</div>`:""}
+      </div>`;
+    };
+
+    el.innerHTML =
+      renderEntriesSide(yesEntries, yesTotal, "YES") +
+      renderEntriesSide(noEntries,  noTotal,  "NO") +
+      `<div style="font-size:9px;color:var(--muted);text-align:right;margin-top:2px">* P&L al precio actual</div>`;
+    return; // salir aquí para no usar el renderSide del bloque de admin
   }
 
   const yesTrades = trades.filter(t => t.side==="YES");
@@ -6651,19 +6777,19 @@ async function loadPendingOrders(marketId, _retries=0){
   };
 
   el.innerHTML = `
-    ${buyOrders.length>0 ? `<div class="card" style="padding:14px;margin-top:0;margin-bottom:10px">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
-        <div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;
+    ${buyOrders.length>0 ? `<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+        <div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;
             letter-spacing:.5px">⏳ Compras esperando contraparte</div>
         <span style="background:rgba(255,193,7,.2);color:#b8860b;font-size:10px;font-weight:700;
             padding:1px 7px;border-radius:10px">${buyOrders.length}</span>
       </div>
       ${buyOrders.map(o=>renderRow(o,"buy")).join("")}
     </div>` : ""}
-    ${sellOrders.length>0 ? `<div class="card" style="padding:14px;margin-top:0">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
-        <div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;
-            letter-spacing:.5px">💰 Mis ventas en curso</div>
+    ${sellOrders.length>0 ? `<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+        <div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;
+            letter-spacing:.5px">🏷️ Mis ventas en curso</div>
         <span style="background:rgba(76,175,80,.2);color:#2e7d32;font-size:10px;font-weight:700;
             padding:1px 7px;border-radius:10px">${sellOrders.length}</span>
       </div>
@@ -8251,28 +8377,40 @@ async function loadUserPnlHistory(userId){
 // invertido sino el número de operaciones — refleja el sentimiento real.
 async function loadProSentiment(marketId){
   const el = document.getElementById("pro-sentiment-"+marketId);
-  if(!el){ setTimeout(()=>loadProSentiment(marketId),200); return; }
+  // Si el div no existe (usuario no está en Modo Pro), actualizamos
+  // STATE igualmente para que al entrar al Pro los datos estén frescos.
 
-  const m = getMarket(marketId);
+  const [{data: mFresh}, {data: ordersData}] = await Promise.all([
+    db.from("markets")
+      .select("q_yes,q_no")
+      .eq("id", marketId)
+      .maybeSingle(),
+    db.from("orders")
+      .select("side")
+      .eq("market_id", marketId)
+      .eq("is_mm", false)
+      .eq("is_mirror", false)
+      .neq("order_type","sell")
+      .in("status",["filled","partial"]),
+  ]);
 
-  // Contar órdenes por lado (número de compras) — excluyendo al MM
-  const {data} = await db.from("orders")
-    .select("side")
-    .eq("market_id", marketId)
-    .eq("is_mm", false)
-    .eq("is_mirror", false)
-    .neq("order_type","sell")
-    .in("status",["filled","partial"]);
-
-  const countY = (data||[]).filter(o=>o.side==="YES").length;
-  const countN = (data||[]).filter(o=>o.side==="NO").length;
+  const countY = (ordersData||[]).filter(o=>o.side==="YES").length;
+  const countN = (ordersData||[]).filter(o=>o.side==="NO").length;
   const total  = countY + countN;
   const pctY   = total>0 ? Math.round(countY/total*100) : 50;
   const pctN   = 100 - pctY;
 
-  // Dinero invertido por lado (de m.qYes / m.qNo)
-  const qY = m?.qYes || 0;
-  const qN = m?.qNo  || 0;
+  const qY = mFresh?.q_yes || 0;
+  const qN = mFresh?.q_no  || 0;
+
+  // Siempre actualizar STATE local
+  const mi = STATE.markets.findIndex(mk=>mk.id===marketId);
+  if(mi>=0 && mFresh){
+    STATE.markets[mi] = {...STATE.markets[mi], qYes: qY, qNo: qN};
+  }
+
+  // Si el div no existe aún, no hay nada más que hacer
+  if(!el) return;
 
   if(total===0 && qY===0 && qN===0){
     el.innerHTML=`<div style="text-align:center;color:var(--muted);font-size:11px;padding:4px 0">Sin compras de usuarios aún</div>`;
@@ -10515,8 +10653,8 @@ async function executeTrade(){
       setTimeout(()=>{
         loadPendingOrders(marketId);
         loadMyTrades(marketId);
+        loadProSentiment(marketId);
         if(STATE.view==="pro") loadProMyTrades(marketId);
-        if(STATE.view==="pro") loadProSentiment(marketId);
       }, 400);
 
       const orderId = rpcData.order_id;
@@ -10628,10 +10766,9 @@ async function executeTrade(){
         loadPendingOrders(marketId);
         loadMyTrades(marketId);
         startSellRefresh(marketId);
-        // Actualizar shares disponibles para la UI de Vender
+        loadProSentiment(marketId);
         const u2=getUser(); if(u2) loadRealPositionForSell(marketId, u2.id);
         if(STATE.view==="pro") loadProMyTrades(marketId);
-        if(STATE.view==="pro") loadProSentiment(marketId);
       }, 400);
 
       const sellOrderId = sellData.order_id;
