@@ -5827,9 +5827,38 @@ async function loadMyTrades(marketId){
       NO:  (sellDB||[]).filter(o=>o.side==="NO"),
     };
 
-    // Si no hay posición ni ventas activas → sin posiciones
-    if(yesTotal < 0.001 && noTotal < 0.001 && !sellDB?.length){
+    // Con el nuevo RPC las shares en venta ya están descontadas de positions.
+    // Puede que yesTotal=0 pero haya sellDB activas → mostrar igual.
+    const hasSellOrders = (sellDB||[]).length > 0;
+    if(yesTotal < 0.001 && noTotal < 0.001 && !hasSellOrders){
       el.innerHTML = `<div style="text-align:center;padding:14px;color:var(--muted);font-size:12px">Sin posiciones abiertas en este mercado</div>`;
+      return;
+    }
+
+    // Si solo hay órdenes de venta activas (todas las shares en venta)
+    // mostrar directamente esas órdenes con su × para cancelar
+    if(yesTotal < 0.001 && noTotal < 0.001 && hasSellOrders){
+      const pct2b = v => (Math.round(v*1000)/10).toFixed(1)+"%";
+      const fmt2b = v => "$"+(Math.round(v*100)/100).toFixed(2);
+      el.innerHTML = (sellDB||[]).map(o=>{
+        const pending = Math.max(0,(o.shares||0)-(o.filled||0));
+        if(pending < 0.001) return "";
+        const col = o.side==="YES" ? "var(--yes)" : "var(--no)";
+        const filled = o.filled||0;
+        return `<div style="display:flex;justify-content:space-between;align-items:center;
+            padding:8px 10px;border-radius:8px;margin-bottom:4px;
+            background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.35)">
+          <div>
+            <div style="font-size:12px;font-weight:800;color:#f59e0b">🏷️ ${pending.toFixed(2)} sh ${o.side} en venta</div>
+            <div style="font-size:10px;color:var(--muted)">@ ${pct2b(o.price||0)}${filled>0?` · ejecutado: ${filled.toFixed(2)} sh`:""}</div>
+            <div style="font-size:9px;color:var(--muted)">Esperando comprador vía P2</div>
+          </div>
+          <button onclick="cancelPendingOrder('${o.id}','${marketId}','sell')"
+            style="font-size:16px;width:26px;height:26px;border-radius:50%;
+              border:1.5px solid var(--border);background:var(--card);color:var(--muted);
+              cursor:pointer;display:flex;align-items:center;justify-content:center">×</button>
+        </div>`;
+      }).join("") || `<div style="text-align:center;padding:14px;color:var(--muted);font-size:12px">Sin posiciones abiertas</div>`;
       return;
     }
 
@@ -5874,75 +5903,92 @@ async function loadMyTrades(marketId){
 
     const renderEntriesSide = (entries, totalShares, side) => {
       const sellOrders = sellBySide[side]||[];
-      const hasSells = sellOrders.length > 0;
-      if(totalShares < 0.001 && !hasSells) return "";
+      if(totalShares < 0.001 && !sellOrders.length) return "";
       const color  = side==="YES" ? "var(--yes)" : "var(--no)";
       const bg     = side==="YES" ? "rgba(0,168,112,.06)" : "rgba(224,40,74,.06)";
       const border = side==="YES" ? "rgba(0,168,112,.25)" : "rgba(224,40,74,.25)";
       const label  = side==="YES" ? "SÍ" : "NO";
+      // Precio de mercado actual para este lado
       const pWin   = side==="YES" ? pYes : (1-pYes);
+      // P&L correcto: lo que recibirías al vender ahora (97%) menos lo que pagaste
       const totalCost = entries.reduce((s,e)=>s+e.dollars,0);
       const avgPrice  = totalShares>0 ? totalCost/totalShares : 0;
-      const estVal    = totalShares * pWin;
-      const pnl       = estVal - totalCost;
+      const receiveNow = Math.round(totalShares * pWin * 0.97 * 100)/100;
+      const pnl = receiveNow - totalCost;
 
-      // Cuántas shares están reservadas en ventas activas
       const sharesInSale = sellOrders.reduce((s,o)=>s+Math.max(0,(o.shares||0)-(o.filled||0)),0);
-      const sharesAvail  = Math.max(0, totalShares - sharesInSale);
+      // Con el nuevo RPC, las shares en venta ya están descontadas de positions.
+      // totalShares = lo disponible. sharesInSale es informativo (ya restado).
+      const totalOriginal = Math.round((totalShares + sharesInSale)*100)/100;
+      const sharesAvail   = totalShares; // ya descontadas por el RPC
 
-      return `<div style="margin-bottom:10px">
-        <!-- Cabecera del lado -->
-        <div style="padding:8px 10px;border-radius:8px;background:${bg};border:1px solid ${border};margin-bottom:6px">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:${hasSells?"6":"0"}px">
-            <div style="display:flex;align-items:center;gap:8px">
+      return `<div style="margin-bottom:14px">
+        <!-- Cabecera del lado con totales -->
+        <div style="padding:8px 10px;border-radius:8px;background:${bg};
+            border:1px solid ${border};margin-bottom:6px">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <div>
               <span style="font-size:13px;font-weight:900;color:${color}">${label}</span>
-              <span style="font-size:11px;color:var(--muted)">${totalShares.toFixed(2)} sh total</span>
+              <span style="font-size:11px;color:var(--muted);margin-left:6px">${totalOriginal.toFixed(2)} sh total</span>
             </div>
-            <div style="display:flex;align-items:center;gap:8px">
-              <span style="font-size:10px;color:var(--muted)">prom. <strong>${pct2(avgPrice)}</strong></span>
-              <span style="font-size:12px;font-weight:700;color:${pnl>=0?"var(--yes)":"var(--no)"}">${pnl>=0?"+":""}${fmt2(pnl)}</span>
+            <div style="text-align:right">
+              <div style="font-size:12px;font-weight:800;color:${pnl>=0?"var(--yes)":"var(--no)"}">${pnl>=0?"+":""}${fmt2(pnl)}</div>
+              <div style="font-size:9px;color:var(--muted)">si vendes todo ahora · -3%</div>
             </div>
           </div>
-          ${hasSells?`<div style="display:flex;gap:8px;flex-wrap:wrap">
-            <span style="font-size:11px;background:rgba(0,168,112,.12);color:var(--yes);
-                padding:2px 8px;border-radius:20px;font-weight:700">
-              ✓ ${sharesAvail.toFixed(2)} sh disponibles
-            </span>
-            <span style="font-size:11px;background:rgba(245,158,11,.12);color:#f59e0b;
-                padding:2px 8px;border-radius:20px;font-weight:700">
-              🏷️ ${sharesInSale.toFixed(2)} sh en venta
-            </span>
+          ${sharesInSale>0?`<div style="margin-top:5px;display:flex;gap:6px;flex-wrap:wrap">
+            <span style="font-size:10px;background:rgba(0,168,112,.12);color:var(--yes);padding:2px 8px;border-radius:20px;font-weight:700">✓ ${sharesAvail.toFixed(2)} disponibles</span>
+            <span style="font-size:10px;background:rgba(245,158,11,.15);color:#f59e0b;padding:2px 8px;border-radius:20px;font-weight:700">🏷️ ${sharesInSale.toFixed(2)} en venta</span>
           </div>`:""}
         </div>
 
-        <!-- Órdenes de venta activas — SIEMPRE VISIBLE SI EXISTEN -->
-        ${renderSellOrders(side)}
-
-        <!-- Entradas individuales de compra -->
+        <!-- Entradas individuales con botón de venta -->
         ${entries.length>0?`
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:4px;
-            font-size:9px;font-weight:700;color:var(--muted);text-transform:uppercase;
-            padding:2px 8px;margin-bottom:3px">
-          <div>Shares/Fecha</div><div style="text-align:center">Precio</div>
-          <div style="text-align:center">Pagado</div><div style="text-align:right">P&L est.</div>
+        <div style="font-size:9px;font-weight:700;color:var(--muted);text-transform:uppercase;
+            display:grid;grid-template-columns:1.2fr 0.7fr 0.7fr 1fr 28px;gap:3px;
+            padding:2px 6px 4px;letter-spacing:.3px">
+          <div>Shares / Fecha</div>
+          <div style="text-align:center">Entrada</div>
+          <div style="text-align:center">Pagado</div>
+          <div style="text-align:right">Recibirías(-3%)</div>
+          <div></div>
         </div>
-        ${entries.map(e=>{
-          const valNow = e.shares * pWin;
-          const ePnl   = valNow - e.dollars;
-          const date   = e.date ? new Date(e.date).toLocaleDateString("es-CO",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"}) : "";
-          return `<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:4px;align-items:center;
-              padding:5px 8px;border-radius:6px;margin-bottom:3px;background:var(--card);border:1px solid var(--border)">
+        ${entries.map((e,idx)=>{
+          const receiveEntry = Math.round(e.shares * pWin * 0.97 * 100)/100;
+          const ePnl = receiveEntry - e.dollars;
+          const date = e.date ? new Date(e.date).toLocaleDateString("es-CO",
+            {day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"}) : "";
+          // ID único para la función de venta de esta entrada específica
+          const entryKey = `${marketId}_${side}_${idx}`;
+          return `<div style="display:grid;grid-template-columns:1.2fr 0.7fr 0.7fr 1fr 28px;
+              gap:3px;align-items:center;padding:5px 6px;border-radius:6px;
+              margin-bottom:3px;background:var(--card);border:1px solid var(--border)">
             <div>
               <div style="font-size:11px;font-weight:800;color:${color}">${e.shares.toFixed(2)} sh</div>
               <div style="font-size:9px;color:var(--muted)">${date}</div>
             </div>
-            <div style="text-align:center"><div style="font-size:12px;font-weight:700">${pct2(e.price)}</div></div>
-            <div style="text-align:center"><div style="font-size:11px;color:var(--muted)">${fmt2(e.dollars)}</div></div>
-            <div style="text-align:right"><div style="font-size:12px;font-weight:700;color:${ePnl>=0?"var(--yes)":"var(--no)"}">${ePnl>=0?"+":""}${fmt2(ePnl)}</div></div>
+            <div style="text-align:center;font-size:11px;font-weight:700">${pct2(e.price)}</div>
+            <div style="text-align:center;font-size:10px;color:var(--muted)">${fmt2(e.dollars)}</div>
+            <div style="text-align:right">
+              <div style="font-size:12px;font-weight:800;color:var(--text)">${fmt2(receiveEntry)}</div>
+              <div style="font-size:9px;color:${ePnl>=0?"var(--yes)":"var(--no)"};font-weight:700">${ePnl>=0?"+":""}${fmt2(ePnl)}</div>
+            </div>
+            <button
+              onclick="sellSpecificEntry('${marketId}','${side}',${e.shares.toFixed(4)},'${entryKey}')"
+              title="Poner estas ${e.shares.toFixed(2)} shares a la venta"
+              style="width:24px;height:24px;border-radius:6px;border:1.5px solid ${color};
+                background:transparent;color:${color};cursor:pointer;font-size:11px;
+                font-weight:900;display:flex;align-items:center;justify-content:center;
+                transition:all .15s;flex-shrink:0"
+              onmouseover="this.style.background='${color}';this.style.color='#fff'"
+              onmouseout="this.style.background='transparent';this.style.color='${color}'">↑</button>
           </div>`;
         }).join("")}`
         : totalShares>0.001?`<div style="font-size:10px;color:var(--muted);padding:4px 8px">
-            Historial de entradas no disponible</div>`:""}
+            ${totalShares.toFixed(2)} sh · historial no disponible aún</div>`:""}
+
+        <!-- Ventas activas de este lado -->
+        ${renderSellOrders(side)}
       </div>`;
     };
 
@@ -8377,46 +8423,32 @@ async function loadUserPnlHistory(userId){
 // invertido sino el número de operaciones — refleja el sentimiento real.
 async function loadProSentiment(marketId){
   const el = document.getElementById("pro-sentiment-"+marketId);
-  // Si el div no existe (usuario no está en Modo Pro), actualizamos
-  // STATE igualmente para que al entrar al Pro los datos estén frescos.
 
-  const [{data: mFresh}, {data: ordersData}] = await Promise.all([
-    db.from("markets")
-      .select("q_yes,q_no")
-      .eq("id", marketId)
-      .maybeSingle(),
-    db.from("orders")
-      .select("side")
-      .eq("market_id", marketId)
-      .eq("is_mm", false)
-      .eq("is_mirror", false)
-      .neq("order_type","sell")
-      .in("status",["filled","partial"]),
+  const [{data:mFresh},{data:cData}] = await Promise.all([
+    db.from("markets").select("q_yes,q_no").eq("id",marketId).maybeSingle(),
+    db.from("contracts").select("yes_user_id,no_user_id")
+      .eq("market_id",marketId).eq("status","active"),
   ]);
 
-  const countY = (ordersData||[]).filter(o=>o.side==="YES").length;
-  const countN = (ordersData||[]).filter(o=>o.side==="NO").length;
-  const total  = countY + countN;
-  const pctY   = total>0 ? Math.round(countY/total*100) : 50;
-  const pctN   = 100 - pctY;
-
-  const qY = mFresh?.q_yes || 0;
-  const qN = mFresh?.q_no  || 0;
-
-  // Siempre actualizar STATE local
+  const qY = mFresh?.q_yes||0;
+  const qN = mFresh?.q_no||0;
   const mi = STATE.markets.findIndex(mk=>mk.id===marketId);
-  if(mi>=0 && mFresh){
-    STATE.markets[mi] = {...STATE.markets[mi], qYes: qY, qNo: qN};
-  }
+  if(mi>=0 && mFresh) STATE.markets[mi]={...STATE.markets[mi],qYes:qY,qNo:qN};
 
-  // Si el div no existe aún, no hay nada más que hacer
   if(!el) return;
 
-  if(total===0 && qY===0 && qN===0){
+  const adminId = STATE.users.find(u=>u.role==="admin")?.id||null;
+  const cs = cData||[];
+  const countY = cs.filter(c=>c.yes_user_id && c.yes_user_id!==adminId).length;
+  const countN = cs.filter(c=>c.no_user_id  && c.no_user_id!==adminId).length;
+  const total  = countY+countN;
+  const pctY   = total>0 ? Math.round(countY/total*100) : 50;
+  const pctN   = 100-pctY;
+
+  if(total===0 && qY<0.01 && qN<0.01){
     el.innerHTML=`<div style="text-align:center;color:var(--muted);font-size:11px;padding:4px 0">Sin compras de usuarios aún</div>`;
     return;
   }
-
   el.innerHTML=`
     <div style="display:flex;justify-content:space-between;font-size:12px;font-weight:700;margin-bottom:4px">
       <span style="color:var(--yes)">SÍ ${pctY}%</span>
@@ -8427,12 +8459,12 @@ async function loadProSentiment(marketId){
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px">
       <div style="background:rgba(0,168,112,.07);border-radius:8px;padding:6px 8px;border:1px solid rgba(0,168,112,.2)">
-        <div style="font-size:11px;font-weight:700;color:var(--yes)">${countY} compra${countY!==1?"s":""}</div>
-        <div style="font-size:10px;color:var(--muted)">$${qY.toFixed(2)} invertido</div>
+        <div style="font-size:12px;font-weight:800;color:var(--yes)">${countY} compra${countY!==1?"s":""}</div>
+        <div style="font-size:10px;color:var(--muted)">${usd(qY)} en SÍ</div>
       </div>
       <div style="background:rgba(224,40,74,.07);border-radius:8px;padding:6px 8px;border:1px solid rgba(224,40,74,.2)">
-        <div style="font-size:11px;font-weight:700;color:var(--no)">${countN} compra${countN!==1?"s":""}</div>
-        <div style="font-size:10px;color:var(--muted)">$${qN.toFixed(2)} invertido</div>
+        <div style="font-size:12px;font-weight:800;color:var(--no)">${countN} compra${countN!==1?"s":""}</div>
+        <div style="font-size:10px;color:var(--muted)">${usd(qN)} en NO</div>
       </div>
     </div>`;
 }
@@ -8510,77 +8542,88 @@ async function loadProMyTrades(marketId, _retry=0){
     const label  = side==="YES" ? "SÍ" : "NO";
     const pWin   = side==="YES" ? getPrice(m,"YES") : (1-getPrice(m,"YES"));
     const sells  = sellBySide[side]||[];
-
-    // Calcular totales desde los contratos activos
     const totalCost = entries.reduce((s,e)=>s+e.price*e.shares, 0);
-    const estVal    = calcSellReturn(m, side, totalShares);
-    const pnl       = estVal - totalCost;
-    const pnlCol    = pnl>=0 ? "var(--yes)" : "var(--no)";
-    const avgPrice  = totalShares>0 ? totalCost/totalShares : 0;
+    // P&L correcto: lo que recibirías vendiendo todo ahora (−3% comisión)
+    const receiveNow = Math.round(totalShares * pWin * 0.97 * 100)/100;
+    const pnl    = receiveNow - totalCost;
+    const pnlCol = pnl>=0 ? "var(--yes)" : "var(--no)";
+    const avgPrice = totalShares>0 ? totalCost/totalShares : 0;
+    const sharesInSale = sells.reduce((s,o)=>s+Math.max(0,(o.shares||0)-(o.filled||0)),0);
+    // totalShares ya es lo disponible (el RPC descuenta al crear la orden de venta)
+    const totalOriginalPro = Math.round((totalShares+sharesInSale)*100)/100;
+    const sharesAvail  = totalShares;
 
     return `<div style="margin-bottom:10px">
-      <!-- Cabecera del lado -->
-      <div style="display:flex;justify-content:space-between;align-items:center;
-          padding:7px 9px;border-radius:8px 8px 0 0;background:${bg};
+      <!-- Cabecera -->
+      <div style="padding:7px 9px;border-radius:8px 8px 0 0;background:${bg};
           border-bottom:1px solid var(--border)">
-        <div>
-          <span style="font-weight:800;font-size:12px;color:${color}">${label}</span>
-          <span style="font-size:10px;color:var(--muted);margin-left:6px">
-            ${totalShares.toFixed(2)} sh · prom. ${(avgPrice*100).toFixed(1)}%
-          </span>
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <div>
+            <span style="font-weight:800;font-size:12px;color:${color}">${label}</span>
+            <span style="font-size:10px;color:var(--muted);margin-left:6px">${totalOriginalPro.toFixed(2)} sh total · prom. ${(avgPrice*100).toFixed(1)}%</span>
+          </div>
+          <div style="text-align:right">
+            <div style="font-size:11px;font-weight:700;color:${pnlCol}">${pnl>=0?"+":""}${usd(pnl)}</div>
+            <div style="font-size:9px;color:var(--muted)">si vendes todo −3%</div>
+          </div>
         </div>
-        <div>
-          <span style="font-size:11px;font-weight:700;color:${pnlCol}">${pnl>=0?"+":""}${usd(pnl)}</span>
-          <span style="font-size:9px;color:var(--muted);margin-left:3px">P&L</span>
-        </div>
+        ${sharesInSale>0?`<div style="margin-top:4px;display:flex;gap:5px;flex-wrap:wrap">
+          <span style="font-size:9px;background:rgba(0,168,112,.12);color:var(--yes);padding:1px 6px;border-radius:20px;font-weight:700">✓ ${sharesAvail.toFixed(2)} disp.</span>
+          <span style="font-size:9px;background:rgba(245,158,11,.15);color:#f59e0b;padding:1px 6px;border-radius:20px;font-weight:700">🏷️ ${sharesInSale.toFixed(2)} en venta</span>
+        </div>`:""}
       </div>
-      <!-- Tabla de entradas -->
+      <!-- Tabla de entradas con botón de venta -->
       <div style="border:1px solid var(--border);border-top:none;border-radius:0 0 8px 8px">
         ${entries.length>0?`
-        <div style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr;
-            padding:3px 8px;background:var(--card2);border-bottom:1px solid var(--border)">
-          <span style="font-size:9px;color:var(--muted);font-weight:700;text-transform:uppercase">Shares/Fecha</span>
-          <span style="font-size:9px;color:var(--muted);font-weight:700;text-align:center">Precio</span>
-          <span style="font-size:9px;color:var(--muted);font-weight:700;text-align:center">Pagado</span>
-          <span style="font-size:9px;color:var(--muted);font-weight:700;text-align:right">P&L est.</span>
+        <div style="display:grid;grid-template-columns:1.5fr 0.7fr 0.7fr 0.9fr 24px;
+            padding:3px 6px;background:var(--card2);border-bottom:1px solid var(--border)">
+          <span style="font-size:8px;color:var(--muted);font-weight:700;text-transform:uppercase">Shares/Fecha</span>
+          <span style="font-size:8px;color:var(--muted);font-weight:700;text-align:center">Entrada</span>
+          <span style="font-size:8px;color:var(--muted);font-weight:700;text-align:center">Pagado</span>
+          <span style="font-size:8px;color:var(--muted);font-weight:700;text-align:right">Recib.(-3%)</span>
+          <span></span>
         </div>
-        ${entries.map(e=>{
-          const cost  = e.price * e.shares;
-          const val   = calcSellReturn(m, side, e.shares);
-          const ePnl  = val - cost;
-          const eCol  = ePnl>=0?"var(--yes)":"var(--no)";
-          const date  = new Date(e.ts).toLocaleDateString("es-CO",
+        ${entries.map((e,idx)=>{
+          const cost       = e.price * e.shares;
+          const receiveEnt = Math.round(e.shares * pWin * 0.97 * 100)/100;
+          const ePnl       = receiveEnt - cost;
+          const eCol       = ePnl>=0?"var(--yes)":"var(--no)";
+          const date       = new Date(e.ts).toLocaleDateString("es-CO",
             {day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"});
-          return `<div style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr;
-              padding:4px 8px;border-bottom:1px solid var(--border)">
+          return `<div style="display:grid;grid-template-columns:1.5fr 0.7fr 0.7fr 0.9fr 24px;
+              padding:4px 6px;border-bottom:1px solid var(--border);align-items:center">
             <div>
               <div style="font-size:11px;font-weight:700;color:${color}">${e.shares.toFixed(2)} sh</div>
               <div style="font-size:9px;color:var(--muted)">${date}</div>
             </div>
-            <div style="text-align:center;font-size:11px">${(e.price*100).toFixed(1)}%</div>
-            <div style="text-align:center;font-size:11px">${usd(cost)}</div>
+            <div style="text-align:center;font-size:10px">${(e.price*100).toFixed(1)}%</div>
+            <div style="text-align:center;font-size:10px;color:var(--muted)">${usd(cost)}</div>
             <div style="text-align:right;font-size:11px;font-weight:700;color:${eCol}">${ePnl>=0?"+":""}${usd(ePnl)}</div>
+            <button onclick="sellSpecificEntry('${marketId}','${side}',${e.shares.toFixed(4)},'pro_${idx}')"
+              title="Poner a la venta"
+              style="width:22px;height:22px;border-radius:5px;border:1.5px solid ${color};
+                background:transparent;color:${color};cursor:pointer;font-size:10px;font-weight:900;
+                display:flex;align-items:center;justify-content:center;flex-shrink:0"
+              onmouseover="this.style.background='${color}';this.style.color='#fff'"
+              onmouseout="this.style.background='transparent';this.style.color='${color}'">↑</button>
           </div>`;
         }).join("")}` : `<div style="padding:8px;text-align:center;font-size:10px;color:var(--muted)">
           ${totalShares.toFixed(2)} sh · Historial no disponible aún</div>`}
-        <!-- Órdenes de venta activas -->
+        <!-- Ventas activas -->
         ${sells.map(o=>{
           const pending = Math.max(0,(o.shares||0)-(o.filled||0));
           if(pending<0.001) return "";
           const sold = o.filled||0;
           return `<div style="display:flex;justify-content:space-between;align-items:center;
-              padding:5px 8px;background:rgba(76,175,80,.07);border-top:1px solid var(--border)">
+              padding:5px 8px;background:rgba(245,158,11,.06);border-top:1px solid var(--border)">
             <div>
-              <span style="font-size:10px;font-weight:800;color:${color}">🏷️ ${pending.toFixed(2)} sh en venta</span>
-              <span style="font-size:9px;color:var(--muted);margin-left:4px">
-                ${(o.price*100).toFixed(1)}%${sold>0?` · vendido ${sold.toFixed(2)}`:""}
-              </span>
+              <span style="font-size:10px;font-weight:800;color:#f59e0b">🏷️ ${pending.toFixed(2)} sh en venta</span>
+              <span style="font-size:9px;color:var(--muted);margin-left:4px">@ ${(o.price*100).toFixed(1)}%${sold>0?` · ${sold.toFixed(2)} vendido`:""}</span>
             </div>
             <button onclick="cancelPendingOrder('${o.id}','${marketId}','sell')"
               style="font-size:14px;width:22px;height:22px;border-radius:50%;
                 border:1px solid var(--border);background:var(--card);color:var(--muted);
-                cursor:pointer;display:flex;align-items:center;justify-content:center;
-                flex-shrink:0">×</button>
+                cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0">×</button>
           </div>`;
         }).join("")}
       </div>
@@ -8590,6 +8633,66 @@ async function loadProMyTrades(marketId, _retry=0){
   el.innerHTML =
     (yesShares>0.001 ? renderSide(yesEntries, yesShares, "YES") : "") +
     (noShares>0.001  ? renderSide(noEntries,  noShares,  "NO")  : "");
+}
+
+// Pone a la venta las shares de una entrada específica del historial.
+async function sellSpecificEntry(marketId, side, shares, entryKey){
+  const u = getUser();
+  if(!u){ notify("Debes iniciar sesión","error"); return; }
+  const m = getMarket(marketId);
+  if(!m){ notify("Mercado no encontrado","error"); return; }
+
+  const cooldownLeft = getTradeCooldownSecsLeft();
+  if(cooldownLeft > 0){ notify(`⏳ Espera ${cooldownLeft}s antes de operar`,"info"); return; }
+
+  // Verificar shares disponibles desde DB
+  const [posRes, sellRes] = await Promise.all([
+    db.from("positions").select("yes_shares,no_shares").eq("market_id",marketId).eq("user_id",u.id).maybeSingle(),
+    db.from("orders").select("shares,filled").eq("market_id",marketId).eq("user_id",u.id).eq("order_type","sell").eq("side",side).eq("is_mm",false).in("status",["open","partial"]),
+  ]);
+
+  const totalShares = side==="YES" ? (posRes.data?.yes_shares||0) : (posRes.data?.no_shares||0);
+  const inSale = (sellRes.data||[]).reduce((s,o)=>s+Math.max(0,(o.shares||0)-(o.filled||0)),0);
+  const avail  = Math.max(0, totalShares - inSale);
+
+  if(shares > avail + 0.001){
+    notify(`Solo tienes ${avail.toFixed(2)} sh ${side} disponibles (${inSale.toFixed(2)} ya en venta)`,"error");
+    return;
+  }
+
+  const pWin    = side==="YES" ? (m.priceYes||0.5) : (1-(m.priceYes||0.5));
+  const receive = Math.round(shares * pWin * 0.97 * 100)/100;
+
+  if(!confirm(
+    `¿Poner ${shares.toFixed(2)} shares ${side} a la venta?\n\n` +
+    `Precio actual del mercado: ${(pWin*100).toFixed(1)}%\n` +
+    `Recibirías si se ejecuta ahora: $${receive.toFixed(2)} (precio actual − 3% comisión)\n\n` +
+    `La venta se ejecuta cada vez que alguien compre ${side} y el MM no tenga inventario (P2).`
+  )) return;
+
+  try{
+    notify("⏳ Poniendo shares en venta…","info");
+    const {data, error} = await db.rpc("match_order",{
+      p_market_id: marketId, p_user_id: u.id,
+      p_side: side, p_action: "sell",
+      p_dollars: 0, p_shares: shares, p_price: 0,
+    });
+    if(error || !data){ notify("Error: "+(error?.message||"intenta de nuevo"),"error"); return; }
+    if(data.error){ notify(data.error,"error"); return; }
+    STATE.tradeCooldownUntil = Date.now() + 10000;
+    notify(`✅ ${shares.toFixed(2)} shares ${side} puestas en venta al precio actual`,"success");
+    setTimeout(async ()=>{
+      await Promise.all([loadMyTrades(marketId), loadPendingOrders(marketId)]);
+      if(STATE.view==="pro") loadProMyTrades(marketId);
+      loadProSentiment(marketId);
+    }, 300);
+    setTimeout(async ()=>{
+      await Promise.all([loadMyTrades(marketId), loadPendingOrders(marketId)]);
+      if(STATE.view==="pro") loadProMyTrades(marketId);
+    }, 900);
+  }catch(err){
+    notify("Error: "+(err?.message||err),"error");
+  }
 }
 
 function renderFeed(){
@@ -10514,8 +10617,6 @@ function refreshInlineTrade(marketId){
 }
 
 async function executeInlineTrade(marketId, side, mode){
-  // Reutilizar la lógica de executeTrade del popup
-  // Configurar STATE como si fuera el modal
   STATE.tradeMarketId = marketId;
   STATE.tradeSide = side;
   STATE.tradeMode = mode;
@@ -10527,9 +10628,31 @@ async function executeInlineTrade(marketId, side, mode){
     const shares = parseFloat(STATE.inlineShares?.[marketId]||0);
     if(!shares||shares<=0){ notify("Ingresa shares a vender","error"); return; }
     STATE.tradeShares = String(shares);
+
+    // Sincronizar posición real desde DB antes de validar
+    // (evita error por estado local desactualizado)
+    const u = getUser();
+    if(u){
+      const [posRes, sellRes] = await Promise.all([
+        db.from("positions").select("yes_shares,no_shares").eq("market_id",marketId).eq("user_id",u.id).maybeSingle(),
+        db.from("orders").select("shares,filled,side").eq("market_id",marketId).eq("user_id",u.id).eq("order_type","sell").eq("is_mm",false).in("status",["open","partial"]),
+      ]);
+      if(posRes.data){
+        const ui=STATE.users.findIndex(x=>x.id===u.id);
+        if(ui>=0){
+          const updPos={...(STATE.users[ui].positions||{})};
+          updPos[marketId]={YES:posRes.data.yes_shares||0,NO:posRes.data.no_shares||0};
+          STATE.users[ui]={...STATE.users[ui],positions:updPos};
+        }
+        // Actualizar reserved
+        const selling=(sellRes.data||[]).filter(o=>o.side===side).reduce((s,o)=>s+Math.max(0,(o.shares||0)-(o.filled||0)),0);
+        STATE._sellReserved=STATE._sellReserved||{};
+        STATE._sellReserved[marketId]=STATE._sellReserved[marketId]||{YES:0,NO:0};
+        STATE._sellReserved[marketId][side]=selling;
+      }
+    }
   }
   await executeTrade();
-  // Reset inline inputs
   if(STATE.inlineDollars) STATE.inlineDollars[marketId]="";
   if(STATE.inlineShares)  STATE.inlineShares[marketId]="";
   refreshInlineTrade(marketId);
@@ -10762,6 +10885,7 @@ async function executeTrade(){
 
       STATE.tradeCooldownUntil = Date.now() + 10000;
       closeTradeModal(); render();
+      // Primer intento rápido (por si el DOM ya está listo)
       setTimeout(async ()=>{
         loadPendingOrders(marketId);
         loadMyTrades(marketId);
@@ -10769,7 +10893,14 @@ async function executeTrade(){
         loadProSentiment(marketId);
         const u2=getUser(); if(u2) loadRealPositionForSell(marketId, u2.id);
         if(STATE.view==="pro") loadProMyTrades(marketId);
-      }, 400);
+      }, 300);
+      // Segundo intento con más delay — garantiza que render() terminó
+      setTimeout(async ()=>{
+        loadPendingOrders(marketId);
+        loadMyTrades(marketId);
+        const u2=getUser(); if(u2) loadRealPositionForSell(marketId, u2.id);
+        if(STATE.view==="pro") loadProMyTrades(marketId);
+      }, 800);
 
       const sellOrderId = sellData.order_id;
       const sellInShares = false;
@@ -10925,11 +11056,11 @@ function renderAdmin(){
   if(STATE.adminTab==="stats")      content=renderAdminStats();
   if(STATE.adminTab==="markets")    content=renderAdminMarkets();
   if(STATE.adminTab==="featured")   content=renderAdminFeatured();
-  if(STATE.adminTab==="resolve"){
-    content=renderAdminResolve();
+  if(STATE.adminTab==="resolve")    content=renderAdminResolve();
+  if(STATE.adminTab==="history"){
+    content=renderAdminHistory();
     setTimeout(loadAdminResolutionHistory, 200);
   }
-  if(STATE.adminTab==="history")    content=renderAdminHistory();
   if(STATE.adminTab==="withdrawals")content=renderAdminWithdrawals();
   if(STATE.adminTab==="deposits")   content=renderAdminDeposits();
   if(STATE.adminTab==="referrals")  content=renderAdminReferrals();
@@ -11925,6 +12056,19 @@ function renderAdminHistory(){
             <tbody>${rows}</tbody>
           </table>`}
     </div>
+
+    <!-- Historial persistente desde market_resolution_history -->
+    <div class="card" style="overflow-x:auto;margin-top:16px">
+      <div style="display:flex;align-items:center;gap:10px;padding:16px 16px 8px">
+        <div class="admin-section-title" style="margin:0">📋 Historial completo (persiste aunque se elimine el mercado)</div>
+        <button onclick="loadAdminResolutionHistory()"
+          style="font-size:10px;color:var(--muted);background:none;border:1px solid var(--border);
+            border-radius:4px;cursor:pointer;padding:2px 8px">🔄 Actualizar</button>
+      </div>
+      <div id="admin-resolution-history-rows" style="padding:0 16px 16px">
+        <div style="text-align:center;padding:20px;color:var(--muted);font-size:12px">⏳ Cargando…</div>
+      </div>
+    </div>
   </div>`;
 }
 
@@ -12289,18 +12433,6 @@ function renderAdminResolve(){
       ${locked.map(m=>renderRow(m,true)).join("")}
     </div>`:""}
     ${sectionHtml("Pendientes de resolución", pending)}
-    <div id="admin-resolution-history" style="margin-top:16px">
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
-        <div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">
-          📜 Historial de mercados resueltos
-        </div>
-        <button onclick="loadAdminResolutionHistory()" style="font-size:10px;color:var(--muted);background:none;
-            border:1px solid var(--border);border-radius:4px;cursor:pointer;padding:2px 6px">🔄</button>
-      </div>
-      <div id="admin-resolution-history-rows">
-        <div style="text-align:center;padding:20px;color:var(--muted);font-size:12px">⏳ Cargando historial…</div>
-      </div>
-    </div>
   </div>`;
 }
 
