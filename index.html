@@ -4773,61 +4773,68 @@ const PRO_PERIODS = {
   '1d':  { ms: 24*60*60*1000,label:'1d'  },
 };
 
-// Carga trades con timestamp desde contracts y dibuja las velas
+// Carga trades para las velas del Modo Pro.
+// Fuente única: tabla 'orders' con sus timestamps reales y precios reales.
+// Cada orden ejecutada = un punto en el tiempo con su precio.
+// El precio de mercado en cada momento = yes_price normalizado al lado SÍ.
+// Esto es lo que garantiza que los buckets de tiempo (5m, 10m, etc.) sean
+// correctos: si dos compras ocurrieron dentro del mismo período de 5 minutos,
+// ambas caen en la misma vela, no en velas separadas.
 async function loadProChart(marketId){
-  // Estrategia: combinar dos fuentes complementarias
-  // 1. price_history del mercado: tiene los precios EXACTOS del RPC (v_new_price_yes
-  //    después de mover ticks) — es la fuente más confiable para el precio correcto.
-  // 2. orders ejecutadas: tienen los timestamps REALES de cada operación.
-  // Al combinarlas, cada punto del price_history se empareja con el timestamp
-  // de la orden correspondiente, dando velas sincronizadas con el precio real.
-
   const m = getMarket(marketId);
-  const priceHist = m?.priceHistory || [];
 
-  // Cargar órdenes ejecutadas reales (excluyendo las internas del MM)
-  // para obtener timestamps reales de cada operación
-  const {data: orders} = await db.from('orders')
-    .select('created_at, side, price')
+  // Cargar TODAS las órdenes ejecutadas con su timestamp real.
+  // Se usa 'price' de la orden (que es el precio al que se ejecutó la orden,
+  // en el lado que pidió el usuario) normalizado a precio SÍ siempre.
+  // También cargamos las órdenes del MM (is_mm=true, order_type='mm') porque
+  // ellas reflejan el precio de cada contraparte creada — importante para
+  // mercados donde el usuario compra siempre contra el MM.
+  const {data: ordersData} = await db.from('orders')
+    .select('created_at, side, price, order_type, is_mm')
     .eq('market_id', marketId)
     .in('status', ['filled', 'partial'])
-    .neq('order_type', 'mm')
-    .neq('is_mm', true)
     .order('created_at', {ascending: true})
     .limit(5000);
 
-  const orderTs = (orders||[]).map(o => new Date(o.created_at).getTime());
-
   let trades = [];
 
-  if(priceHist.length >= 2 && orderTs.length >= 1){
-    // Emparejar cada punto del price_history con el timestamp de la orden
-    // correspondiente. Si hay más puntos que órdenes (o viceversa),
-    // interpolar uniformemente el que sobra.
-    const histLen = priceHist.length;
-    const tsLen   = orderTs.length;
+  if(ordersData && ordersData.length > 0){
+    // Solo órdenes que representan movimientos de precio reales:
+    // - Órdenes de usuario ejecutadas (is_mm=false, order_type=limit o market)
+    // - Órdenes MM que son las contrapartes (order_type='mm', is_mm=true)
+    // Excluir: órdenes de reventa del MM (order_type='limit', is_mm=true)
+    //          que tienen precios de colocación, no precios de mercado.
+    const relevant = ordersData.filter(o =>
+      (!o.is_mm && o.order_type !== 'sell') ||
+      (o.is_mm && o.order_type === 'mm')
+    );
 
-    // Usar el mínimo como referencia principal
-    const count = Math.min(histLen, tsLen + 1); // +1 porque price_history incluye el precio inicial
-    const startTs = m?.createdAt ? new Date(m.createdAt).getTime() : orderTs[0] || Date.now();
-
-    trades = priceHist.slice(0, count).map((price, i) => {
-      // El primer punto es el precio inicial (antes de cualquier operación)
-      const ts = i === 0 ? startTs : (orderTs[i - 1] || orderTs[orderTs.length - 1]);
-      return { price, ts };
-    });
-  } else if(priceHist.length >= 2){
-    // Fallback: no hay órdenes aún, interpolar timestamps uniformemente
-    const now   = Date.now();
-    const start = m?.createdAt ? new Date(m.createdAt).getTime() : now - priceHist.length * 300000;
-    const step  = priceHist.length > 1 ? (now - start) / (priceHist.length - 1) : 60000;
-    trades = priceHist.map((price, i) => ({ price, ts: start + i * step }));
+    trades = relevant.map(o => {
+      // Normalizar siempre a precio SÍ para que el gráfico sea consistente
+      const price = o.side === 'YES'
+        ? o.price
+        : Math.round((1 - o.price) * 10000) / 10000;
+      return {
+        price,
+        ts: new Date(o.created_at).getTime(),
+      };
+    }).filter(t => t.price > 0.01 && t.price < 0.99);
   }
 
-  // Asegurar que el último punto siempre tenga el precio actual exacto del mercado
+  // Si no hay órdenes aún, usar price_history interpolado como fallback
+  if(trades.length < 2){
+    const priceHist = m?.priceHistory || [];
+    if(priceHist.length >= 2){
+      const now   = Date.now();
+      const start = m?.createdAt ? new Date(m.createdAt).getTime() : now - priceHist.length * 60000;
+      const step  = (now - start) / Math.max(priceHist.length - 1, 1);
+      trades = priceHist.map((price, i) => ({ price, ts: start + i * step }));
+    }
+  }
+
+  // El precio actual exacto del mercado siempre como punto final
   if(trades.length > 0 && m?.priceYes != null){
-    trades[trades.length - 1].price = m.priceYes;
-    trades[trades.length - 1].ts    = Date.now();
+    trades.push({ price: m.priceYes, ts: Date.now() });
   }
 
   PRO_CHART_STATE.trades   = trades.filter(t => t.price > 0 && t.price < 1);
@@ -5108,8 +5115,13 @@ const PRO_OB_STATE = {};
 function startProObRefresh(marketId){
   if(PRO_OB_STATE.interval) clearInterval(PRO_OB_STATE.interval);
   PRO_OB_STATE.marketId = marketId;
+  PRO_OB_STATE._tick = 0;
   PRO_OB_STATE.interval = setInterval(()=>{
-    if(PRO_OB_STATE.marketId) loadProOrderBook(PRO_OB_STATE.marketId);
+    if(!PRO_OB_STATE.marketId) return;
+    loadProOrderBook(PRO_OB_STATE.marketId);
+    PRO_OB_STATE._tick = (PRO_OB_STATE._tick||0) + 1;
+    // Refrescar sentimiento cada 5 ciclos (30s) para captar compras de otros usuarios
+    if(PRO_OB_STATE._tick % 5 === 0) loadProSentiment(PRO_OB_STATE.marketId);
   }, 6000);
 }
 function stopProObRefresh(){
@@ -10423,6 +10435,7 @@ async function executeTrade(){
         loadPendingOrders(marketId);
         loadMyTrades(marketId);
         if(STATE.view==="pro") loadProMyTrades(marketId);
+        if(STATE.view==="pro") loadProSentiment(marketId);
       }, 400);
 
       const orderId = rpcData.order_id;
@@ -10532,6 +10545,7 @@ async function executeTrade(){
         loadMyTrades(marketId);
         startSellRefresh(marketId);
         if(STATE.view==="pro") loadProMyTrades(marketId);
+        if(STATE.view==="pro") loadProSentiment(marketId);
       }, 400);
 
       const sellOrderId = sellData.order_id;
