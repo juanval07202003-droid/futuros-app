@@ -6730,8 +6730,16 @@ async function cancelPendingOrder(orderId, marketId, kind){
     }
 
   } finally {
-    // Recargar órdenes y re-renderizar siempre, incluso si hubo error
+    // Recargar posición real + órdenes pendientes para que la UI
+    // muestre el estado correcto (shares disponibles de nuevo)
+    const u2 = getUser();
+    if(u2) await loadRealPositionForSell(marketId, u2.id);
     await loadPendingOrders(marketId);
+    await loadMyTrades(marketId);
+    if(STATE.view==="pro"){
+      loadProMyTrades(marketId);
+      loadProSentiment(marketId);
+    }
     render();
   }
 }
@@ -10221,14 +10229,42 @@ function renderInlineTrade(m, side, mode, u, pos){
           onclick="switchInlineTab('${m.id}','NO','sell')">Vender NO (${heldNo})</button>
       </div>
       <div style="margin-bottom:8px">
+        ${(()=>{
+          const reserved = (STATE._sellReserved||{})[m.id]||{YES:0,NO:0};
+          const inSale   = side==="YES" ? reserved.YES : reserved.NO;
+          const total    = side==="YES" ? heldYes : heldNo;
+          const avail    = Math.max(0, Math.round((total - inSale)*100)/100);
+          return inSale>0 ? `<div style="font-size:11px;padding:6px 10px;border-radius:8px;
+              background:rgba(76,175,80,.08);border:1px solid rgba(76,175,80,.2);margin-bottom:6px">
+            <span style="color:var(--muted)">Total: <strong>${total}</strong> · </span>
+            <span style="color:#f59e0b;font-weight:700">🏷️ ${inSale.toFixed(2)} en venta</span>
+            <span style="color:var(--muted)"> · Disponibles: <strong style="color:${side==="YES"?"var(--yes)":"var(--no)"}">${avail}</strong></span>
+          </div>` : "";
+        })()}
         <input class="inp" type="number" min="0.01" step="0.01"
           value="${sellShares}" placeholder="0.00 shares"
           style="font-size:18px;font-weight:700"
           oninput="STATE.inlineShares=STATE.inlineShares||{};STATE.inlineShares['${m.id}']=this.value;refreshInlineSellPreviewOnly('${m.id}')"/>
         <div style="font-size:11px;color:var(--muted);margin-top:4px">
-          ${en?"You have":"Tienes"}: <strong style="cursor:pointer;color:${side==="YES"?"var(--yes)":"var(--no)"}"
-            onclick="(()=>{const inp=this.closest('div').previousElementSibling;const v=${side==="YES"?heldYes:heldNo};inp.value=v;STATE.inlineShares=STATE.inlineShares||{};STATE.inlineShares['${m.id}']=String(v);refreshInlineSellPreviewOnly('${m.id}')})()">
-            ${side==="YES"?heldYes:heldNo} ${side} — ${en?"tap to sell all":"toca para vender todo"}
+          ${en?"Available":"Disponibles"}: <strong style="cursor:pointer;color:${side==="YES"?"var(--yes)":"var(--no)"}"
+            onclick="(()=>{
+              const reserved=(STATE._sellReserved||{})['${m.id}']||{YES:0,NO:0};
+              const inSale=${side==="YES"?"(reserved.YES||0)":"(reserved.NO||0)"};
+              const total=${side==="YES"?heldYes:heldNo};
+              const avail=Math.max(0,Math.round((total-inSale)*100)/100);
+              const inp=this.closest('div').previousElementSibling;
+              inp.value=avail;
+              STATE.inlineShares=STATE.inlineShares||{};
+              STATE.inlineShares['${m.id}']=String(avail);
+              refreshInlineSellPreviewOnly('${m.id}')
+            })()">
+            ${(()=>{
+              const reserved = (STATE._sellReserved||{})[m.id]||{YES:0,NO:0};
+              const inSale = side==="YES" ? (reserved.YES||0) : (reserved.NO||0);
+              const total  = side==="YES" ? heldYes : heldNo;
+              const avail  = Math.max(0, Math.round((total-inSale)*100)/100);
+              return `${avail} ${side} — ${en?"tap to sell all":"toca para vender todo"}`;
+            })()}
           </strong>
         </div>
       </div>
@@ -10280,6 +10316,51 @@ function refreshInlineSellPreviewOnly(marketId){
 function switchInlineTab(marketId, side, mode){
   STATE.inlineTab = STATE.inlineTab||{};
   STATE.inlineTab[marketId] = {side, mode};
+  refreshInlineTrade(marketId);
+  // Al abrir el tab de Vender, recargar posición real desde DB para
+  // mostrar shares correctas (incluyendo las que están en venta)
+  if(mode==="sell"){
+    const u = getUser();
+    if(u) loadRealPositionForSell(marketId, u.id);
+  }
+}
+
+// Carga la posición real del usuario desde DB antes de mostrar el tab de Vender,
+// para que heldYes/heldNo reflejen las shares actuales (incluyendo las reservadas
+// en órdenes de venta activas). También actualiza STATE.users para que la
+// validación de executeTrade use el número correcto.
+async function loadRealPositionForSell(marketId, userId){
+  const [posRes, sellRes] = await Promise.all([
+    db.from("positions")
+      .select("yes_shares,no_shares")
+      .eq("market_id", marketId)
+      .eq("user_id", userId)
+      .maybeSingle(),
+    db.from("orders")
+      .select("side,shares,filled")
+      .eq("market_id", marketId)
+      .eq("user_id", userId)
+      .eq("order_type","sell")
+      .eq("is_mm",false)
+      .in("status",["open","partial"]),
+  ]);
+
+  if(!posRes.data) return;
+  const ui = STATE.users.findIndex(u=>u.id===userId);
+  if(ui<0) return;
+
+  const yesTotal = posRes.data.yes_shares || 0;
+  const noTotal  = posRes.data.no_shares  || 0;
+  const yesSelling = (sellRes.data||[]).filter(o=>o.side==="YES").reduce((s,o)=>s+Math.max(0,(o.shares||0)-(o.filled||0)),0);
+  const noSelling  = (sellRes.data||[]).filter(o=>o.side==="NO").reduce((s,o)=>s+Math.max(0,(o.shares||0)-(o.filled||0)),0);
+
+  const updPos = {...(STATE.users[ui].positions||{})};
+  updPos[marketId] = {YES: yesTotal, NO: noTotal};
+  // Guardar también cuántas están en venta para mostrarlo en la UI
+  STATE._sellReserved = STATE._sellReserved || {};
+  STATE._sellReserved[marketId] = {YES: yesSelling, NO: noSelling};
+
+  STATE.users[ui] = {...STATE.users[ui], positions: updPos};
   refreshInlineTrade(marketId);
 }
 
@@ -10497,25 +10578,28 @@ async function executeTrade(){
       const netReturn = sellData.matched || 0;
       const newPriceYesSell = sellData.price_yes;
       const newHistory= Array.isArray(sellData.new_history) ? sellData.new_history : [];
+      const pendingShares = sellData.unfilled_shares ?? shares; // shares que quedaron en el libro
 
       const nm={...localM, priceYes:newPriceYesSell ?? localM.priceYes,
         spreadPool:(localM.spreadPool||0)+(sellData.spread_usd||0),
         priceHistory:newHistory};
       if(idx>=0) STATE.markets[idx]=nm;
 
-      // Hoy "sell" siempre publica la orden en el libro (status='open') y
-      // espera a que una compra futura la empareje vía P2 — el RPC nunca
-      // resuelve nada al instante en esta rama, así que netReturn es
-      // siempre 0 aquí. Solo registramos transacción si en el futuro el
-      // RPC llega a devolver un match inmediato real.
+      // Si parte de la venta se ejecutó inmediatamente (P2 encontró comprador
+      // al instante), registrar transacción de ese cobro parcial.
       if(netReturn > 0){
         const txSell={id:"tx_"+genId(),type:"withdrawal",amount:netReturn,network:"internal",
-          description:`Venta ${side} ${shares.toFixed(2)} shares → ${usd(netReturn)} · spread cobrado en USD al admin`,
+          description:`✅ Venta ${side} ${shares.toFixed(2)} shares → recibiste ${usd(netReturn)}`,
           date:new Date().toISOString(),status:"confirmed"};
         await dbSaveTransaction(u.id, txSell);
       }
 
-      // ── Sincronizar desde DB (evitar doble acreditación) ────────
+      // ── Sincronizar desde DB ─────────────────────────────────────
+      // IMPORTANTE: NO restamos shares del estado local al poner la orden.
+      // Las shares siguen físicamente en positions hasta que P2 las ejecute.
+      // Solo sincronizamos el balance (si hubo ejecución inmediata) y la
+      // posición real desde la DB — esto evita que el usuario vea 0 shares
+      // cuando en realidad aún las tiene en positions.
       const [freshUserSell, freshPosSell, freshMktSell] = await Promise.all([
         db.from("users").select("balance").eq("id", u.id).maybeSingle(),
         db.from("positions").select("yes_shares,no_shares").eq("user_id", u.id).eq("market_id", marketId).maybeSingle(),
@@ -10526,10 +10610,10 @@ async function executeTrade(){
       if(uiNow>=0){
         const freshPos = freshPosSell.data;
         const updPos   = {...(STATE.users[uiNow].positions||{})};
+        // Usar posición real de la DB (shares totales incluyendo las en venta)
         if(freshPos) updPos[marketId] = {YES: freshPos.yes_shares||0, NO: freshPos.no_shares||0};
-        else { const p={...(updPos[marketId]||{YES:0,NO:0})}; p[side]=Math.max(0,(p[side]||0)-shares); updPos[marketId]=p; }
         STATE.users[uiNow]={...STATE.users[uiNow],
-          balance:      freshUserSell.data?.balance ?? (STATE.users[uiNow].balance||0)+netReturn,
+          balance:      freshUserSell.data?.balance ?? STATE.users[uiNow].balance,
           positions:    updPos,
           transactions: netReturn>0 ? [txSell,...(STATE.users[uiNow].transactions||[])] : (STATE.users[uiNow].transactions||[]),
         };
@@ -10540,10 +10624,12 @@ async function executeTrade(){
 
       STATE.tradeCooldownUntil = Date.now() + 10000;
       closeTradeModal(); render();
-      setTimeout(()=>{
+      setTimeout(async ()=>{
         loadPendingOrders(marketId);
         loadMyTrades(marketId);
         startSellRefresh(marketId);
+        // Actualizar shares disponibles para la UI de Vender
+        const u2=getUser(); if(u2) loadRealPositionForSell(marketId, u2.id);
         if(STATE.view==="pro") loadProMyTrades(marketId);
         if(STATE.view==="pro") loadProSentiment(marketId);
       }, 400);
