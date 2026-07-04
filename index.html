@@ -1203,6 +1203,7 @@ async function dbInit(){
         STATE.session = savedSession;
         STATE.walletAddress = savedWallet||null;
         STATE.walletConnected = !!savedWallet;
+        STATE.walletType = localStorage.getItem("sw_wallet_type")||null;
         const positions = await dbLoadPositions(savedSession);
         STATE.users[ui] = {...STATE.users[ui], positions};
       } else {
@@ -9850,11 +9851,15 @@ function renderPolygonStep(amt, token){
   const isLoading  = isPoly&&!maticAmt;
 
   // Wallet con la que está conectado — esta ES la que va a pagar
-  const wt = STATE.walletType; // "phantom","phantom-solana","metamask","trust",null
+  const wt = STATE.walletType
+    || (window.phantom?.solana || window.phantom?.ethereum ? "phantom" : null)
+    || (window.ethereum?.isMetaMask ? "metamask" : null)
+    || (window.ethereum?.isTrust || window.trustwallet ? "trust" : null)
+    || (window.ethereum ? "metamask" : null);
   const isPhantom = wt==="phantom"||wt==="phantom-solana";
   const isMetaMask= wt==="metamask";
   const isTrust   = wt==="trust";
-  const hasWallet = isPhantom||isMetaMask||isTrust;
+  const hasWallet = (isPhantom||isMetaMask||isTrust) && STATE.walletConnected;
 
   // Nombre y color del botón según wallet conectada
   const walletLabel = isPhantom?"👻 Enviar con Phantom"
@@ -9945,10 +9950,12 @@ function renderSolanaStep(amt, token){
   const displayAmt = isSOL?(solAmt?solAmt+" SOL":"Cargando…"):amt.toFixed(2)+" "+tokenName;
   const isLoading  = isSOL&&!solAmt;
 
-  // Wallet de sesión
-  const wt = STATE.walletType;
+  // Wallet de sesión con fallback desde window
+  const wt = STATE.walletType
+    || (window.phantom?.solana || window.phantom?.ethereum ? "phantom" : null)
+    || (window.ethereum?.isTrust || window.trustwallet ? "trust" : null);
   const isPhantom = wt==="phantom"||wt==="phantom-solana";
-  const isMetaMask= wt==="metamask";
+  const isMetaMask= wt==="metamask" || (!isPhantom && window.ethereum?.isMetaMask);
   const isTrust   = wt==="trust";
 
   // MetaMask NO soporta Solana — es una limitación de esa wallet
