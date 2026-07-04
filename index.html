@@ -4329,8 +4329,10 @@ async function sendSolanaDeposit(token, amountUSD){
 
       notify(`Abriendo ${sol.name} para confirmar…`,"info");
       const { signature } = await solProvider.signAndSendTransaction(tx);
-      notify(`✅ SOL enviado · ${signature.slice(0,16)}…`,"success");
-      notify("Tu balance se acreditará en unos segundos","info");
+      notify(`✅ Transacción enviada · verificando confirmación…`,"info");
+
+      // Verificar confirmación y acreditar balance automáticamente
+      await verifyAndCreditSolDeposit(signature, amountUSD, connection, "SOL");
       return signature;
 
     } else if(token === "USDC-SOL" || token === "USDT-SOL"){
@@ -4350,6 +4352,121 @@ async function sendSolanaDeposit(token, amountUSD){
 }
 
 
+
+// Verifica una transacción Solana on-chain y acredita el balance.
+// Hace polling cada 3s hasta confirmar (máx 3 minutos).
+// Usa idempotencia via la columna tx_hash en transactions para evitar
+// doble acreditación si el usuario recarga la página.
+async function verifyAndCreditSolDeposit(signature, amountUSD, connection, token){
+  const u = getUser();
+  if(!u) return;
+
+  const maxAttempts = 60; // 60 × 3s = 3 minutos
+  let attempts = 0;
+
+  notify(`⏳ Confirmando transacción (${signature.slice(0,12)}…)`, "info");
+
+  const poll = async () => {
+    attempts++;
+    try{
+      // Verificar si la tx fue confirmada on-chain
+      const status = await connection.getSignatureStatus(signature, {searchTransactionHistory: true});
+      const confirmed = status?.value?.confirmationStatus === "confirmed"
+                     || status?.value?.confirmationStatus === "finalized";
+
+      if(confirmed){
+        // Verificar que no haya errores en la tx
+        if(status.value.err){
+          notify(`❌ Transacción fallida on-chain: ${JSON.stringify(status.value.err)}`, "error");
+          return;
+        }
+
+        // Acreditar via RPC de Supabase (idempotente — ignora si ya existe esa signature)
+        const { data, error } = await db.rpc("credit_sol_deposit", {
+          p_user_id:   u.id,
+          p_amount:    amountUSD,
+          p_tx_hash:   signature,
+          p_network:   token,
+        });
+
+        if(error){
+          // Si el error es de unique constraint, ya fue acreditado antes
+          if(error.message?.includes("unique") || error.message?.includes("duplicate")){
+            notify("ℹ️ Este depósito ya fue acreditado anteriormente", "info");
+          } else {
+            // Falló el RPC — intentar acreditar directamente como fallback
+            console.error("[Deposit] RPC error:", error);
+            notify(`⚠️ Error al acreditar automáticamente. Contacta soporte con tx: ${signature}`, "error");
+            // Guardar en localStorage para reintento posterior
+            const pending = JSON.parse(localStorage.getItem("sw_pending_deposits")||"[]");
+            pending.push({signature, amountUSD, token, userId: u.id, timestamp: Date.now()});
+            localStorage.setItem("sw_pending_deposits", JSON.stringify(pending));
+          }
+          return;
+        }
+
+        // Acreditación exitosa
+        const credited = data?.amount_credited || amountUSD;
+        notify(`💰 ¡Depósito confirmado! +$${credited.toFixed(2)} acreditados en tu cuenta ✓`, "success");
+
+        // Actualizar balance en STATE sin esperar al Realtime
+        const ui = STATE.users.findIndex(x => x.id === u.id);
+        if(ui >= 0){
+          const {data: freshUser} = await db.from("users").select("balance").eq("id", u.id).maybeSingle();
+          if(freshUser) STATE.users[ui] = {...STATE.users[ui], balance: freshUser.balance};
+          render();
+        }
+        return;
+      }
+
+      // No confirmada aún — seguir polling
+      if(attempts >= maxAttempts){
+        notify(`⚠️ La transacción tardó demasiado. Guarda esta referencia: ${signature}\nSi el problema persiste, contacta soporte.`, "error");
+        // Guardar para reintento
+        const pending = JSON.parse(localStorage.getItem("sw_pending_deposits")||"[]");
+        pending.push({signature, amountUSD, token, userId: u.id, timestamp: Date.now()});
+        localStorage.setItem("sw_pending_deposits", JSON.stringify(pending));
+        return;
+      }
+
+      // Reintentar en 3 segundos
+      setTimeout(poll, 3000);
+    } catch(err){
+      console.error("[Deposit verification]", err);
+      if(attempts < maxAttempts) setTimeout(poll, 3000);
+      else notify(`⚠️ Error verificando tx. Guarda: ${signature}`, "error");
+    }
+  };
+
+  // Esperar 5s iniciales para dar tiempo a que la red propague la tx
+  setTimeout(poll, 5000);
+}
+
+// Al iniciar sesión, verificar si hay depósitos pendientes no acreditados
+async function retryPendingDeposits(){
+  const u = getUser();
+  if(!u) return;
+  const pending = JSON.parse(localStorage.getItem("sw_pending_deposits")||"[]");
+  const mine = pending.filter(p => p.userId === u.id && Date.now() - p.timestamp < 86400000); // máx 24h
+  if(!mine.length) return;
+
+  // Cargar Solana Web3 si hay pendientes SOL
+  const hasSol = mine.some(p => p.token === "SOL");
+  if(hasSol){
+    try{
+      const web3 = await loadSolanaWeb3();
+      const {Connection} = web3;
+      const connection = new Connection("https://rpc.ankr.com/solana", "confirmed");
+      for(const dep of mine){
+        notify(`🔄 Reintentando acreditar depósito pendiente (${dep.signature.slice(0,12)}…)`, "info");
+        await verifyAndCreditSolDeposit(dep.signature, dep.amountUSD, connection, dep.token);
+      }
+      // Limpiar los de este usuario
+      const remaining = pending.filter(p => p.userId !== u.id);
+      localStorage.setItem("sw_pending_deposits", JSON.stringify(remaining));
+    }catch(e){ console.error("[retryPendingDeposits]", e); }
+  }
+}
 
 function showSolanaPaymentInstructions(tokenName, amount, address, userId, username){
   const existing = document.getElementById("sol-pay-modal");
@@ -4576,12 +4693,14 @@ async function _authConnectEVM(walletType,provider=window.ethereum){
     STATE.walletAddress = address;
     localStorage.setItem("sw_session", user.id);
     localStorage.setItem("sw_wallet", address);
-    
+
     dbStartRealtime();
     const needsUsername = !user.username || user.username.includes("…") || user.username.length < 2;
     navigate("home");
     notify(`Conectado: ${address.slice(0,6)}…${address.slice(-4)}`,"success");
     if(needsUsername) setTimeout(()=>showUsernameModal(user.id), 500);
+    // Verificar depósitos pendientes no acreditados de sesiones anteriores
+    setTimeout(retryPendingDeposits, 3000);
   }catch(e){
     const msg = e?.message || e?.code || JSON.stringify(e) || "error desconocido";
     console.error("[EVM]", e);
