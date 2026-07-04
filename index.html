@@ -9819,102 +9819,89 @@ function renderDepositStep3(){
 
 
 function renderPolygonStep(amt,token){
-  const isPoly=token==="MATIC";
-  const isUSDC=token==="USDC";
-  const tokenColor=isPoly?"var(--poly)":isUSDC?"#2775ca":"#26a17b";
-  const maticPrice = STATE.maticPrice || null;
-  const maticAmt = isPoly ? (maticPrice ? (amt/maticPrice).toFixed(4) : null) : null;
-  const displayAmt = isPoly
-    ? (maticAmt ? maticAmt+" POL" : "Cargando precio…")
-    : amt.toFixed(2)+" "+token;
-  const walletName = window.ethereum?.isMetaMask ? "MetaMask"
-    : (window.ethereum?.isTrust || window.trustwallet) ? "Trust Wallet"
-    : window.phantom?.ethereum ? "Phantom"
-    : !!(window.ethereum) ? "tu wallet" : null;
+  const isPoly  = token==="MATIC";
+  const isUSDC  = token==="USDC";
+  const tokenColor = isPoly?"#8247e5":isUSDC?"#2775ca":"#26a17b";
+  const maticPrice = STATE.maticPrice||null;
+  const maticAmt   = isPoly?(maticPrice?(amt/maticPrice).toFixed(4):null):null;
+  const displayAmt = isPoly?(maticAmt?maticAmt+" POL":"Cargando…"):amt.toFixed(2)+" "+token;
 
-  return`
-  <div>
-    <div style="text-align:center;margin-bottom:24px">
-      <div style="font-size:12px;color:var(--muted);margin-bottom:6px">Enviarás exactamente</div>
+  // Detectar si hay wallet EVM disponible (MetaMask, Phantom EVM, Trust, cualquier EVM)
+  const evmProvider = window.phantom?.ethereum || window.ethereum;
+  const hasEVM = !!evmProvider;
+  const walletName = window.ethereum?.isMetaMask?"MetaMask"
+    :(window.ethereum?.isTrust||window.trustwallet)?"Trust Wallet"
+    :window.phantom?.ethereum?"Phantom"
+    :hasEVM?"tu wallet":null;
+
+  const isLoading = isPoly&&!maticAmt;
+  const DAPP_URL = encodeURIComponent("https://statwaves.com");
+
+  return`<div>
+    <div style="text-align:center;margin-bottom:20px">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Enviarás exactamente</div>
       <div style="font-size:40px;font-weight:900;color:${tokenColor};letter-spacing:-1px">
-        ${isPoly&&!maticAmt?"Cargando…":displayAmt}
+        ${isLoading?"Cargando…":displayAmt}
       </div>
-      <div style="font-size:13px;color:var(--muted);margin-top:6px">
+      <div style="font-size:13px;color:var(--muted);margin-top:4px">
         Recibirás <strong style="color:var(--yes);font-size:15px">$${amt.toFixed(2)}</strong> en tu balance
       </div>
     </div>
 
-    ${walletName ? `
-    <div style="background:rgba(108,50,204,.08);border:1.5px solid rgba(108,50,204,.3);
-        border-radius:12px;padding:14px;margin-bottom:16px;display:flex;align-items:center;gap:10px">
-      <div style="width:36px;height:36px;border-radius:50%;background:rgba(108,50,204,.15);
-          display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0">⬡</div>
-      <div>
-        <div style="font-size:12px;font-weight:700;color:#6c32cc">Wallet detectada: ${walletName}</div>
-        <div style="font-size:11px;color:var(--muted)">Red Polygon configurada automáticamente. Balance acreditado al confirmar.</div>
-      </div>
-    </div>
+    ${hasEVM?`
+    <!-- Wallet EVM detectada — envío automático con confirmación -->
     <button style="width:100%;padding:15px;border-radius:12px;border:none;
         background:linear-gradient(135deg,#6c32cc,#9060ee);color:#fff;
-        font-weight:800;font-size:15px;cursor:pointer;margin-bottom:12px;
-        ${isPoly&&!maticAmt?"opacity:.5;cursor:not-allowed":""}"
+        font-weight:800;font-size:16px;cursor:pointer;margin-bottom:16px;
+        ${isLoading?"opacity:.5;pointer-events:none":""}"
       onclick="sendPolygonDeposit('${token}',${isPoly?(maticAmt||0):amt})"
-      ${isPoly&&!maticAmt?"disabled":""}>
-      ⬡ Enviar ${isPoly&&!maticAmt?"…":displayAmt} con ${walletName}
-    </button>` : `
-    <div style="background:rgba(245,158,11,.08);border:1.5px solid rgba(245,158,11,.3);
-        border-radius:12px;padding:16px;margin-bottom:16px;text-align:center">
-      <div style="font-size:22px;margin-bottom:8px">📱</div>
-      <div style="font-size:14px;font-weight:700;color:#f59e0b;margin-bottom:6px">Instala MetaMask o Phantom</div>
-      <div style="font-size:12px;color:var(--muted);margin-bottom:14px">Para depositar en Polygon abre tu wallet y accede a Statwaves desde el navegador integrado.</div>
+      ${isLoading?"disabled":""}>
+      ⬡ Enviar ${isLoading?"…":displayAmt} — Confirmar en ${walletName}
+    </button>`:`
+    <!-- Sin wallet EVM — deep links para abrir la dapp dentro de cada wallet -->
+    <div style="margin-bottom:16px">
+      <div style="font-size:13px;font-weight:700;margin-bottom:10px;text-align:center">
+        Abre Statwaves dentro de tu wallet para pagar en Polygon:
+      </div>
       <div style="display:flex;flex-direction:column;gap:8px">
         <a href="https://metamask.app.link/dapp/statwaves.com"
-          style="display:block;padding:11px;border-radius:10px;background:linear-gradient(135deg,#e07010,#d06010);color:#fff;font-weight:700;font-size:13px;text-decoration:none">
-          Abrir en MetaMask →
+          style="display:block;padding:13px;border-radius:12px;text-align:center;
+            background:linear-gradient(135deg,#e07010,#d06010);color:#fff;
+            font-weight:700;font-size:14px;text-decoration:none">
+          🦊 Abrir en MetaMask
         </a>
-        <a href="https://phantom.app/ul/browse/https%3A%2F%2Fstatwaves.com?ref=https%3A%2F%2Fstatwaves.com"
-          style="display:block;padding:11px;border-radius:10px;background:linear-gradient(135deg,#9945ff,#7c3aed);color:#fff;font-weight:700;font-size:13px;text-decoration:none">
-          Abrir en Phantom →
+        <a href="https://phantom.app/ul/browse/${DAPP_URL}?ref=${DAPP_URL}"
+          style="display:block;padding:13px;border-radius:12px;text-align:center;
+            background:linear-gradient(135deg,#9945ff,#7c3aed);color:#fff;
+            font-weight:700;font-size:14px;text-decoration:none">
+          👻 Abrir en Phantom
+        </a>
+        <a href="https://link.trustwallet.com/open_url?coin_id=60&url=${DAPP_URL}"
+          style="display:block;padding:13px;border-radius:12px;text-align:center;
+            background:linear-gradient(135deg,#3375bb,#1a5fa8);color:#fff;
+            font-weight:700;font-size:14px;text-decoration:none">
+          🛡 Abrir en Trust Wallet
+        </a>
+        <a href="https://go.cb-w.com/dapp?cb_url=${DAPP_URL}"
+          style="display:block;padding:13px;border-radius:12px;text-align:center;
+            background:linear-gradient(135deg,#1652f0,#0a3ec4);color:#fff;
+            font-weight:700;font-size:14px;text-decoration:none">
+          💙 Abrir en Coinbase Wallet
         </a>
       </div>
     </div>`}
 
     ${isUSDC||token==="USDT"?`
-    <div style="background:#fff8e6;border:1px solid #f5c842;border-radius:10px;padding:10px 12px;
-        font-size:12px;color:#92620a;margin-bottom:12px;display:flex;align-items:flex-start;gap:8px">
-      <span style="font-size:16px;flex-shrink:0">⛽</span>
-      <span><strong>Gas:</strong> necesitas una pequeña cantidad de POL (~$0.01) para pagar la comisión de red.</span>
+    <div style="background:#fff8e6;border:1px solid #f5c842;border-radius:8px;
+        padding:9px 12px;font-size:11px;color:#92620a;margin-bottom:12px">
+      ⛽ <strong>Gas:</strong> necesitas una pequeña cantidad de POL en tu wallet (~$0.01) para pagar la comisión de red.
     </div>`:""}
 
-    <div style="background:var(--card2);border:1px solid var(--border);border-radius:10px;
-        padding:12px 14px;font-size:12px;color:var(--muted);margin-bottom:16px">
-      <div style="font-weight:700;color:var(--text);margin-bottom:6px">ℹ️ Información</div>
+    <div style="background:var(--card2);border:1px solid var(--border);border-radius:8px;
+        padding:10px 12px;font-size:11px;color:var(--muted);margin-bottom:14px">
       • Red: <strong style="color:var(--text)">Polygon</strong> — NO Ethereum mainnet<br>
       • Token: <strong style="color:var(--text)">${token}${isPoly?" (POL/MATIC)":""}</strong><br>
-      • Balance acreditado automáticamente al confirmar TX<br>
-      • Compatible: MetaMask, Phantom, Trust Wallet
-    </div>
-
-    <!-- Verificar TX manualmente — cualquier wallet -->
-    <div style="background:rgba(108,50,204,.06);border:1.5px solid rgba(108,50,204,.2);
-        border-radius:12px;padding:14px;margin-bottom:14px">
-      <div style="font-size:12px;font-weight:700;color:#6c32cc;margin-bottom:8px">
-        ✅ Ya enviaste? Pega tu hash de transacción
-      </div>
-      <div style="font-size:11px;color:var(--muted);margin-bottom:10px">
-        Después de enviar desde cualquier wallet (MetaMask, Trust, Coinbase, Binance, etc.),
-        pega el hash aquí para verificar automáticamente.
-      </div>
-      <input id="poly-tx-hash-input" placeholder="0x... (hash de la transacción en Polygon)"
-        style="width:100%;box-sizing:border-box;padding:10px 12px;border-radius:8px;
-          border:1.5px solid var(--border);background:var(--card);color:var(--text);
-          font-size:12px;font-family:monospace;margin-bottom:8px"/>
-      <button onclick="verifyPolyTxManual(${amt},'${token}')"
-        style="width:100%;padding:11px;border-radius:8px;border:none;
-          background:linear-gradient(135deg,#6c32cc,#9060ee);color:#fff;
-          font-weight:700;font-size:13px;cursor:pointer">
-        🔍 Verificar y acreditar balance
-      </button>
+      • Compatible: MetaMask, Phantom, Trust Wallet, Coinbase Wallet
     </div>
 
     <button class="btn-ghost" style="width:100%;padding:11px" onclick="depositPrevStep()">← Atrás</button>
@@ -9926,74 +9913,75 @@ function renderSolanaStep(amt, token){
   const isSOL = token==="SOL";
   const tokenColor = isSOL?"#9945ff":"#2775ca";
   const tokenName = isSOL?"SOL":token==="USDC-SOL"?"USDC":"USDT";
-  const solPrice = STATE.solPrice || null;
-  const solAmt = isSOL ? (solPrice ? (amt/solPrice).toFixed(4) : null) : null;
-  const displayAmt = isSOL ? (solAmt ? solAmt+" SOL" : "…") : amt.toFixed(2)+" "+tokenName;
-  const sol = detectSolanaProvider();
+  const solPrice = STATE.solPrice||null;
+  const solAmt = isSOL?(solPrice?(amt/solPrice).toFixed(4):null):null;
+  const displayAmt = isSOL?(solAmt?solAmt+" SOL":"Cargando…"):amt.toFixed(2)+" "+tokenName;
+  const sol = detectSolanaProvider(); // Phantom SOL, Solflare, Backpack, etc.
+  const isLoading = isSOL&&!solAmt;
+  const DAPP_URL = encodeURIComponent("https://statwaves.com");
 
   return`<div>
     <div style="text-align:center;margin-bottom:20px">
       <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Envía exactamente</div>
-      <div style="font-size:42px;font-weight:900;color:${tokenColor};letter-spacing:-1px">${displayAmt}</div>
+      <div style="font-size:40px;font-weight:900;color:${tokenColor};letter-spacing:-1px">
+        ${isLoading?"Cargando…":displayAmt}
+      </div>
       <div style="font-size:13px;color:var(--muted);margin-top:4px">
         Recibirás <strong style="color:var(--yes);font-size:15px">$${amt.toFixed(2)}</strong> en tu balance
       </div>
     </div>
 
-    ${sol ? `
-    <button style="width:100%;padding:14px;border-radius:12px;border:none;
+    ${sol?`
+    <!-- Wallet Solana detectada — envío automático -->
+    <button style="width:100%;padding:15px;border-radius:12px;border:none;
         background:linear-gradient(135deg,#9945ff,#7c3aed);color:#fff;
-        font-weight:800;font-size:15px;cursor:pointer;margin-bottom:16px"
-      onclick="sendSolanaDeposit('${token}',${amt})">
-      ◎ Enviar ${displayAmt} con ${sol.name}
-    </button>` : ""}
+        font-weight:800;font-size:16px;cursor:pointer;margin-bottom:16px;
+        ${isLoading?"opacity:.5;pointer-events:none":""}"
+      onclick="sendSolanaDeposit('${token}',${amt})"
+      ${isLoading?"disabled":""}>
+      ◎ Enviar ${isLoading?"…":displayAmt} — Confirmar en ${sol.name}
+    </button>`:`
+    <!-- Sin wallet Solana inyectada (ej. MetaMask, Trust) — deep links -->
+    <div style="margin-bottom:16px">
+      <div style="font-size:13px;font-weight:700;margin-bottom:10px;text-align:center">
+        Abre Statwaves dentro de tu wallet para pagar en Solana:
+      </div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <a href="https://phantom.app/ul/browse/${DAPP_URL}?ref=${DAPP_URL}"
+          style="display:block;padding:13px;border-radius:12px;text-align:center;
+            background:linear-gradient(135deg,#9945ff,#7c3aed);color:#fff;
+            font-weight:700;font-size:14px;text-decoration:none">
+          👻 Abrir en Phantom (Solana)
+        </a>
+        <a href="https://solflare.com/ul/v1/browse/${DAPP_URL}?ref=${DAPP_URL}"
+          style="display:block;padding:13px;border-radius:12px;text-align:center;
+            background:linear-gradient(135deg,#fc5000,#e04000);color:#fff;
+            font-weight:700;font-size:14px;text-decoration:none">
+          🔥 Abrir en Solflare (Solana)
+        </a>
+        <a href="https://link.trustwallet.com/open_url?coin_id=501&url=${DAPP_URL}"
+          style="display:block;padding:13px;border-radius:12px;text-align:center;
+            background:linear-gradient(135deg,#3375bb,#1a5fa8);color:#fff;
+            font-weight:700;font-size:14px;text-decoration:none">
+          🛡 Abrir en Trust Wallet (Solana)
+        </a>
+      </div>
+      <div style="font-size:11px;color:var(--muted);text-align:center;margin-top:10px;line-height:1.5">
+        💡 <strong>MetaMask no soporta Solana.</strong> Usa una de estas wallets para enviar en la red Solana.
+        Todas tienen soporte para SOL y USDC nativos.
+      </div>
+    </div>`}
 
-    <!-- Siempre mostrar la dirección para envío manual desde cualquier wallet -->
-    <div style="background:var(--card2);border:1.5px solid var(--border);border-radius:12px;padding:14px;margin-bottom:14px">
-      <div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">
-        📋 Dirección Solana de la plataforma
-      </div>
-      <div style="font-family:monospace;font-size:12px;word-break:break-all;color:var(--text);
-          background:var(--card);border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:8px">
-        ${addr}
-      </div>
-      <button onclick="copyText('${addr}')"
-        style="width:100%;padding:9px;border-radius:8px;border:1.5px solid var(--border);
-          background:transparent;color:var(--text);cursor:pointer;font-size:13px;font-weight:600">
-        📋 Copiar dirección
-      </button>
-    </div>
-
-    <!-- Verificar TX manualmente — funciona con cualquier wallet -->
-    <div style="background:rgba(153,69,255,.06);border:1.5px solid rgba(153,69,255,.2);
-        border-radius:12px;padding:14px;margin-bottom:14px">
-      <div style="font-size:12px;font-weight:700;color:#9945ff;margin-bottom:8px">
-        ✅ Ya enviaste? Pega tu hash de transacción
-      </div>
-      <div style="font-size:11px;color:var(--muted);margin-bottom:10px">
-        Después de enviar desde cualquier wallet (Phantom, Metamask, Coinbase, Binance, etc.), 
-        pega el hash de la transacción aquí y verificamos automáticamente.
-      </div>
-      <input id="sol-tx-hash-input" placeholder="Pega el hash de tu TX (empieza por letra/número...)"
-        style="width:100%;box-sizing:border-box;padding:10px 12px;border-radius:8px;
-          border:1.5px solid var(--border);background:var(--card);color:var(--text);
-          font-size:12px;font-family:monospace;margin-bottom:8px"/>
-      <button onclick="verifySolTxManual(${amt},'${token}')"
-        style="width:100%;padding:11px;border-radius:8px;border:none;
-          background:linear-gradient(135deg,#9945ff,#7c3aed);color:#fff;
-          font-weight:700;font-size:13px;cursor:pointer">
-        🔍 Verificar y acreditar balance
-      </button>
-    </div>
-
-    <div style="font-size:11px;color:var(--muted);background:var(--card2);border-radius:8px;padding:10px;margin-bottom:12px">
-      ⚠️ <strong>Importante:</strong> Red <strong>Solana</strong> únicamente · Token: <strong>${isSOL?"SOL":"${tokenName} (SPL)"}</strong>
-      · NO envíes desde Ethereum o Polygon · Compatible con cualquier wallet que soporte Solana
+    <div style="background:var(--card2);border:1px solid var(--border);border-radius:8px;
+        padding:10px 12px;font-size:11px;color:var(--muted);margin-bottom:14px">
+      • Red: <strong style="color:var(--text)">Solana</strong> — NO Ethereum ni Polygon<br>
+      • Token: <strong style="color:var(--text)">${isSOL?"SOL nativo":"${tokenName} en red Solana (SPL)"}</strong><br>
+      • Compatible: Phantom, Solflare, Trust Wallet, Backpack
     </div>
 
     <button class="btn-ghost" style="width:100%;padding:11px" onclick="depositPrevStep()">← Atrás</button>
     <div style="font-size:11px;color:var(--muted);text-align:center;margin-top:8px">
-      Tu balance se acreditará automáticamente tras la confirmación
+      Balance acreditado automáticamente tras la confirmación on-chain
     </div>
   </div>`;
 }
@@ -10052,7 +10040,8 @@ async function verifySolTxManual(amountUSD, token){
       notify("ℹ️ Esta transacción ya fue acreditada","info");
     } else {
       const credited = data?.amount_credited || amountUSD;
-      notify(`💰 ¡Depósito confirmado! +$${credited.toFixed(2)} acreditados ✓`,"success");
+      const creditedFmt = credited.toFixed(2);
+      notify("💰 ¡Depósito confirmado! +$" + creditedFmt + " acreditados ✓","success");
       const {data:freshU} = await db.from("users").select("balance").eq("id",STATE.session).maybeSingle();
       if(freshU){
         const ui = STATE.users.findIndex(x=>x.id===STATE.session);
