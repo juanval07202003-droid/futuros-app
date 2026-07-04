@@ -6090,12 +6090,39 @@ async function loadMyTrades(marketId){
     }
 
     // Entradas individuales desde contracts
-    const yesEntries = (contractsDB||[])
-      .filter(c => c.yes_user_id === u.id)
-      .map(c => ({side:"YES", shares:c.shares, price:c.yes_price, dollars:c.shares*c.yes_price, date:c.created_at}));
-    const noEntries = (contractsDB||[])
-      .filter(c => c.no_user_id === u.id)
-      .map(c => ({side:"NO",  shares:c.shares, price:c.no_price,  dollars:c.shares*c.no_price,  date:c.created_at}));
+    // Entradas individuales desde contracts — recortadas a las shares disponibles
+    // Las shares en venta ya fueron descontadas de positions por el RPC,
+    // así que yesTotal/noTotal = lo disponible. Las entradas de contratos
+    // pueden sumar más que eso (si hay shares en venta). Recortamos desde
+    // las más recientes (LIFO: las últimas en comprarse son las primeras en venderse)
+    const clipEntries = (rawEntries, available) => {
+      if(available <= 0) return [];
+      let remaining = available;
+      // Recorrer de más reciente a más antigua para determinar cuáles caben
+      const sorted = [...rawEntries].sort((a,b) => new Date(b.date)-new Date(a.date));
+      const result = [];
+      for(const e of sorted){
+        if(remaining <= 0.001) break;
+        const keep = Math.min(e.shares, remaining);
+        if(keep > 0.001){
+          result.push({...e, shares: Math.round(keep*10000)/10000, dollars: Math.round(keep*e.price*10000)/10000});
+          remaining -= keep;
+        }
+      }
+      // Devolver en orden cronológico (más antigua primero)
+      return result.sort((a,b) => new Date(a.date)-new Date(b.date));
+    };
+
+    const yesEntries = clipEntries(
+      (contractsDB||[]).filter(c => c.yes_user_id === u.id)
+        .map(c => ({side:"YES", shares:c.shares, price:c.yes_price, dollars:c.shares*c.yes_price, date:c.created_at})),
+      yesTotal
+    );
+    const noEntries = clipEntries(
+      (contractsDB||[]).filter(c => c.no_user_id === u.id)
+        .map(c => ({side:"NO", shares:c.shares, price:c.no_price, dollars:c.shares*c.no_price, date:c.created_at})),
+      noTotal
+    );
 
     const pct2  = v => (Math.round(v*1000)/10).toFixed(1)+"%";
     const fmt2  = v => "$"+(Math.round(v*100)/100).toFixed(2);
@@ -8724,15 +8751,34 @@ async function loadProMyTrades(marketId, _retry=0){
     return;
   }
 
-  // Extraer entradas individuales desde contracts
-  // Cada contrato donde el usuario es yes_user_id → entrada SÍ
-  // Cada contrato donde el usuario es no_user_id → entrada NO
-  const yesEntries = (contractsDB||[])
-    .filter(c=>c.yes_user_id===u.id)
-    .map(c=>({ price:c.yes_price, shares:c.shares, ts:c.created_at }));
-  const noEntries  = (contractsDB||[])
-    .filter(c=>c.no_user_id===u.id)
-    .map(c=>({ price:c.no_price,  shares:c.shares, ts:c.created_at }));
+  // Extraer entradas individuales desde contracts, recortadas a shares disponibles
+  // (las shares en venta ya fueron descontadas de positions por el RPC)
+  const clipEntriesPro = (rawEntries, available) => {
+    if(available <= 0) return [];
+    let remaining = available;
+    const sorted = [...rawEntries].sort((a,b) => new Date(b.ts)-new Date(a.ts));
+    const result = [];
+    for(const e of sorted){
+      if(remaining <= 0.001) break;
+      const keep = Math.min(e.shares, remaining);
+      if(keep > 0.001){
+        result.push({...e, shares: Math.round(keep*10000)/10000});
+        remaining -= keep;
+      }
+    }
+    return result.sort((a,b) => new Date(a.ts)-new Date(b.ts));
+  };
+
+  const yesEntries = clipEntriesPro(
+    (contractsDB||[]).filter(c=>c.yes_user_id===u.id)
+      .map(c=>({ price:c.yes_price, shares:c.shares, ts:c.created_at })),
+    yesShares
+  );
+  const noEntries = clipEntriesPro(
+    (contractsDB||[]).filter(c=>c.no_user_id===u.id)
+      .map(c=>({ price:c.no_price, shares:c.shares, ts:c.created_at })),
+    noShares
+  );
 
   const sellBySide = {
     YES: (sellOrdersRaw||[]).filter(o=>o.side==="YES"),
@@ -14365,11 +14411,46 @@ async function adminResolve(id,result){
 
   let totalWinners = 0;
 
+  // Cargar también órdenes de venta activas por mercado para sumarlas
+  // a positions al resolver (las shares en venta fueron descontadas de
+  // positions cuando el usuario puso la orden, pero siguen siendo del
+  // usuario — si gana, cobra por ellas × $0.98)
+  const {data:activeSellOrders} = await db.from("orders")
+    .select("user_id,side,shares,filled")
+    .eq("market_id", id)
+    .eq("order_type","sell")
+    .eq("is_mm",false)
+    .in("status",["open","partial"]);
+
+  // Shares pendientes de vender por usuario y lado
+  const pendingSellByUser = {};
+  for(const o of (activeSellOrders||[])){
+    const uid  = String(o.user_id);
+    const side = o.side;
+    const pending = Math.max(0,(o.shares||0)-(o.filled||0));
+    if(!pendingSellByUser[uid]) pendingSellByUser[uid]={YES:0,NO:0};
+    pendingSellByUser[uid][side] = (pendingSellByUser[uid][side]||0) + pending;
+  }
+
+  // Cancelar las órdenes de venta activas de usuarios (ya no hay mercado)
+  await db.from("orders")
+    .update({status:"cancelled"})
+    .eq("market_id", id)
+    .eq("order_type","sell")
+    .eq("is_mm",false)
+    .in("status",["open","partial"]);
+
   for(const uid of userIds){
     const pos = (positions||[]).find(p=>String(p.user_id)===uid);
     if(!pos) continue;
-    const winShares  = result==="YES" ? (pos.yes_shares||0) : (pos.no_shares||0);
-    const loseShares = result==="YES" ? (pos.no_shares||0)  : (pos.yes_shares||0);
+
+    // Shares en positions + shares en órdenes de venta activas (pendientes de ejecutar)
+    const pendingSell = pendingSellByUser[uid]||{YES:0,NO:0};
+    const totalYes = (pos.yes_shares||0) + (pendingSell.YES||0);
+    const totalNo  = (pos.no_shares||0)  + (pendingSell.NO||0);
+
+    const winShares  = result==="YES" ? totalYes : totalNo;
+    const loseShares = result==="YES" ? totalNo  : totalYes;
 
     const {data:uw} = await db.from("users").select("balance,username").eq("id",uid).maybeSingle();
     if(!uw) continue;
