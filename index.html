@@ -4264,26 +4264,42 @@ function splLog(msg){
 async function sendSolanaDeposit(token, amountUSD){
   const wt = STATE.walletType;
 
-  // Obtener el provider Solana según la wallet de sesión
+  // Obtener el provider Solana según la wallet de sesión.
+  // Phantom: usa window.phantom.solana (namespace propio, no window.solana
+  //          que podría ser otra extensión)
+  // Trust Wallet: usa window.solana (Trust inyecta ahí en móvil)
+  // MetaMask: MetaMask no tiene provider Solana propio, pero si el usuario
+  //           tiene también Phantom o Solflare instalados como extensión,
+  //           window.solana o window.phantom.solana estarán disponibles.
+  //           En ese caso los usamos — el usuario eligió MetaMask para EVM
+  //           pero necesita una extensión Solana para esta red.
   let solProvider = null;
-  let walletName = "";
-  if(wt==="phantom"||wt==="phantom-solana"){
+  let walletName  = "";
+
+  if(wt==="phantom" || wt==="phantom-solana"){
     solProvider = window.phantom?.solana;
-    walletName = "Phantom";
+    walletName  = "Phantom";
   } else if(wt==="trust"){
     solProvider = window.solana || window.trustwallet?.solana;
-    walletName = "Trust Wallet";
+    walletName  = "Trust Wallet";
   } else {
-    // Fallback: cualquier proveedor Solana detectado
-    const detected = detectSolanaProvider();
-    solProvider = detected?.provider;
-    walletName  = detected?.name || "tu wallet";
+    // MetaMask u otro EVM — buscar cualquier provider Solana disponible
+    solProvider = window.phantom?.solana || window.solflare || window.solana;
+    walletName  = solProvider?.isPhantom ? "Phantom"
+      : window.solflare ? "Solflare"
+      : "wallet Solana";
   }
 
   if(!solProvider){
-    notify("No se encontró la wallet Solana. Asegúrate de estar en el browser de tu wallet.","error");
+    notify(
+      wt==="metamask"
+        ? "MetaMask no tiene soporte Solana nativo. Instala Phantom o Solflare como extensión adicional para depositar en Solana. Para USDT/USDC usa la red Polygon con MetaMask."
+        : "No se encontró wallet Solana. Asegúrate de que esté desbloqueada.",
+      "error"
+    );
     return;
   }
+
   if(!solProvider.publicKey){
     try{ await solProvider.connect(); }
     catch(e){ notify("Conexión rechazada","error"); return; }
@@ -9958,15 +9974,23 @@ function renderSolanaStep(amt, token){
   const isMetaMask= wt==="metamask" || (!isPhantom && window.ethereum?.isMetaMask);
   const isTrust   = wt==="trust";
 
-  // MetaMask NO soporta Solana — es una limitación de esa wallet
-  const metaMaskBlocked = isMetaMask;
+  // MetaMask no tiene Solana nativo pero puede coexistir con Phantom/Solflare
+  // Si hay algún provider Solana disponible, mostrar el botón
+  const hasSolanaProvider = !!(window.phantom?.solana || window.solflare || window.solana);
+  // Si la sesión es MetaMask y NO hay ninguna extensión Solana, informar
+  const metaMaskNoSolana = isMetaMask && !hasSolanaProvider;
 
-  const walletLabel = isPhantom?"👻 Enviar con Phantom"
-    :isTrust?"🛡 Enviar con Trust Wallet"
-    :"Enviar";
+  const solWalletName = isPhantom ? "Phantom"
+    : isTrust ? "Trust Wallet"
+    : (window.phantom?.solana ? "Phantom" : window.solflare ? "Solflare" : "wallet Solana");
 
-  const btnColor = isPhantom?"linear-gradient(135deg,#9945ff,#7c3aed)"
-    :"linear-gradient(135deg,#3375bb,#1a5fa8)";
+  const walletLabel = isPhantom ? "👻 Enviar con Phantom"
+    : isTrust ? "🛡 Enviar con Trust Wallet"
+    : `Enviar con ${solWalletName}`;
+
+  const btnColor = isPhantom ? "linear-gradient(135deg,#9945ff,#7c3aed)"
+    : isTrust ? "linear-gradient(135deg,#3375bb,#1a5fa8)"
+    : "linear-gradient(135deg,#9945ff,#7c3aed)";
 
   return`<div>
     <div style="text-align:center;margin-bottom:20px">
@@ -9979,38 +10003,34 @@ function renderSolanaStep(amt, token){
       </div>
     </div>
 
-    ${metaMaskBlocked?`
-    <!-- MetaMask no soporta Solana — explicación clara -->
+    ${metaMaskNoSolana?`
+    <!-- MetaMask sin extensión Solana — informar -->
     <div style="background:rgba(224,40,74,.06);border:1.5px solid rgba(224,40,74,.25);
         border-radius:12px;padding:16px;margin-bottom:16px;text-align:center">
       <div style="font-size:28px;margin-bottom:8px">🦊</div>
       <div style="font-size:14px;font-weight:800;color:var(--no);margin-bottom:8px">
-        MetaMask no soporta la red Solana
+        MetaMask no tiene wallet Solana instalada
       </div>
       <div style="font-size:12px;color:var(--muted);line-height:1.6;margin-bottom:14px">
-        MetaMask solo opera en redes EVM (Ethereum, Polygon, BNB Chain, etc.).<br>
-        La red Solana es incompatible con MetaMask.<br><br>
-        Para depositar en Solana necesitas una cuenta con <strong>Phantom</strong> o <strong>Trust Wallet</strong>.
+        MetaMask solo opera en redes EVM. Para depositar en Solana instala
+        <strong>Phantom</strong> o <strong>Solflare</strong> como extensión adicional en tu navegador.<br><br>
+        Alternativamente, usa la red <strong>Polygon</strong> con MetaMask para USDT/USDC.
       </div>
       <button onclick="depositPrevStep()"
         style="padding:10px 20px;border-radius:10px;border:1.5px solid var(--border);
           background:transparent;color:var(--text);cursor:pointer;font-size:13px;font-weight:600">
-        ← Elegir otra red
+        ← Elegir Polygon en su lugar
       </button>
-    </div>
-    <div style="background:var(--card2);border:1px solid var(--border);border-radius:8px;
-        padding:9px 12px;font-size:11px;color:var(--muted)">
-      💡 Si quieres depositar USDT o USDC, usa la red <strong>Polygon</strong> — esa sí es compatible con MetaMask.
     </div>`
 
-    :(isPhantom||isTrust)?`
-    <!-- Phantom o Trust — envío automático desde wallet de sesión -->
+    :(isPhantom||isTrust||hasSolanaProvider)?`
+    <!-- Wallet Solana disponible — envío automático -->
     <div style="background:rgba(0,0,0,.03);border:1px solid var(--border);border-radius:10px;
         padding:10px 14px;margin-bottom:14px;display:flex;align-items:center;gap:10px">
-      <div style="font-size:22px">${isPhantom?"👻":"🛡"}</div>
+      <div style="font-size:22px">${isPhantom?"👻":isTrust?"🛡":"🔷"}</div>
       <div>
         <div style="font-size:12px;font-weight:700">
-          ${isPhantom?"Phantom":"Trust Wallet"} — Red Solana
+          ${solWalletName} — Red Solana
         </div>
         <div style="font-size:11px;color:var(--muted)">
           Se abrirá tu wallet para confirmar. Balance acreditado automáticamente.
@@ -10041,7 +10061,7 @@ function renderSolanaStep(amt, token){
       </button>
     </div>`}
 
-    ${(isPhantom||isTrust)?`
+    ${(isPhantom||isTrust||hasSolanaProvider)?`
     <div style="background:var(--card2);border:1px solid var(--border);border-radius:8px;
         padding:9px 12px;font-size:11px;color:var(--muted);margin-bottom:14px">
       • Red: <strong style="color:var(--text)">Solana</strong> — NO Ethereum ni Polygon<br>
@@ -10186,16 +10206,35 @@ async function connectPhantomForDeposit(){
 }
 
 async function sendCryptoFromWallet(token, amount, walletType){
+  // Obtener el provider EXACTO de la wallet con la que se creó la sesión.
+  // NUNCA hacer fallback a otra wallet — si el usuario creó su cuenta con
+  // Phantom, solo Phantom paga. Si fue con MetaMask, solo MetaMask paga.
   let provider;
-  if(walletType==="phantom") provider = window.phantom?.ethereum || window.ethereum;
-  else                       provider = window.ethereum;
-  if(!provider){notify("Wallet no detectada","error");return;}
-  if(!STATE.walletConnected){notify("Conecta tu billetera primero","error");return;}
-  try{
-    const walletName = walletType==="phantom"?"Phantom":walletType==="trust"?"Trust Wallet":"MetaMask";
-    notify(`Abriendo ${walletName} para confirmar…`,"info");
+  const wt = walletType || STATE.walletType;
 
-    // ── Cambiar a red Polygon si no está ─────────────────────────────
+  if(wt==="phantom" || wt==="phantom-solana"){
+    // Phantom EVM — acceder directamente al namespace de Phantom, nunca a window.ethereum
+    // (que puede ser MetaMask si ambas están instaladas)
+    provider = window.phantom?.ethereum;
+    if(!provider){
+      notify("Abre Phantom y asegúrate de que esté desbloqueada","error");
+      return;
+    }
+  } else if(wt==="trust"){
+    provider = window.trustwallet?.ethereum || window.ethereum;
+  } else {
+    // metamask u otro EVM
+    provider = window.ethereum;
+  }
+
+  if(!provider){ notify("Wallet no detectada. Recarga la página.","error"); return; }
+
+  const walletName = (wt==="phantom"||wt==="phantom-solana")?"Phantom"
+    :wt==="trust"?"Trust Wallet":"MetaMask";
+  notify(`Abriendo ${walletName} para confirmar…`,"info");
+
+  try{
+    // ── Cambiar a red Polygon ─────────────────────────────────────────
     const targetChainId = PAYMENT_CONFIG.polygon.chainId; // "0x89"
     try{
       const currentChain = await provider.request({method:"eth_chainId"});
