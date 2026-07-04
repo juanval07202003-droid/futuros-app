@@ -5833,14 +5833,13 @@ async function loadSellOrdersPanel(marketId, _retry=0){
   }
   const u = getUser(); if(!u){ panel.style.display="none"; return; }
 
-  const {data:sells} = await db.from("orders")
-    .select("id,side,shares,filled,price,status,created_at")
-    .eq("market_id", marketId)
-    .eq("user_id", u.id)
-    .eq("order_type","sell")
-    .eq("is_mm",false)
-    .in("status",["open","partial"])
-    .order("created_at",{ascending:true});
+  // Usar RPC con SECURITY DEFINER para bypasear RLS
+  // La tabla orders tiene RLS que bloquea al cliente anon ver filas propias
+  const {data:sellsRaw, error} = await db.rpc("get_my_sell_orders", {
+    p_user_id:   u.id,
+    p_market_id: marketId
+  });
+  const sells = Array.isArray(sellsRaw) ? sellsRaw : [];
 
   const activeSells = (sells||[]).filter(o=>Math.max(0,(o.shares||0)-(o.filled||0))>0.001);
 
@@ -6032,32 +6031,21 @@ async function loadMyTrades(marketId){
       if(currentNo  > 0.001) trades.push({side:"NO",  shares:currentNo,  dollars:currentNo*0.5,  price:0.5, date:null});
     }
   } else {
-    // ── USUARIO NORMAL: usar contracts+positions como fuente de verdad ─
-    // Ya no dependemos de transactions tipo "trade" con regex frágil.
-    // contracts da el historial exacto de cada entrada con precio real.
-    // positions da las shares totales actuales.
-    const [{data:posDB},{data:contractsDB},{data:sellDB}] = await Promise.all([
-      db.from("positions")
-        .select("yes_shares,no_shares")
-        .eq("market_id", marketId)
-        .eq("user_id", u.id)
-        .maybeSingle(),
-      db.from("contracts")
-        .select("yes_user_id,no_user_id,yes_price,no_price,shares,created_at")
-        .eq("market_id", marketId)
-        .eq("status","active")
-        .or(`yes_user_id.eq.${u.id},no_user_id.eq.${u.id}`)
-        .order("created_at",{ascending:true})
-        .limit(200),
-      db.from("orders")
-        .select("id,side,shares,filled,price,status,created_at")
-        .eq("market_id", marketId)
-        .eq("user_id", u.id)
-        .eq("order_type","sell")
-        .eq("is_mm",false)
-        .in("status",["open","partial"])
-        .order("created_at",{ascending:true}),
+    // ── USUARIO NORMAL: usar RPCs SECURITY DEFINER para bypasear RLS ─
+    // La tabla orders/positions/contracts tiene RLS que bloquea al cliente
+    // anon. Los RPCs con SECURITY DEFINER bypasean el RLS correctamente.
+    const [posRes, contractsRes, sellsRes] = await Promise.all([
+      db.rpc("get_my_positions", {p_user_id: u.id, p_market_id: marketId}),
+      db.rpc("get_my_contracts", {p_user_id: u.id, p_market_id: marketId}),
+      db.rpc("get_my_sell_orders", {p_user_id: u.id, p_market_id: marketId}),
     ]);
+
+    const posArr      = Array.isArray(posRes.data)      ? posRes.data      : [];
+    const contractsDB = Array.isArray(contractsRes.data) ? contractsRes.data : [];
+    const sellDB      = Array.isArray(sellsRes.data)     ? sellsRes.data     : [];
+
+    const posDBData   = posArr.find(p => p.market_id === marketId) || null;
+    const posDB       = posDBData ? {yes_shares: posDBData.yes_shares, no_shares: posDBData.no_shares} : null;
 
     const yesTotal  = posDB?.yes_shares || 0;
     const noTotal   = posDB?.no_shares  || 0;
@@ -6156,10 +6144,8 @@ async function loadMyTrades(marketId){
       const pnl = receiveNow - totalCost;
 
       const sharesInSale = sellOrders.reduce((s,o)=>s+Math.max(0,(o.shares||0)-(o.filled||0)),0);
-      // Con el nuevo RPC, las shares en venta ya están descontadas de positions.
-      // totalShares = lo disponible. sharesInSale es informativo (ya restado).
-      const totalOriginal = Math.round((totalShares + sharesInSale)*100)/100;
-      const sharesAvail   = totalShares; // ya descontadas por el RPC
+      // totalShares = shares disponibles (el RPC ya descontó las que están en venta de positions)
+      // No mostramos "total original" aquí — solo las disponibles y el indicador de en venta
 
       return `<div style="margin-bottom:14px">
         <!-- Cabecera del lado con totales -->
@@ -6168,17 +6154,14 @@ async function loadMyTrades(marketId){
           <div style="display:flex;justify-content:space-between;align-items:center">
             <div>
               <span style="font-size:13px;font-weight:900;color:${color}">${label}</span>
-              <span style="font-size:11px;color:var(--muted);margin-left:6px">${totalOriginal.toFixed(2)} sh total</span>
+              <span style="font-size:11px;color:var(--muted);margin-left:6px">${totalShares.toFixed(2)} sh disponibles</span>
+              ${sharesInSale>0?`<span style="font-size:10px;background:rgba(245,158,11,.15);color:#f59e0b;padding:1px 7px;border-radius:20px;font-weight:700;margin-left:6px">🏷️ ${sharesInSale.toFixed(2)} en venta</span>`:""}
             </div>
             <div style="text-align:right">
               <div style="font-size:12px;font-weight:800;color:${pnl>=0?"var(--yes)":"var(--no)"}">${pnl>=0?"+":""}${fmt2(pnl)}</div>
-              <div style="font-size:9px;color:var(--muted)">si vendes todo ahora · -3%</div>
+              <div style="font-size:9px;color:var(--muted)">si vendes todo · -3%</div>
             </div>
           </div>
-          ${sharesInSale>0?`<div style="margin-top:5px;display:flex;gap:6px;flex-wrap:wrap">
-            <span style="font-size:10px;background:rgba(0,168,112,.12);color:var(--yes);padding:2px 8px;border-radius:20px;font-weight:700">✓ ${sharesAvail.toFixed(2)} disponibles</span>
-            <span style="font-size:10px;background:rgba(245,158,11,.15);color:#f59e0b;padding:2px 8px;border-radius:20px;font-weight:700">🏷️ ${sharesInSale.toFixed(2)} en venta</span>
-          </div>`:""}
         </div>
 
         <!-- Entradas individuales con botón de venta -->
@@ -6225,9 +6208,6 @@ async function loadMyTrades(marketId){
         }).join("")}`
         : totalShares>0.001?`<div style="font-size:10px;color:var(--muted);padding:4px 8px">
             ${totalShares.toFixed(2)} sh · historial no disponible aún</div>`:""}
-
-        <!-- Ventas activas de este lado -->
-        ${renderSellOrders(side)}
       </div>`;
     };
 
@@ -8724,32 +8704,17 @@ async function loadProMyTrades(marketId, _retry=0){
   // 1. positions: shares totales actuales (fuente de verdad)
   // 2. contracts: historial de entradas con precio real (igual que el panel normal)
   // 3. sell orders: órdenes de venta activas para mostrar con ×
-  const [
-    {data:posDB},
-    {data:contractsDB},
-    {data:sellOrdersRaw},
-  ] = await Promise.all([
-    db.from("positions")
-      .select("yes_shares,no_shares")
-      .eq("market_id", marketId)
-      .eq("user_id", u.id)
-      .maybeSingle(),
-    db.from("contracts")
-      .select("yes_user_id,no_user_id,yes_price,no_price,shares,created_at")
-      .eq("market_id", marketId)
-      .eq("status","active")
-      .or(`yes_user_id.eq.${u.id},no_user_id.eq.${u.id}`)
-      .order("created_at",{ascending:true})
-      .limit(200),
-    db.from("orders")
-      .select("id,side,shares,filled,price,status,created_at")
-      .eq("market_id", marketId)
-      .eq("user_id", u.id)
-      .eq("order_type","sell")
-      .eq("is_mm",false)
-      .in("status",["open","partial"])
-      .order("created_at",{ascending:true}),
+  // Usar RPCs SECURITY DEFINER para bypasear RLS
+  const [posRes, contractsRes, sellsRes] = await Promise.all([
+    db.rpc("get_my_positions",   {p_user_id: u.id, p_market_id: marketId}),
+    db.rpc("get_my_contracts",   {p_user_id: u.id, p_market_id: marketId}),
+    db.rpc("get_my_sell_orders", {p_user_id: u.id, p_market_id: marketId}),
   ]);
+  const posArr      = Array.isArray(posRes.data)      ? posRes.data      : [];
+  const contractsDB = Array.isArray(contractsRes.data) ? contractsRes.data : [];
+  const sellOrdersRaw = Array.isArray(sellsRes.data)  ? sellsRes.data    : [];
+  const posDBObj    = posArr.find(p => p.market_id === marketId);
+  const posDB       = posDBObj ? {yes_shares: posDBObj.yes_shares, no_shares: posDBObj.no_shares} : null;
 
   const yesShares = posDB?.yes_shares || 0;
   const noShares  = posDB?.no_shares  || 0;
@@ -8787,9 +8752,6 @@ async function loadProMyTrades(marketId, _retry=0){
     const pnlCol = pnl>=0 ? "var(--yes)" : "var(--no)";
     const avgPrice = totalShares>0 ? totalCost/totalShares : 0;
     const sharesInSale = sells.reduce((s,o)=>s+Math.max(0,(o.shares||0)-(o.filled||0)),0);
-    // totalShares ya es lo disponible (el RPC descuenta al crear la orden de venta)
-    const totalOriginalPro = Math.round((totalShares+sharesInSale)*100)/100;
-    const sharesAvail  = totalShares;
 
     return `<div style="margin-bottom:10px">
       <!-- Cabecera -->
@@ -8798,17 +8760,14 @@ async function loadProMyTrades(marketId, _retry=0){
         <div style="display:flex;justify-content:space-between;align-items:center">
           <div>
             <span style="font-weight:800;font-size:12px;color:${color}">${label}</span>
-            <span style="font-size:10px;color:var(--muted);margin-left:6px">${totalOriginalPro.toFixed(2)} sh total · prom. ${(avgPrice*100).toFixed(1)}%</span>
+            <span style="font-size:10px;color:var(--muted);margin-left:6px">${totalShares.toFixed(2)} sh · prom. ${(avgPrice*100).toFixed(1)}%</span>
+            ${sharesInSale>0?`<span style="font-size:9px;background:rgba(245,158,11,.15);color:#f59e0b;padding:1px 6px;border-radius:20px;font-weight:700;margin-left:4px">🏷️ ${sharesInSale.toFixed(2)} en venta</span>`:""}
           </div>
           <div style="text-align:right">
             <div style="font-size:11px;font-weight:700;color:${pnlCol}">${pnl>=0?"+":""}${usd(pnl)}</div>
             <div style="font-size:9px;color:var(--muted)">si vendes todo −3%</div>
           </div>
         </div>
-        ${sharesInSale>0?`<div style="margin-top:4px;display:flex;gap:5px;flex-wrap:wrap">
-          <span style="font-size:9px;background:rgba(0,168,112,.12);color:var(--yes);padding:1px 6px;border-radius:20px;font-weight:700">✓ ${sharesAvail.toFixed(2)} disp.</span>
-          <span style="font-size:9px;background:rgba(245,158,11,.15);color:#f59e0b;padding:1px 6px;border-radius:20px;font-weight:700">🏷️ ${sharesInSale.toFixed(2)} en venta</span>
-        </div>`:""}
       </div>
       <!-- Tabla de entradas con botón de venta -->
       <div style="border:1px solid var(--border);border-top:none;border-radius:0 0 8px 8px">
@@ -8847,23 +8806,6 @@ async function loadProMyTrades(marketId, _retry=0){
           </div>`;
         }).join("")}` : `<div style="padding:8px;text-align:center;font-size:10px;color:var(--muted)">
           ${totalShares.toFixed(2)} sh · Historial no disponible aún</div>`}
-        <!-- Ventas activas -->
-        ${sells.map(o=>{
-          const pending = Math.max(0,(o.shares||0)-(o.filled||0));
-          if(pending<0.001) return "";
-          const sold = o.filled||0;
-          return `<div style="display:flex;justify-content:space-between;align-items:center;
-              padding:5px 8px;background:rgba(245,158,11,.06);border-top:1px solid var(--border)">
-            <div>
-              <span style="font-size:10px;font-weight:800;color:#f59e0b">🏷️ ${pending.toFixed(2)} sh en venta</span>
-              <span style="font-size:9px;color:var(--muted);margin-left:4px">@ ${(o.price*100).toFixed(1)}%${sold>0?` · ${sold.toFixed(2)} vendido`:""}</span>
-            </div>
-            <button onclick="cancelPendingOrder('${o.id}','${marketId}','sell')"
-              style="font-size:14px;width:22px;height:22px;border-radius:50%;
-                border:1px solid var(--border);background:var(--card);color:var(--muted);
-                cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0">×</button>
-          </div>`;
-        }).join("")}
       </div>
     </div>`;
   };
@@ -10886,32 +10828,25 @@ function switchInlineTab(marketId, side, mode){
 // validación de executeTrade use el número correcto.
 async function loadRealPositionForSell(marketId, userId){
   const [posRes, sellRes] = await Promise.all([
-    db.from("positions")
-      .select("yes_shares,no_shares")
-      .eq("market_id", marketId)
-      .eq("user_id", userId)
-      .maybeSingle(),
-    db.from("orders")
-      .select("side,shares,filled")
-      .eq("market_id", marketId)
-      .eq("user_id", userId)
-      .eq("order_type","sell")
-      .eq("is_mm",false)
-      .in("status",["open","partial"]),
+    db.rpc("get_my_positions",   {p_user_id: userId, p_market_id: marketId}),
+    db.rpc("get_my_sell_orders", {p_user_id: userId, p_market_id: marketId}),
   ]);
 
-  if(!posRes.data) return;
+  const posArr  = Array.isArray(posRes.data) ? posRes.data : [];
+  const sellArr = Array.isArray(sellRes.data) ? sellRes.data : [];
+  const posData = posArr.find(p => p.market_id === marketId);
+  if(!posData) return;
+
   const ui = STATE.users.findIndex(u=>u.id===userId);
   if(ui<0) return;
 
-  const yesTotal = posRes.data.yes_shares || 0;
-  const noTotal  = posRes.data.no_shares  || 0;
-  const yesSelling = (sellRes.data||[]).filter(o=>o.side==="YES").reduce((s,o)=>s+Math.max(0,(o.shares||0)-(o.filled||0)),0);
-  const noSelling  = (sellRes.data||[]).filter(o=>o.side==="NO").reduce((s,o)=>s+Math.max(0,(o.shares||0)-(o.filled||0)),0);
+  const yesTotal    = posData.yes_shares || 0;
+  const noTotal     = posData.no_shares  || 0;
+  const yesSelling  = sellArr.filter(o=>o.side==="YES").reduce((s,o)=>s+Math.max(0,(o.shares||0)-(o.filled||0)),0);
+  const noSelling   = sellArr.filter(o=>o.side==="NO").reduce((s,o)=>s+Math.max(0,(o.shares||0)-(o.filled||0)),0);
 
   const updPos = {...(STATE.users[ui].positions||{})};
   updPos[marketId] = {YES: yesTotal, NO: noTotal};
-  // Guardar también cuántas están en venta para mostrarlo en la UI
   STATE._sellReserved = STATE._sellReserved || {};
   STATE._sellReserved[marketId] = {YES: yesSelling, NO: noSelling};
 
