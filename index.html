@@ -4468,6 +4468,92 @@ async function retryPendingDeposits(){
   }
 }
 
+// Verificación manual de TX Solana — el usuario pega el hash después de enviar
+async function verifySolTxManual(amountUSD, token){
+  const input = document.getElementById("sol-tx-hash-input");
+  const signature = input?.value?.trim();
+  if(!signature || signature.length < 20){
+    notify("Pega el hash de la transacción primero","error"); return;
+  }
+  const btn = input?.nextElementSibling;
+  if(btn){ btn.disabled=true; btn.textContent="⏳ Verificando…"; }
+
+  try{
+    notify("⏳ Conectando a la red Solana para verificar…","info");
+    const web3 = await loadSolanaWeb3();
+    const {Connection} = web3;
+    const RPC_URLS = [
+      "https://rpc.ankr.com/solana",
+      "https://mainnet.helius-rpc.com/?api-key=public",
+    ];
+    let connection = null;
+    for(const url of RPC_URLS){
+      try{ const c = new Connection(url,"confirmed"); await c.getLatestBlockhash("confirmed"); connection=c; break; }
+      catch(_){ continue; }
+    }
+    if(!connection) throw new Error("No se pudo conectar a Solana");
+    await verifyAndCreditSolDeposit(signature, amountUSD, connection, token);
+  }catch(e){
+    notify("Error: "+(e.message||e),"error");
+    if(btn){ btn.disabled=false; btn.textContent="✅ Verificar y acreditar"; }
+  }
+}
+
+// Verificación manual de TX Polygon — el usuario pega el hash
+async function verifyPolyTxManual(amountUSD, token){
+  const input = document.getElementById("poly-tx-hash-input");
+  const txHash = input?.value?.trim();
+  if(!txHash || !txHash.startsWith("0x") || txHash.length < 60){
+    notify("Pega el hash de la transacción (debe empezar con 0x)","error"); return;
+  }
+  const btn = input?.nextElementSibling;
+  if(btn){ btn.disabled=true; btn.textContent="⏳ Verificando…"; }
+
+  try{
+    notify("⏳ Verificando transacción en Polygon…","info");
+    // Consultar el TX en PolygonScan API (pública, sin key)
+    const apiUrl = `https://api.polygonscan.com/api?module=transaction&action=gettxreceiptstatus&txhash=${txHash}&apikey=YourApiKeyToken`;
+    const res = await fetch(apiUrl);
+    const json = await res.json();
+    const status = json?.result?.status;
+
+    if(status === "1"){
+      // TX exitosa — acreditar via RPC de Supabase (idempotente)
+      const {data, error} = await db.rpc("credit_sol_deposit",{
+        p_user_id: STATE.session,
+        p_amount:  amountUSD,
+        p_tx_hash: txHash,
+        p_network: "POLYGON-"+token,
+      });
+      if(error) throw new Error(error.message);
+      if(data?.already_credited){
+        notify("ℹ️ Esta transacción ya fue acreditada anteriormente","info");
+      } else {
+        const credited = data?.amount_credited || amountUSD;
+        notify(`💰 ¡Depósito confirmado! +$${credited.toFixed(2)} acreditados ✓`,"success");
+        // Actualizar balance en STATE
+        const {data:freshU} = await db.from("users").select("balance").eq("id",STATE.session).maybeSingle();
+        if(freshU){
+          const ui = STATE.users.findIndex(x=>x.id===STATE.session);
+          if(ui>=0) STATE.users[ui]={...STATE.users[ui], balance: freshU.balance};
+          render();
+        }
+      }
+    } else if(status === "0"){
+      notify("❌ La transacción falló en la blockchain. Verifica en polygonscan.com","error");
+    } else {
+      // Sin confirmación aún — reintentar después
+      notify("⏳ La transacción aún no está confirmada. Espera 1-2 minutos y vuelve a intentar","info");
+    }
+  }catch(e){
+    // Fallback: si PolygonScan falla, crear solicitud manual de verificación
+    notify("No se pudo verificar automáticamente. Contacta soporte con el TX: "+txHash.slice(0,16)+"…","error");
+    console.error("[Polygon verify]", e);
+  }finally{
+    if(btn){ btn.disabled=false; btn.textContent="✅ Verificar y acreditar"; }
+  }
+}
+
 function showSolanaPaymentInstructions(tokenName, amount, address, userId, username){
   const existing = document.getElementById("sol-pay-modal");
   if(existing) existing.remove();
@@ -7095,24 +7181,62 @@ async function cancelPendingOrder(orderId, marketId, kind){
   if(!u) return;
 
   const isSell = kind === "sell";
-  const confirmMsg = isSell
-    ? "¿Cancelar esta venta? Las shares que quedaban por vender volverán a estar disponibles en tu posición."
-    : "¿Cancelar esta orden? El capital reservado será devuelto a tu balance.";
-  if(!confirm(confirmMsg)) return;
 
-  // Deshabilitar todos los botones de cancelar para evitar doble clic
+  // Modal con estética de la plataforma (reemplaza el feo confirm() del browser)
+  const confirmed = await new Promise(resolve => {
+    const overlay = document.createElement("div");
+    overlay.id = "cancel-order-modal";
+    overlay.style.cssText = `position:fixed;inset:0;background:rgba(0,0,0,.45);
+      backdrop-filter:blur(4px);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px`;
+    overlay.innerHTML = `
+      <div style="background:var(--card);border-radius:16px;padding:28px;max-width:400px;width:100%;
+          box-shadow:0 20px 60px rgba(0,0,0,.3);border:1px solid var(--border)">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+          <div style="width:42px;height:42px;border-radius:50%;background:rgba(245,158,11,.12);
+              display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0">🏷️</div>
+          <div>
+            <div style="font-size:16px;font-weight:800;color:var(--text)">
+              ${isSell ? "Cancelar posición en venta" : "Cancelar orden pendiente"}
+            </div>
+            <div style="font-size:12px;color:var(--muted);margin-top:2px">
+              ${isSell ? "Las shares volverán a tu posición disponible" : "El capital reservado será devuelto"}
+            </div>
+          </div>
+        </div>
+        <div style="background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.3);
+            border-radius:10px;padding:12px 14px;margin-bottom:20px;font-size:13px;color:var(--text)">
+          ${isSell
+            ? "Las shares que aún no se habían vendido volverán a aparecer en <strong>Mis posiciones</strong> y podrás operar con ellas de nuevo."
+            : "El dinero que estaba reservado para esta compra será devuelto a tu balance inmediatamente."}
+        </div>
+        <div style="display:flex;gap:10px">
+          <button id="cancel-modal-no"
+            style="flex:1;padding:12px;border-radius:10px;border:1.5px solid var(--border);
+              background:var(--card2);color:var(--text);cursor:pointer;font-size:14px;font-weight:600">
+            Mantener orden
+          </button>
+          <button id="cancel-modal-yes"
+            style="flex:1;padding:12px;border-radius:10px;border:none;
+              background:#f59e0b;color:#fff;cursor:pointer;font-size:14px;font-weight:700">
+            Sí, cancelar
+          </button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const cleanup = (val) => { overlay.remove(); resolve(val); };
+    overlay.querySelector("#cancel-modal-yes").onclick = () => cleanup(true);
+    overlay.querySelector("#cancel-modal-no").onclick  = () => cleanup(false);
+    overlay.onclick = (e) => { if(e.target === overlay) cleanup(false); };
+  });
+
+  if(!confirmed) return;
+
+  // Deshabilitar botones de cancelar para evitar doble clic
   document.querySelectorAll("[onclick*='cancelPendingOrder']").forEach(b=>{
-    b.disabled = true;
-    b.textContent = "…";
+    b.disabled = true; b.textContent = "…";
   });
 
   try {
-    // Las ventas anticipadas (order_type='sell') nunca reservaron dinero
-    // del usuario — solo reservaron shares de su posición — así que usan
-    // un RPC distinto al de compras pendientes. cancel_pending_order
-    // calcula un "reembolso" en dólares (shares×precio) que no aplica a
-    // una venta y además espera p_user_id como uuid, no text; usarlo
-    // aquí acreditaría dinero que no le corresponde al usuario.
     const {data, error} = isSell
       ? await db.rpc("cancel_sell_order", { p_order_id: orderId, p_user_id: u.id })
       : await db.rpc("cancel_pending_order", { p_order_id: orderId, p_user_id: u.id });
@@ -7121,14 +7245,8 @@ async function cancelPendingOrder(orderId, marketId, kind){
       notify("Error al cancelar: " + (error?.message || "intenta de nuevo"), "error");
       return;
     }
-    if(data.error){
-      notify(data.error, "error");
-      return;
-    }
+    if(data.error){ notify(data.error, "error"); return; }
 
-    // Actualizar balance en STATE desde DB (fuente de verdad) — para
-    // ventas el balance no cambia, pero refrescarlo no hace daño y
-    // mantiene el código simple para ambos casos.
     const {data:uw} = await db.from("users").select("balance").eq("id", u.id).maybeSingle();
     if(uw){
       const ui = STATE.users.findIndex(x=>x.id===u.id);
@@ -7136,15 +7254,11 @@ async function cancelPendingOrder(orderId, marketId, kind){
     }
 
     if(isSell){
-      const cancelledShares = data.cancelled_shares || 0;
-      notify(`✅ Venta cancelada · ${cancelledShares.toFixed(2)} shares vuelven a estar disponibles`);
+      const returned = data.returned_shares || 0;
+      notify(`✅ Venta cancelada · ${returned.toFixed(2)} shares disponibles de nuevo`,"success");
     } else {
       const refund = data.refund || 0;
-      if(refund > 0){
-        notify(`✅ Orden cancelada · ${usd(refund)} devueltos`);
-      } else {
-        notify("Orden cancelada");
-      }
+      notify(refund > 0 ? `✅ Orden cancelada · ${usd(refund)} devueltos` : "Orden cancelada","success");
     }
 
   } finally {
@@ -9705,105 +9819,252 @@ function renderDepositStep3(){
 
 
 function renderPolygonStep(amt,token){
-  const addr=PAYMENT_CONFIG.polygon.receivingAddress;
   const isPoly=token==="MATIC";
   const isUSDC=token==="USDC";
-  const isUSDT=token==="USDT";
-  const isStable=isUSDC||isUSDT;
   const tokenColor=isPoly?"var(--poly)":isUSDC?"#2775ca":"#26a17b";
-  const contractAddr=isUSDC?PAYMENT_CONFIG.polygon.usdcAddress:isUSDT?PAYMENT_CONFIG.polygon.usdtAddress:null;
-  const contractAddrLegacy=isUSDC?PAYMENT_CONFIG.polygon.usdcAddressLegacy:null;
   const maticPrice = STATE.maticPrice || null;
-  const maticAmt = isPoly
-    ? (maticPrice ? (amt/maticPrice).toFixed(4) : null)
-    : null;
+  const maticAmt = isPoly ? (maticPrice ? (amt/maticPrice).toFixed(4) : null) : null;
   const displayAmt = isPoly
-    ? (maticAmt ? maticAmt+" MATIC" : "Cargando precio…")
+    ? (maticAmt ? maticAmt+" POL" : "Cargando precio…")
     : amt.toFixed(2)+" "+token;
+  const walletName = window.ethereum?.isMetaMask ? "MetaMask"
+    : (window.ethereum?.isTrust || window.trustwallet) ? "Trust Wallet"
+    : window.phantom?.ethereum ? "Phantom"
+    : !!(window.ethereum) ? "tu wallet" : null;
 
   return`
   <div>
-    <div style="text-align:center;margin-bottom:16px">
-      <div style="font-size:12px;color:var(--muted);margin-bottom:4px">${t("deposit_send_exact")}</div>
-      <div style="font-size:34px;font-weight:900;color:${tokenColor}">${displayAmt}</div>
-      <div style="font-size:12px;color:var(--muted)">${t("deposit_receive")} <strong style="color:var(--yes)">${usd(amt)}</strong> ${t("deposit_credits")}</div>
+    <div style="text-align:center;margin-bottom:24px">
+      <div style="font-size:12px;color:var(--muted);margin-bottom:6px">Enviarás exactamente</div>
+      <div style="font-size:40px;font-weight:900;color:${tokenColor};letter-spacing:-1px">
+        ${isPoly&&!maticAmt?"Cargando…":displayAmt}
+      </div>
+      <div style="font-size:13px;color:var(--muted);margin-top:6px">
+        Recibirás <strong style="color:var(--yes);font-size:15px">$${amt.toFixed(2)}</strong> en tu balance
+      </div>
     </div>
 
-    <button class="btn-polygon" style="margin-bottom:10px" onclick="sendPolygonDeposit('${token}',${isPoly?(maticAmt||0):amt})" ${isPoly&&!maticAmt?"disabled style='opacity:.5;cursor:not-allowed'":""}>
-      <span>⬡</span> ${isPoly&&!maticAmt?"Obteniendo precio…":"Enviar "+displayAmt+" desde mi wallet"}
-    </button>
-
-    <button onclick="copyDepositAddress('${addr}')" style="width:100%;background:transparent;border:none;color:var(--accent);font-size:12px;cursor:pointer;text-decoration:underline;margin-bottom:10px;padding:4px">
-      Copiar dirección manualmente
-    </button>
-
-    <div class="info-box" style="margin-top:14px;margin-bottom:10px">
-      <strong>${t("deposit_warning")}:</strong><br>
-      • ${t("deposit_network")}<br>
-      • Token: <strong>${token}</strong>${contractAddr?` (contrato: <code style="font-size:10px">${contractAddr.slice(0,12)}2026</code>${contractAddrLegacy?" 00b7 USDC.e <code style=\"font-size:10px\">"+contractAddrLegacy.slice(0,12)+"2026</code>":""})`:"" }<br>
-      • ${t("deposit_confs")}: <strong>${PAYMENT_CONFIG.polygon.confirmationsNeeded}</strong><br>
-      • ${t("deposit_time")}
+    ${walletName ? `
+    <div style="background:rgba(108,50,204,.08);border:1.5px solid rgba(108,50,204,.3);
+        border-radius:12px;padding:14px;margin-bottom:16px;display:flex;align-items:center;gap:10px">
+      <div style="width:36px;height:36px;border-radius:50%;background:rgba(108,50,204,.15);
+          display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0">⬡</div>
+      <div>
+        <div style="font-size:12px;font-weight:700;color:#6c32cc">Wallet detectada: ${walletName}</div>
+        <div style="font-size:11px;color:var(--muted)">Red Polygon configurada automáticamente. Balance acreditado al confirmar.</div>
+      </div>
     </div>
-    ${isStable?`
-    <div style="background:#fff8e6;border:1px solid #f5c842;border-radius:10px;padding:10px 12px;font-size:12px;color:#92620a;margin-bottom:10px;display:flex;align-items:flex-start;gap:8px">
+    <button style="width:100%;padding:15px;border-radius:12px;border:none;
+        background:linear-gradient(135deg,#6c32cc,#9060ee);color:#fff;
+        font-weight:800;font-size:15px;cursor:pointer;margin-bottom:12px;
+        ${isPoly&&!maticAmt?"opacity:.5;cursor:not-allowed":""}"
+      onclick="sendPolygonDeposit('${token}',${isPoly?(maticAmt||0):amt})"
+      ${isPoly&&!maticAmt?"disabled":""}>
+      ⬡ Enviar ${isPoly&&!maticAmt?"…":displayAmt} con ${walletName}
+    </button>` : `
+    <div style="background:rgba(245,158,11,.08);border:1.5px solid rgba(245,158,11,.3);
+        border-radius:12px;padding:16px;margin-bottom:16px;text-align:center">
+      <div style="font-size:22px;margin-bottom:8px">📱</div>
+      <div style="font-size:14px;font-weight:700;color:#f59e0b;margin-bottom:6px">Instala MetaMask o Phantom</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:14px">Para depositar en Polygon abre tu wallet y accede a Statwaves desde el navegador integrado.</div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <a href="https://metamask.app.link/dapp/statwaves.com"
+          style="display:block;padding:11px;border-radius:10px;background:linear-gradient(135deg,#e07010,#d06010);color:#fff;font-weight:700;font-size:13px;text-decoration:none">
+          Abrir en MetaMask →
+        </a>
+        <a href="https://phantom.app/ul/browse/https%3A%2F%2Fstatwaves.com?ref=https%3A%2F%2Fstatwaves.com"
+          style="display:block;padding:11px;border-radius:10px;background:linear-gradient(135deg,#9945ff,#7c3aed);color:#fff;font-weight:700;font-size:13px;text-decoration:none">
+          Abrir en Phantom →
+        </a>
+      </div>
+    </div>`}
+
+    ${isUSDC||token==="USDT"?`
+    <div style="background:#fff8e6;border:1px solid #f5c842;border-radius:10px;padding:10px 12px;
+        font-size:12px;color:#92620a;margin-bottom:12px;display:flex;align-items:flex-start;gap:8px">
       <span style="font-size:16px;flex-shrink:0">⛽</span>
-      <span><strong>Necesitas POL para el gas</strong> — Las transacciones en Polygon requieren una pequeña cantidad de POL (~$0.01) para cubrir la comisión de red. Asegúrate de tener algo de POL en tu wallet.</span>
-    </div>`:``}
-    <div style="display:flex;gap:10px;margin-top:12px">
-      <button class="btn-ghost" style="flex:1;padding:11px" onclick="depositPrevStep()">${t("deposit_back")}</button>
+      <span><strong>Gas:</strong> necesitas una pequeña cantidad de POL (~$0.01) para pagar la comisión de red.</span>
+    </div>`:""}
+
+    <div style="background:var(--card2);border:1px solid var(--border);border-radius:10px;
+        padding:12px 14px;font-size:12px;color:var(--muted);margin-bottom:16px">
+      <div style="font-weight:700;color:var(--text);margin-bottom:6px">ℹ️ Información</div>
+      • Red: <strong style="color:var(--text)">Polygon</strong> — NO Ethereum mainnet<br>
+      • Token: <strong style="color:var(--text)">${token}${isPoly?" (POL/MATIC)":""}</strong><br>
+      • Balance acreditado automáticamente al confirmar TX<br>
+      • Compatible: MetaMask, Phantom, Trust Wallet
     </div>
-    <div class="hint" style="text-align:center;margin-top:8px">${t("deposit_onchain")}</div>
+
+    <!-- Verificar TX manualmente — cualquier wallet -->
+    <div style="background:rgba(108,50,204,.06);border:1.5px solid rgba(108,50,204,.2);
+        border-radius:12px;padding:14px;margin-bottom:14px">
+      <div style="font-size:12px;font-weight:700;color:#6c32cc;margin-bottom:8px">
+        ✅ Ya enviaste? Pega tu hash de transacción
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:10px">
+        Después de enviar desde cualquier wallet (MetaMask, Trust, Coinbase, Binance, etc.),
+        pega el hash aquí para verificar automáticamente.
+      </div>
+      <input id="poly-tx-hash-input" placeholder="0x... (hash de la transacción en Polygon)"
+        style="width:100%;box-sizing:border-box;padding:10px 12px;border-radius:8px;
+          border:1.5px solid var(--border);background:var(--card);color:var(--text);
+          font-size:12px;font-family:monospace;margin-bottom:8px"/>
+      <button onclick="verifyPolyTxManual(${amt},'${token}')"
+        style="width:100%;padding:11px;border-radius:8px;border:none;
+          background:linear-gradient(135deg,#6c32cc,#9060ee);color:#fff;
+          font-weight:700;font-size:13px;cursor:pointer">
+        🔍 Verificar y acreditar balance
+      </button>
+    </div>
+
+    <button class="btn-ghost" style="width:100%;padding:11px" onclick="depositPrevStep()">← Atrás</button>
   </div>`;
 }
-
 
 function renderSolanaStep(amt, token){
   const addr = PAYMENT_CONFIG.solana.receivingAddress;
   const isSOL = token==="SOL";
-  const isUSDC = token==="USDC-SOL";
-  const isUSDT = token==="USDT-SOL";
-  const tokenColor = isSOL?"#9945ff":isUSDC?"#2775ca":"#26a17b";
-  const tokenName = isSOL?"SOL":isUSDC?"USDC":"USDT";
-  const displayToken = isSOL?"SOL (Solana)":tokenName+" (Solana)";
-  const mintAddr = isUSDC?PAYMENT_CONFIG.solana.usdcMint:isUSDT?PAYMENT_CONFIG.solana.usdtMint:null;
-  const isSolanaWallet = STATE.walletType==="phantom-solana";
-
-  // Calcular cantidad SOL con precio real
+  const tokenColor = isSOL?"#9945ff":"#2775ca";
+  const tokenName = isSOL?"SOL":token==="USDC-SOL"?"USDC":"USDT";
   const solPrice = STATE.solPrice || null;
   const solAmt = isSOL ? (solPrice ? (amt/solPrice).toFixed(4) : null) : null;
-  const displayAmt = isSOL
-    ? (solAmt ? solAmt+" SOL" : "Cargando precio…")
-    : amt.toFixed(2)+" "+tokenName;
+  const displayAmt = isSOL ? (solAmt ? solAmt+" SOL" : "…") : amt.toFixed(2)+" "+tokenName;
+  const sol = detectSolanaProvider();
 
-  return`
-  <div>
-    <div style="text-align:center;margin-bottom:16px">
-      <div style="font-size:12px;color:var(--muted);margin-bottom:4px">Envía exactamente</div>
-      <div style="font-size:34px;font-weight:900;color:${tokenColor}">${displayAmt}</div>
-      <div style="font-size:12px;color:var(--muted)">Recibirás <strong style="color:var(--yes)">$${amt.toFixed(2)}</strong> en tu balance</div>
+  return`<div>
+    <div style="text-align:center;margin-bottom:20px">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Envía exactamente</div>
+      <div style="font-size:42px;font-weight:900;color:${tokenColor};letter-spacing:-1px">${displayAmt}</div>
+      <div style="font-size:13px;color:var(--muted);margin-top:4px">
+        Recibirás <strong style="color:var(--yes);font-size:15px">$${amt.toFixed(2)}</strong> en tu balance
+      </div>
     </div>
 
-    <button class="btn-polygon" style="background:linear-gradient(135deg,#9945ff,#7c3aed);width:100%;margin-bottom:10px" onclick="sendSolanaDeposit('${token}',${amt})" ${isSOL&&!solAmt?"disabled style='opacity:.5;cursor:not-allowed'":""}>
-      <span>◎</span> ${isSOL&&!solAmt?"Obteniendo precio…":"Enviar "+displayAmt+" desde "+(detectSolanaProvider()?.name||"tu wallet")}
-    </button>
+    ${sol ? `
+    <button style="width:100%;padding:14px;border-radius:12px;border:none;
+        background:linear-gradient(135deg,#9945ff,#7c3aed);color:#fff;
+        font-weight:800;font-size:15px;cursor:pointer;margin-bottom:16px"
+      onclick="sendSolanaDeposit('${token}',${amt})">
+      ◎ Enviar ${displayAmt} con ${sol.name}
+    </button>` : ""}
 
-    <div class="lbl">Dirección Solana de la plataforma</div>
-    <div class="crypto-addr-box" style="font-size:11px">${addr}</div>
-    <button class="copy-btn" onclick="copyText('${addr}')">Copiar dirección</button>
-
-    <div class="info-box" style="margin-top:14px;margin-bottom:14px">
-      <strong>⚠️ Importante:</strong><br>
-      • Red: <strong>Solana</strong> únicamente<br>
-      • Token: <strong>${displayToken}</strong>${mintAddr?`<br>• Mint: <span style="font-family:monospace;font-size:10px">${mintAddr.slice(0,16)}…</span>`:""}<br>
-      • Confirmaciones: <strong>${PAYMENT_CONFIG.solana.confirmationsNeeded}</strong><br>
-      • No envíes desde red Ethereum o Polygon
+    <!-- Siempre mostrar la dirección para envío manual desde cualquier wallet -->
+    <div style="background:var(--card2);border:1.5px solid var(--border);border-radius:12px;padding:14px;margin-bottom:14px">
+      <div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">
+        📋 Dirección Solana de la plataforma
+      </div>
+      <div style="font-family:monospace;font-size:12px;word-break:break-all;color:var(--text);
+          background:var(--card);border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:8px">
+        ${addr}
+      </div>
+      <button onclick="copyText('${addr}')"
+        style="width:100%;padding:9px;border-radius:8px;border:1.5px solid var(--border);
+          background:transparent;color:var(--text);cursor:pointer;font-size:13px;font-weight:600">
+        📋 Copiar dirección
+      </button>
     </div>
 
-    <div style="display:flex;gap:10px;margin-top:12px">
-      <button class="btn-ghost" style="flex:1;padding:11px" onclick="depositPrevStep()">← Atrás</button>
+    <!-- Verificar TX manualmente — funciona con cualquier wallet -->
+    <div style="background:rgba(153,69,255,.06);border:1.5px solid rgba(153,69,255,.2);
+        border-radius:12px;padding:14px;margin-bottom:14px">
+      <div style="font-size:12px;font-weight:700;color:#9945ff;margin-bottom:8px">
+        ✅ Ya enviaste? Pega tu hash de transacción
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:10px">
+        Después de enviar desde cualquier wallet (Phantom, Metamask, Coinbase, Binance, etc.), 
+        pega el hash de la transacción aquí y verificamos automáticamente.
+      </div>
+      <input id="sol-tx-hash-input" placeholder="Pega el hash de tu TX (empieza por letra/número...)"
+        style="width:100%;box-sizing:border-box;padding:10px 12px;border-radius:8px;
+          border:1.5px solid var(--border);background:var(--card);color:var(--text);
+          font-size:12px;font-family:monospace;margin-bottom:8px"/>
+      <button onclick="verifySolTxManual(${amt},'${token}')"
+        style="width:100%;padding:11px;border-radius:8px;border:none;
+          background:linear-gradient(135deg,#9945ff,#7c3aed);color:#fff;
+          font-weight:700;font-size:13px;cursor:pointer">
+        🔍 Verificar y acreditar balance
+      </button>
     </div>
-    <div class="hint" style="text-align:center;margin-top:8px">Tu balance se acreditará automáticamente tras la confirmación</div>
+
+    <div style="font-size:11px;color:var(--muted);background:var(--card2);border-radius:8px;padding:10px;margin-bottom:12px">
+      ⚠️ <strong>Importante:</strong> Red <strong>Solana</strong> únicamente · Token: <strong>${isSOL?"SOL":"${tokenName} (SPL)"}</strong>
+      · NO envíes desde Ethereum o Polygon · Compatible con cualquier wallet que soporte Solana
+    </div>
+
+    <button class="btn-ghost" style="width:100%;padding:11px" onclick="depositPrevStep()">← Atrás</button>
+    <div style="font-size:11px;color:var(--muted);text-align:center;margin-top:8px">
+      Tu balance se acreditará automáticamente tras la confirmación
+    </div>
   </div>`;
+}
+
+// Verificar TX de Solana pegando el hash — funciona desde cualquier wallet
+async function verifySolTxManual(amountUSD, token){
+  const input = document.getElementById("sol-tx-hash-input");
+  const txHash = input?.value?.trim();
+  if(!txHash || txHash.length < 40){
+    notify("Pega el hash completo de la transacción","error"); return;
+  }
+  const btn = input?.nextElementSibling;
+  if(btn){ btn.disabled=true; btn.textContent="⏳ Verificando…"; }
+
+  try{
+    notify("⏳ Verificando transacción en Solana…","info");
+    const web3 = await loadSolanaWeb3();
+    const {Connection} = web3;
+    const RPC_URLS = [
+      "https://rpc.ankr.com/solana",
+      "https://solana-mainnet.g.alchemy.com/v2/g9tfDTOzHyhXPRiQDRoPi",
+      "https://mainnet.helius-rpc.com/?api-key=public",
+    ];
+    let connection = null;
+    for(const url of RPC_URLS){
+      try{ connection = new Connection(url,"confirmed"); await connection.getSlot(); break; }
+      catch(e){ continue; }
+    }
+    if(!connection) throw new Error("No se pudo conectar a Solana");
+
+    // Verificar estado de la TX
+    const status = await connection.getSignatureStatus(txHash,{searchTransactionHistory:true});
+    const confirmed = status?.value?.confirmationStatus==="confirmed"
+                   || status?.value?.confirmationStatus==="finalized";
+
+    if(!confirmed){
+      notify("⏳ La transacción aún no está confirmada. Espera 1-2 minutos y vuelve a intentar","info");
+      if(btn){ btn.disabled=false; btn.textContent="🔍 Verificar y acreditar balance"; }
+      return;
+    }
+    if(status?.value?.err){
+      notify("❌ La transacción falló en la blockchain. Verifica en solscan.io","error");
+      if(btn){ btn.disabled=false; btn.textContent="🔍 Verificar y acreditar balance"; }
+      return;
+    }
+
+    // Acreditar via RPC idempotente
+    const {data, error} = await db.rpc("credit_sol_deposit",{
+      p_user_id: STATE.session,
+      p_amount:  amountUSD,
+      p_tx_hash: txHash,
+      p_network: token==="SOL" ? "SOL" : "USDC-SOL",
+    });
+    if(error) throw new Error(error.message);
+    if(data?.already_credited){
+      notify("ℹ️ Esta transacción ya fue acreditada","info");
+    } else {
+      const credited = data?.amount_credited || amountUSD;
+      notify(`💰 ¡Depósito confirmado! +$${credited.toFixed(2)} acreditados ✓`,"success");
+      const {data:freshU} = await db.from("users").select("balance").eq("id",STATE.session).maybeSingle();
+      if(freshU){
+        const ui = STATE.users.findIndex(x=>x.id===STATE.session);
+        if(ui>=0) STATE.users[ui]={...STATE.users[ui], balance: freshU.balance};
+        render();
+      }
+      closeDepositModal();
+    }
+  }catch(e){
+    notify("Error verificando TX: "+(e.message||e),"error");
+    if(btn){ btn.disabled=false; btn.textContent="🔍 Verificar y acreditar balance"; }
+  }
 }
 
 async function connectSolanaForDeposit(){
@@ -9897,82 +10158,154 @@ async function sendCryptoFromWallet(token, amount, walletType){
     const walletName = walletType==="phantom"?"Phantom":walletType==="trust"?"Trust Wallet":"MetaMask";
     notify(`Abriendo ${walletName} para confirmar…`,"info");
 
-    // ── Switch de red solo en MetaMask/Trust (NO en Phantom móvil) ─
-    const isPhantomProvider = !!(window.phantom?.ethereum || window.ethereum?.isPhantom);
+    // ── Cambiar a red Polygon si no está ─────────────────────────────
     const targetChainId = PAYMENT_CONFIG.polygon.chainId; // "0x89"
-    if(!isPhantomProvider){
-      try{
-        const currentChain = await provider.request({method:"eth_chainId"});
-        if(currentChain !== targetChainId){
-          try{
-            await provider.request({method:"wallet_switchEthereumChain",params:[{chainId:targetChainId}]});
-          }catch(sw){
-            if(sw.code===4902 || sw.code===-32603){
-              await provider.request({method:"wallet_addEthereumChain",params:[{
-                chainId: PAYMENT_CONFIG.polygon.chainId,
-                chainName: PAYMENT_CONFIG.polygon.chainName,
-                nativeCurrency: PAYMENT_CONFIG.polygon.nativeCurrency,
-                rpcUrls:[PAYMENT_CONFIG.polygon.rpcUrl],
-                blockExplorerUrls:[PAYMENT_CONFIG.polygon.explorerUrl],
-              }]});
-            } else if(sw.code===4001){
-              notify("Debes cambiar a la red Polygon para continuar.","error");
-              return;
-            }
+    try{
+      const currentChain = await provider.request({method:"eth_chainId"});
+      if(currentChain !== targetChainId){
+        try{
+          await provider.request({method:"wallet_switchEthereumChain",params:[{chainId:targetChainId}]});
+        }catch(sw){
+          if(sw.code===4902 || sw.code===-32603){
+            await provider.request({method:"wallet_addEthereumChain",params:[{
+              chainId: PAYMENT_CONFIG.polygon.chainId,
+              chainName: PAYMENT_CONFIG.polygon.chainName,
+              nativeCurrency: PAYMENT_CONFIG.polygon.nativeCurrency,
+              rpcUrls:[PAYMENT_CONFIG.polygon.rpcUrl],
+              blockExplorerUrls:[PAYMENT_CONFIG.polygon.explorerUrl],
+            }]});
+          } else if(sw.code===4001){
+            notify("Debes cambiar a la red Polygon para continuar.","error"); return;
           }
-          await new Promise(r=>setTimeout(r,300));
         }
-      }catch(chainErr){
-        console.warn("[Chain] switch error:", chainErr.message||chainErr);
+        await new Promise(r=>setTimeout(r,400));
       }
-    }
-    // ─────────────────────────────────────────────────────────────
+    }catch(_){}
 
     const accounts = await provider.request({method:"eth_accounts"});
     const from = accounts[0];
     const to = PAYMENT_CONFIG.polygon.receivingAddress;
-    if(token==="MATIC"){
-      const amtWei="0x"+Math.floor(amount*1e18).toString(16);
-      const txHash=await provider.request({method:"eth_sendTransaction",params:[{from,to,value:amtWei,chainId:PAYMENT_CONFIG.polygon.chainId}]});
-      notify("Tx enviada: "+txHash.slice(0,10)+"… · Pendiente de confirmación en Polygon","info");
-      closeDepositModal();
-    } else {
-      // ERC-20 transfer (USDC o USDT)
-      const ERC20_TRANSFER="0xa9059cbb";
-      let contractAddr, decimals;
-      if(token==="USDT"){
-        contractAddr = PAYMENT_CONFIG.polygon.usdtAddress;
-        decimals = PAYMENT_CONFIG.polygon.usdtDecimals;
-      } else {
-        // USDC: intentar nativo primero, luego legacy (USDC.e / Wormhole)
-        contractAddr = PAYMENT_CONFIG.polygon.usdcAddress;
-        decimals = PAYMENT_CONFIG.polygon.usdcDecimals;
-      }
-      const paddedTo=to.replace("0x","").padStart(64,"0");
-      const amtInUnits=Math.floor(amount*Math.pow(10,decimals));
-      const paddedAmt=amtInUnits.toString(16).padStart(64,"0");
-      const data=ERC20_TRANSFER+paddedTo+paddedAmt;
+    let txHash;
 
-      let txHash;
+    if(token==="MATIC"){
+      const amtWei = "0x"+Math.floor(amount*1e18).toString(16);
+      txHash = await provider.request({method:"eth_sendTransaction",params:[{from,to,value:amtWei,chainId:PAYMENT_CONFIG.polygon.chainId}]});
+    } else {
+      // ERC-20 (USDC / USDT)
+      const ERC20_TRANSFER = "0xa9059cbb";
+      let contractAddr = token==="USDT" ? PAYMENT_CONFIG.polygon.usdtAddress : PAYMENT_CONFIG.polygon.usdcAddress;
+      let decimals = token==="USDT" ? PAYMENT_CONFIG.polygon.usdtDecimals : PAYMENT_CONFIG.polygon.usdcDecimals;
+      const paddedTo = to.replace("0x","").padStart(64,"0");
+      const amtInUnits = Math.floor(amount*Math.pow(10,decimals));
+      const paddedAmt = amtInUnits.toString(16).padStart(64,"0");
+      const data = ERC20_TRANSFER+paddedTo+paddedAmt;
       try{
-        txHash=await provider.request({method:"eth_sendTransaction",params:[{from,to:contractAddr,data,chainId:PAYMENT_CONFIG.polygon.chainId}]});
+        txHash = await provider.request({method:"eth_sendTransaction",params:[{from,to:contractAddr,data,chainId:PAYMENT_CONFIG.polygon.chainId}]});
       }catch(e1){
-        // Si falla por balance insuficiente Y es USDC, intentar con contrato legacy (USDC.e)
         if(token==="USDC" && PAYMENT_CONFIG.polygon.usdcAddressLegacy && (e1.message||"").toLowerCase().includes("balance")){
           notify("Intentando con USDC.e (bridged)…","info");
-          const legacyData=ERC20_TRANSFER+paddedTo+paddedAmt;
-          txHash=await provider.request({method:"eth_sendTransaction",params:[{from,to:PAYMENT_CONFIG.polygon.usdcAddressLegacy,data:legacyData,chainId:PAYMENT_CONFIG.polygon.chainId}]});
-        } else {
-          throw e1;
+          txHash = await provider.request({method:"eth_sendTransaction",params:[{from,to:PAYMENT_CONFIG.polygon.usdcAddressLegacy,data,chainId:PAYMENT_CONFIG.polygon.chainId}]});
+        } else { throw e1; }
+      }
+    }
+
+    if(!txHash){ notify("No se obtuvo hash de transacción","error"); return; }
+
+    notify(`✅ Transacción enviada · Verificando confirmación en Polygon…`,"info");
+    closeDepositModal();
+
+    // ── Verificar y acreditar automáticamente ───────────────────────
+    await verifyAndCreditPolyDeposit(txHash, amount, token);
+
+  }catch(e){
+    if(e.code===4001) notify("Transacción rechazada por el usuario","error");
+    else notify("Error: "+(e.message||e),"error");
+    console.error("[Polygon deposit]", e);
+  }
+}
+
+// Verifica una TX de Polygon en cadena y acredita el balance.
+// Hace polling cada 4s hasta confirmar (máx 3 minutos).
+// Idempotente: usa tx_hash único para evitar doble acreditación.
+async function verifyAndCreditPolyDeposit(txHash, amountUSD, token){
+  const u = getUser();
+  if(!u) return;
+
+  const RPC = "https://polygon-rpc.com";
+  const maxAttempts = 45; // 45 × 4s = 3 minutos
+  let attempts = 0;
+
+  notify(`⏳ Confirmando TX en Polygon (${txHash.slice(0,12)}…)`, "info");
+
+  const poll = async () => {
+    attempts++;
+    try{
+      // Consultar estado de la TX via eth_getTransactionReceipt
+      const body = JSON.stringify({
+        jsonrpc:"2.0", method:"eth_getTransactionReceipt",
+        params:[txHash], id:1
+      });
+      const res = await fetch(RPC, {method:"POST",headers:{"Content-Type":"application/json"},body});
+      const json = await res.json();
+      const receipt = json?.result;
+
+      if(receipt){
+        if(receipt.status === "0x0"){
+          notify(`❌ La transacción falló en Polygon. TX: ${txHash.slice(0,16)}…`, "error");
+          return;
+        }
+        if(receipt.status === "0x1"){
+          // Confirmada — acreditar via RPC de Supabase (idempotente)
+          const {data, error} = await db.rpc("credit_sol_deposit",{
+            p_user_id: u.id,
+            p_amount:  amountUSD,
+            p_tx_hash: txHash,
+            p_network: "POLYGON-"+token,
+          });
+          if(error){
+            console.error("[Poly credit]", error);
+            // Guardar en localStorage como fallback
+            const pending = JSON.parse(localStorage.getItem("sw_pending_deposits")||"[]");
+            pending.push({signature:txHash, amountUSD, token:"POLYGON-"+token, userId:u.id, timestamp:Date.now()});
+            localStorage.setItem("sw_pending_deposits", JSON.stringify(pending));
+            notify(`⚠️ TX confirmada pero error al acreditar. Guarda el TX: ${txHash.slice(0,16)}…`, "error");
+            return;
+          }
+          if(data?.already_credited){
+            notify("ℹ️ Este depósito ya fue acreditado anteriormente", "info");
+            return;
+          }
+          const credited = data?.amount_credited || amountUSD;
+          notify(`💰 ¡Depósito confirmado! +$${credited.toFixed(2)} acreditados en tu cuenta ✓`, "success");
+          // Actualizar balance en STATE sin esperar al Realtime
+          const {data:freshU} = await db.from("users").select("balance").eq("id",u.id).maybeSingle();
+          if(freshU){
+            const ui = STATE.users.findIndex(x=>x.id===u.id);
+            if(ui>=0) STATE.users[ui]={...STATE.users[ui], balance:freshU.balance};
+            render();
+          }
+          return;
         }
       }
-      notify(`Tx ${token} enviada: ${txHash.slice(0,10)}… · Pendiente de confirmación`,"info");
-      closeDepositModal();
+
+      // No confirmada aún
+      if(attempts >= maxAttempts){
+        notify(`⚠️ La TX tardó demasiado. Guarda este hash y contacta soporte: ${txHash}`, "error");
+        const pending = JSON.parse(localStorage.getItem("sw_pending_deposits")||"[]");
+        pending.push({signature:txHash, amountUSD, token:"POLYGON-"+token, userId:u.id, timestamp:Date.now()});
+        localStorage.setItem("sw_pending_deposits", JSON.stringify(pending));
+        return;
+      }
+      setTimeout(poll, 4000);
+    }catch(err){
+      console.error("[Poly verify]", err);
+      if(attempts < maxAttempts) setTimeout(poll, 4000);
+      else notify(`⚠️ Error verificando TX. Guarda: ${txHash.slice(0,16)}…`, "error");
     }
-  }catch(e){
-    if(e.code===4001)notify("Transacción rechazada por el usuario","error");
-    else notify("Error: "+(e.message||e),"error");
-  }
+  };
+
+  // Esperar 6s iniciales para que la red propague la TX
+  setTimeout(poll, 6000);
 }
 
 
@@ -12728,6 +13061,31 @@ function renderAdminResolve(){
       ${locked.map(m=>renderRow(m,true)).join("")}
     </div>`:""}
     ${sectionHtml("Pendientes de resolución", pending)}
+    ${resolved.length?`
+    <div style="margin-top:16px">
+      <div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;
+          letter-spacing:.5px;margin-bottom:10px">✅ Resueltos (${resolved.length})</div>
+      ${resolved.map(m=>`
+        <div class="card" style="padding:14px;margin-bottom:8px;opacity:.85">
+          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+            <div style="flex:1;min-width:0">
+              <div style="font-size:13px;font-weight:700">${escHtml(m.title)}</div>
+              <div style="font-size:11px;color:var(--muted);margin-top:2px">
+                Resultado: <strong style="color:${m.resolution==='YES'?'var(--yes)':'var(--no)'}">${m.resolution==='YES'?'✅ SÍ':'❌ NO'}</strong>
+                · Vol: ${usd(m.totalVolume||0)}
+              </div>
+            </div>
+            <button onclick="adminDeleteMarket('${m.id}')"
+              style="font-size:12px;padding:6px 14px;border-radius:8px;
+                border:1.5px solid var(--no);background:transparent;color:var(--no);
+                cursor:pointer;font-weight:700;white-space:nowrap"
+              onmouseover="this.style.background='var(--no)';this.style.color='#fff'"
+              onmouseout="this.style.background='transparent';this.style.color='var(--no)'">
+              🗑 Eliminar
+            </button>
+          </div>
+        </div>`).join("")}
+    </div>`:""}
   </div>`;
 }
 
