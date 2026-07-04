@@ -2886,6 +2886,7 @@ function render(){
           setTimeout(()=>{
             if(mu) loadPendingOrders(mm.id);
             if(mu) loadMyTrades(mm.id);
+            if(mu) loadSellOrdersPanel(mm.id);
             if(mu) startSellRefresh(mm.id);
             startObRefresh(mm.id);
           }, 150);
@@ -5669,7 +5670,7 @@ function renderMarket(){
       <div class="card" style="padding:16px;margin-top:12px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
           <div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">📊 Mis posiciones</div>
-          <button onclick="loadMyTrades('${m.id}');loadPendingOrders('${m.id}')"
+          <button onclick="loadMyTrades('${m.id}');loadSellOrdersPanel('${m.id}')"
             style="font-size:10px;color:var(--muted);background:none;border:none;cursor:pointer;padding:2px 6px;border-radius:4px;border:1px solid var(--border)">
             🔄
           </button>
@@ -5677,12 +5678,131 @@ function renderMarket(){
         <div id="my-trades-${m.id}">
           <div style="text-align:center;padding:14px;color:var(--muted);font-size:12px">⏳ Cargando...</div>
         </div>
-        <!-- Órdenes de venta activas: se llenan vía loadPendingOrders() -->
-        <div id="pending-orders-${m.id}"></div>
-      </div>`:""}
+      </div>
+      <!-- Panel de posiciones en venta — solo visible cuando hay órdenes activas -->
+      <div id="sell-orders-panel-${m.id}" style="display:none;margin-top:10px">
+        <div class="card" style="padding:16px;border:2px solid rgba(245,158,11,.35)">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="font-size:16px">🏷️</span>
+              <div style="font-size:12px;font-weight:700;color:#f59e0b;text-transform:uppercase;letter-spacing:.5px">Posiciones en venta</div>
+            </div>
+            <button onclick="loadSellOrdersPanel('${m.id}')"
+              style="font-size:10px;color:var(--muted);background:none;border:none;cursor:pointer;padding:2px 6px;border-radius:4px;border:1px solid var(--border)">
+              🔄
+            </button>
+          </div>
+          <div id="sell-orders-list-${m.id}"></div>
+        </div>
+      </div>
+      <div id="pending-orders-${m.id}" style="display:none"></div>`:""}
     </div>
   </div>
 </div>`;
+}
+
+// ── Panel de posiciones en venta ─────────────────────────────────────
+// Muestra las órdenes de venta activas del usuario en un panel separado.
+// Aparece solo cuando hay órdenes activas. Cada orden tiene botón × para cancelar.
+// Las shares ya se descontaron de positions al crear la orden (nuevo RPC).
+async function loadSellOrdersPanel(marketId, _retry=0){
+  const panel = document.getElementById("sell-orders-panel-"+marketId);
+  const list  = document.getElementById("sell-orders-list-"+marketId);
+  if(!panel || !list){
+    if(_retry < 6) setTimeout(()=>loadSellOrdersPanel(marketId,_retry+1), 250);
+    return;
+  }
+  const u = getUser(); if(!u){ panel.style.display="none"; return; }
+
+  const {data:sells} = await db.from("orders")
+    .select("id,side,shares,filled,price,status,created_at")
+    .eq("market_id", marketId)
+    .eq("user_id", u.id)
+    .eq("order_type","sell")
+    .eq("is_mm",false)
+    .in("status",["open","partial"])
+    .order("created_at",{ascending:true});
+
+  const activeSells = (sells||[]).filter(o=>Math.max(0,(o.shares||0)-(o.filled||0))>0.001);
+
+  if(!activeSells.length){
+    panel.style.display="none";
+    return;
+  }
+
+  panel.style.display="block";
+
+  list.innerHTML = activeSells.map(o=>{
+    const pending  = Math.max(0,(o.shares||0)-(o.filled||0));
+    const filled   = o.filled||0;
+    const side     = o.side;
+    const color    = side==="YES" ? "var(--yes)" : "var(--no)";
+    const bg       = side==="YES" ? "rgba(0,168,112,.06)" : "rgba(224,40,74,.06)";
+    const border   = side==="YES" ? "rgba(0,168,112,.2)"  : "rgba(224,40,74,.2)";
+    const sideLabel = side==="YES" ? "SÍ" : "NO";
+    const price    = o.price||0;
+    const m        = getMarket(marketId);
+    const pWin     = m ? (side==="YES" ? (m.priceYes||0.5) : (1-(m.priceYes||0.5))) : price;
+    const receive  = Math.round(pending * pWin * 0.97 * 100)/100;
+    const pct      = (v) => (Math.round(v*1000)/10).toFixed(1)+"%";
+    const date     = new Date(o.created_at).toLocaleDateString("es-CO",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"});
+    const progress = o.shares>0 ? Math.round(filled/o.shares*100) : 0;
+
+    return `<div style="background:var(--card);border:1px solid rgba(245,158,11,.3);
+        border-radius:10px;padding:12px 14px;margin-bottom:8px">
+      <!-- Cabecera: lado + shares + botón × -->
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="background:${bg};border:1px solid ${border};color:${color};
+              font-size:11px;font-weight:800;padding:2px 8px;border-radius:20px">${sideLabel}</span>
+          <span style="font-size:13px;font-weight:800;color:#f59e0b">${pending.toFixed(2)} sh en venta</span>
+        </div>
+        <button onclick="cancelPendingOrder('${o.id}','${marketId}','sell')"
+          title="Cancelar venta — las shares vuelven a tu posición"
+          style="width:28px;height:28px;border-radius:50%;border:1.5px solid var(--border);
+            background:var(--card2);color:var(--muted);cursor:pointer;font-size:16px;font-weight:900;
+            display:flex;align-items:center;justify-content:center;flex-shrink:0;
+            transition:all .15s"
+          onmouseover="this.style.background='var(--no)';this.style.color='#fff';this.style.borderColor='var(--no)'"
+          onmouseout="this.style.background='var(--card2)';this.style.color='var(--muted)';this.style.borderColor='var(--border)'">
+          ×
+        </button>
+      </div>
+
+      <!-- Detalles -->
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:8px">
+        <div>
+          <div style="font-size:9px;color:var(--muted);text-transform:uppercase;font-weight:700;margin-bottom:2px">Precio puesto</div>
+          <div style="font-size:12px;font-weight:700">${pct(price)}</div>
+        </div>
+        <div>
+          <div style="font-size:9px;color:var(--muted);text-transform:uppercase;font-weight:700;margin-bottom:2px">Precio actual</div>
+          <div style="font-size:12px;font-weight:700;color:${color}">${pct(pWin)}</div>
+        </div>
+        <div>
+          <div style="font-size:9px;color:var(--muted);text-transform:uppercase;font-weight:700;margin-bottom:2px">Recibirías</div>
+          <div style="font-size:12px;font-weight:700;color:var(--yes)">$${receive.toFixed(2)}</div>
+        </div>
+      </div>
+
+      <!-- Progreso si hay ejecución parcial -->
+      ${filled>0.001?`
+      <div style="margin-bottom:6px">
+        <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-bottom:3px">
+          <span>Ejecutado: ${filled.toFixed(2)} sh</span>
+          <span>${progress}%</span>
+        </div>
+        <div style="height:4px;border-radius:20px;background:var(--border);overflow:hidden">
+          <div style="height:100%;border-radius:20px;background:var(--yes);width:${progress}%;transition:width .4s"></div>
+        </div>
+      </div>`:""}
+
+      <!-- Fecha y estado -->
+      <div style="font-size:9px;color:var(--muted)">
+        📅 ${date} · ⏳ Esperando comprador vía P2
+      </div>
+    </div>`;
+  }).join("");
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -6744,7 +6864,7 @@ async function checkSellProgress(marketId){
   if(changed){
     loadMyTrades(marketId);
     loadPendingOrders(marketId);
-    // Si estamos en Modo Pro, también recargar las posiciones detalladas del pro
+    loadSellOrdersPanel(marketId);
     if(STATE.view==="pro") loadProMyTrades(marketId);
     // Recargar balance también
     const {data:freshUser} = await db.from("users").select("balance").eq("id", u.id).maybeSingle();
@@ -6902,12 +7022,11 @@ async function cancelPendingOrder(orderId, marketId, kind){
     }
 
   } finally {
-    // Recargar posición real + órdenes pendientes para que la UI
-    // muestre el estado correcto (shares disponibles de nuevo)
     const u2 = getUser();
     if(u2) await loadRealPositionForSell(marketId, u2.id);
     await loadPendingOrders(marketId);
     await loadMyTrades(marketId);
+    loadSellOrdersPanel(marketId);
     if(STATE.view==="pro"){
       loadProMyTrades(marketId);
       loadProSentiment(marketId);
@@ -8645,7 +8764,7 @@ async function sellSpecificEntry(marketId, side, shares, entryKey){
   const cooldownLeft = getTradeCooldownSecsLeft();
   if(cooldownLeft > 0){ notify(`⏳ Espera ${cooldownLeft}s antes de operar`,"info"); return; }
 
-  // Verificar shares disponibles desde DB
+  // Verificar disponibilidad desde DB
   const [posRes, sellRes] = await Promise.all([
     db.from("positions").select("yes_shares,no_shares").eq("market_id",marketId).eq("user_id",u.id).maybeSingle(),
     db.from("orders").select("shares,filled").eq("market_id",marketId).eq("user_id",u.id).eq("order_type","sell").eq("side",side).eq("is_mm",false).in("status",["open","partial"]),
@@ -8656,43 +8775,119 @@ async function sellSpecificEntry(marketId, side, shares, entryKey){
   const avail  = Math.max(0, totalShares - inSale);
 
   if(shares > avail + 0.001){
-    notify(`Solo tienes ${avail.toFixed(2)} sh ${side} disponibles (${inSale.toFixed(2)} ya en venta)`,"error");
+    notify(`Solo tienes ${avail.toFixed(2)} sh ${side} disponibles`,"error");
     return;
   }
 
   const pWin    = side==="YES" ? (m.priceYes||0.5) : (1-(m.priceYes||0.5));
   const receive = Math.round(shares * pWin * 0.97 * 100)/100;
+  const sideLabel = side==="YES" ? "SÍ" : "NO";
+  const color   = side==="YES" ? "var(--yes)" : "var(--no)";
+  const bg      = side==="YES" ? "rgba(0,168,112,.08)" : "rgba(224,40,74,.08)";
+  const border  = side==="YES" ? "rgba(0,168,112,.3)" : "rgba(224,40,74,.3)";
 
-  if(!confirm(
-    `¿Poner ${shares.toFixed(2)} shares ${side} a la venta?\n\n` +
-    `Precio actual del mercado: ${(pWin*100).toFixed(1)}%\n` +
-    `Recibirías si se ejecuta ahora: $${receive.toFixed(2)} (precio actual − 3% comisión)\n\n` +
-    `La venta se ejecuta cada vez que alguien compre ${side} y el MM no tenga inventario (P2).`
-  )) return;
+  // Modal con estética de la plataforma
+  showSellConfirmModal({
+    shares, side, sideLabel, color, bg, border,
+    pWin, receive, marketId, marketTitle: m.title,
+    onConfirm: async () => {
+      try{
+        notify("⏳ Poniendo shares en venta…","info");
+        const {data, error} = await db.rpc("match_order",{
+          p_market_id: marketId, p_user_id: u.id,
+          p_side: side, p_action: "sell",
+          p_dollars: 0, p_shares: shares, p_price: 0,
+        });
+        if(error || !data){ notify("Error: "+(error?.message||"intenta de nuevo"),"error"); return; }
+        if(data.error){ notify(data.error,"error"); return; }
+        STATE.tradeCooldownUntil = Date.now() + 10000;
+        notify(`✅ ${shares.toFixed(2)} sh ${sideLabel} puestas en venta`,"success");
+        setTimeout(async ()=>{
+          await Promise.all([loadMyTrades(marketId), loadPendingOrders(marketId)]);
+          loadSellOrdersPanel(marketId);
+          if(STATE.view==="pro") loadProMyTrades(marketId);
+          loadProSentiment(marketId);
+        }, 300);
+        setTimeout(async ()=>{
+          await Promise.all([loadMyTrades(marketId), loadPendingOrders(marketId)]);
+          loadSellOrdersPanel(marketId);
+          if(STATE.view==="pro") loadProMyTrades(marketId);
+        }, 900);
+      }catch(err){
+        notify("Error: "+(err?.message||err),"error");
+      }
+    }
+  });
+}
 
-  try{
-    notify("⏳ Poniendo shares en venta…","info");
-    const {data, error} = await db.rpc("match_order",{
-      p_market_id: marketId, p_user_id: u.id,
-      p_side: side, p_action: "sell",
-      p_dollars: 0, p_shares: shares, p_price: 0,
-    });
-    if(error || !data){ notify("Error: "+(error?.message||"intenta de nuevo"),"error"); return; }
-    if(data.error){ notify(data.error,"error"); return; }
-    STATE.tradeCooldownUntil = Date.now() + 10000;
-    notify(`✅ ${shares.toFixed(2)} shares ${side} puestas en venta al precio actual`,"success");
-    setTimeout(async ()=>{
-      await Promise.all([loadMyTrades(marketId), loadPendingOrders(marketId)]);
-      if(STATE.view==="pro") loadProMyTrades(marketId);
-      loadProSentiment(marketId);
-    }, 300);
-    setTimeout(async ()=>{
-      await Promise.all([loadMyTrades(marketId), loadPendingOrders(marketId)]);
-      if(STATE.view==="pro") loadProMyTrades(marketId);
-    }, 900);
-  }catch(err){
-    notify("Error: "+(err?.message||err),"error");
-  }
+function showSellConfirmModal({shares, side, sideLabel, color, bg, border, pWin, receive, marketId, marketTitle, onConfirm}){
+  // Eliminar modal previo si existe
+  document.getElementById("sell-confirm-overlay")?.remove();
+
+  const overlay = document.createElement("div");
+  overlay.id = "sell-confirm-overlay";
+  overlay.style.cssText = `position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:9999;
+    display:flex;align-items:center;justify-content:center;padding:16px;backdrop-filter:blur(4px)`;
+
+  overlay.innerHTML = `
+    <div style="background:var(--card);border-radius:16px;padding:28px 24px;max-width:380px;width:100%;
+        box-shadow:0 20px 60px rgba(0,0,0,0.35);border:1px solid var(--border)">
+      <!-- Cabecera -->
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px">
+        <div style="width:40px;height:40px;border-radius:12px;background:${bg};border:1px solid ${border};
+            display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0">🏷️</div>
+        <div>
+          <div style="font-weight:800;font-size:15px;color:var(--text)">Poner a la venta</div>
+          <div style="font-size:12px;color:var(--muted);margin-top:1px">${escHtml(marketTitle||"")}</div>
+        </div>
+      </div>
+
+      <!-- Resumen de la orden -->
+      <div style="background:${bg};border:1px solid ${border};border-radius:12px;padding:16px;margin-bottom:16px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <span style="font-size:13px;color:var(--muted)">Shares a vender</span>
+          <span style="font-size:18px;font-weight:900;color:${color}">${shares.toFixed(2)} sh ${sideLabel}</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <span style="font-size:13px;color:var(--muted)">Precio actual</span>
+          <span style="font-size:14px;font-weight:700">${(pWin*100).toFixed(1)}%</span>
+        </div>
+        <div style="border-top:1px solid ${border};padding-top:10px;margin-top:4px">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <span style="font-size:13px;color:var(--muted)">Recibirías (−3%)</span>
+            <span style="font-size:18px;font-weight:900;color:var(--yes)">$${receive.toFixed(2)}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Aviso -->
+      <div style="background:rgba(245,158,11,.07);border:1px solid rgba(245,158,11,.25);
+          border-radius:10px;padding:10px 12px;margin-bottom:20px;font-size:11px;color:var(--muted)">
+        ⏳ La venta se ejecuta via P2 cada vez que alguien compre ${sideLabel} y el MM no tenga inventario.
+        Puedes cancelar mientras no se ejecute.
+      </div>
+
+      <!-- Botones -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <button id="sell-modal-cancel"
+          style="padding:12px;border-radius:10px;border:1.5px solid var(--border);
+            background:transparent;color:var(--muted);font-size:14px;font-weight:600;cursor:pointer">
+          Cancelar
+        </button>
+        <button id="sell-modal-confirm"
+          style="padding:12px;border-radius:10px;border:none;
+            background:${color};color:#fff;font-size:14px;font-weight:800;cursor:pointer">
+          Confirmar venta
+        </button>
+      </div>
+    </div>`;
+
+  document.body.appendChild(overlay);
+
+  const close = () => overlay.remove();
+  overlay.querySelector("#sell-modal-cancel").onclick = close;
+  overlay.querySelector("#sell-modal-confirm").onclick = () => { close(); onConfirm(); };
+  overlay.onclick = (e) => { if(e.target===overlay) close(); };
 }
 
 function renderFeed(){
@@ -10885,19 +11080,19 @@ async function executeTrade(){
 
       STATE.tradeCooldownUntil = Date.now() + 10000;
       closeTradeModal(); render();
-      // Primer intento rápido (por si el DOM ya está listo)
       setTimeout(async ()=>{
         loadPendingOrders(marketId);
         loadMyTrades(marketId);
+        loadSellOrdersPanel(marketId);
         startSellRefresh(marketId);
         loadProSentiment(marketId);
         const u2=getUser(); if(u2) loadRealPositionForSell(marketId, u2.id);
         if(STATE.view==="pro") loadProMyTrades(marketId);
       }, 300);
-      // Segundo intento con más delay — garantiza que render() terminó
       setTimeout(async ()=>{
         loadPendingOrders(marketId);
         loadMyTrades(marketId);
+        loadSellOrdersPanel(marketId);
         const u2=getUser(); if(u2) loadRealPositionForSell(marketId, u2.id);
         if(STATE.view==="pro") loadProMyTrades(marketId);
       }, 800);
