@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'supabase/functions/**'
+      - '.github/workflows/deploy-functions.yml'
 
 jobs:
   deploy:
