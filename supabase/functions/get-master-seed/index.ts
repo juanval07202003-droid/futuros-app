@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { getPublicKey } from "https://esm.sh/@noble/ed25519@1.7.3";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -9,7 +10,7 @@ const CORS = {
 async function mnemonicToSeed(mnemonic) {
   const enc = new TextEncoder();
   const key = await crypto.subtle.importKey("raw", enc.encode(mnemonic.normalize("NFKD")), "PBKDF2", false, ["deriveBits"]);
-  const bits = await crypto.subtle.deriveBits({ name:"PBKDF2", hash:"SHA-512", salt:enc.encode("mnemonic"), iterations:2048 }, key, 512);
+  const bits = await crypto.subtle.deriveBits({name:"PBKDF2",hash:"SHA-512",salt:enc.encode("mnemonic"),iterations:2048}, key, 512);
   return new Uint8Array(bits);
 }
 
@@ -38,11 +39,6 @@ function base58(bytes) {
   return r;
 }
 
-async function pubKey(priv) {
-  const k = await crypto.subtle.importKey("raw", priv, {name:"Ed25519"}, true, ["sign"]);
-  return new Uint8Array(await crypto.subtle.exportKey("spki", k)).slice(-32);
-}
-
 const json = (data, status=200) => new Response(JSON.stringify(data), {status, headers:{...CORS,"Content-Type":"application/json"}});
 
 serve(async (req) => {
@@ -56,7 +52,6 @@ serve(async (req) => {
   if (!seedPhrase) return json({error:"Seed no configurada"}, 500);
 
   const sb = createClient(Deno.env.get("SUPABASE_URL"), Deno.env.get("SUPABASE_SERVICE_ROLE_KEY"));
-
   const { data: user } = await sb.from("users").select("id,deposit_sol_address").eq("id",user_id).maybeSingle();
   if (!user) return json({error:"Usuario no encontrado"}, 404);
 
@@ -67,9 +62,10 @@ serve(async (req) => {
 
   try {
     const seed = await mnemonicToSeed(seedPhrase);
-    const priv = await deriveSolanaKey(seed, index ?? 0);
-    const pub = await pubKey(priv);
-    const address = base58(pub);
+    const privateKey = await deriveSolanaKey(seed, index ?? 0);
+    // @noble/ed25519 getPublicKey acepta directamente la clave privada de 32 bytes
+    const publicKey = await getPublicKey(privateKey);
+    const address = base58(publicKey);
 
     await sb.from("users").update({deposit_sol_address:address, deposit_index:index??0, deposit_memo:null}).eq("id",user_id);
 
@@ -88,7 +84,7 @@ serve(async (req) => {
     console.log("OK user="+user_id+" addr="+address+" idx="+(index??0));
     return json({address});
   } catch(e) {
-    console.error("Error:", e.message, e.stack);
+    console.error("Error:", e.message);
     return json({error:e.message}, 500);
   }
 });
