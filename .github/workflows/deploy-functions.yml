@@ -19,14 +19,21 @@ jobs:
 
       - name: Deploy helius-webhook
         run: |
-          supabase functions deploy helius-webhook \
+          supabase functions deploy helius-webhook \\
             --project-ref ${{ secrets.SUPABASE_PROJECT_ID }}
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
 
       - name: Deploy generate-deposit-address
         run: |
-          supabase functions deploy generate-deposit-address \
+          supabase functions deploy generate-deposit-address \\
+            --project-ref ${{ secrets.SUPABASE_PROJECT_ID }}
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+
+      - name: Deploy get-master-seed
+        run: |
+          supabase functions deploy get-master-seed \\
             --project-ref ${{ secrets.SUPABASE_PROJECT_ID }}
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
