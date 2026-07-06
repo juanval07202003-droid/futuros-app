@@ -10,6 +10,9 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_ID }}
     steps:
       - uses: actions/checkout@v3
 
@@ -17,23 +20,8 @@ jobs:
         with:
           version: latest
 
-      - name: Deploy helius-webhook
+      - name: Deploy all Edge Functions
         run: |
-          supabase functions deploy helius-webhook \\
-            --project-ref ${{ secrets.SUPABASE_PROJECT_ID }}
-        env:
-          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-
-      - name: Deploy generate-deposit-address
-        run: |
-          supabase functions deploy generate-deposit-address \\
-            --project-ref ${{ secrets.SUPABASE_PROJECT_ID }}
-        env:
-          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-
-      - name: Deploy get-master-seed
-        run: |
-          supabase functions deploy get-master-seed \\
-            --project-ref ${{ secrets.SUPABASE_PROJECT_ID }}
-        env:
-          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          supabase functions deploy helius-webhook --project-ref $PROJECT_REF
+          supabase functions deploy generate-deposit-address --project-ref $PROJECT_REF
+          supabase functions deploy get-master-seed --project-ref $PROJECT_REF
