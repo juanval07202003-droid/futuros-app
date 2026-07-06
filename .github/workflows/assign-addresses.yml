@@ -1,0 +1,27 @@
+name: Assign Deposit Addresses
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 * * * *'
+
+jobs:
+  assign:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+
+      - name: Install dependencies
+        run: cd scripts && npm install
+
+      - name: Assign Solana deposit addresses
+        run: node scripts/assign-deposit-addresses.js
+        env:
+          SUPABASE_URL: https://xskobwfwxvvazteuwggb.supabase.co
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          MASTER_SEED_SOL: ${{ secrets.MASTER_SEED_SOL }}
+          HELIUS_API_KEY: ${{ secrets.HELIUS_API_KEY }}
