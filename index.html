@@ -9804,36 +9804,34 @@ const PLATFORM_EVM_ADDRESS  = "0xB715A691A5ab505e492eEB6DeFd66F750d9199E3";
 // Si no tiene, usa la dirección maestra como fallback mientras
 // el admin o la Edge Function le asigna una individual.
 async function getUserDepositAddress(userId){
-  // Buscar en STATE primero (caché)
   const u = getUser();
-  if(u?.depositSolAddress) return {
+  if(u?.depositSolAddress && u?.depositMemo) return {
     sol: u.depositSolAddress,
-    evm: u.depositEvmAddress || PLATFORM_EVM_ADDRESS
+    evm: u.depositEvmAddress || PLATFORM_EVM_ADDRESS,
+    memo: u.depositMemo
   };
 
-  // Buscar en DB
   const {data} = await db.from("users")
-    .select("deposit_sol_address,deposit_evm_address")
+    .select("deposit_sol_address,deposit_evm_address,deposit_memo")
     .eq("id", userId)
     .maybeSingle();
 
-  if(data?.deposit_sol_address){
-    // Guardar en STATE
+  if(data?.deposit_sol_address && data?.deposit_memo){
     const ui = STATE.users.findIndex(x=>x.id===userId);
     if(ui>=0) STATE.users[ui]={...STATE.users[ui],
       depositSolAddress: data.deposit_sol_address,
-      depositEvmAddress: data.deposit_evm_address||PLATFORM_EVM_ADDRESS
+      depositEvmAddress: data.deposit_evm_address||PLATFORM_EVM_ADDRESS,
+      depositMemo: data.deposit_memo
     };
     return {
       sol: data.deposit_sol_address,
-      evm: data.deposit_evm_address||PLATFORM_EVM_ADDRESS
+      evm: data.deposit_evm_address||PLATFORM_EVM_ADDRESS,
+      memo: data.deposit_memo
     };
   }
 
-  // No tiene dirección — llamar a la Edge Function para generarla
+  // Llamar a generate-deposit-address
   try{
-    const {data:session} = await db.auth.getSession();
-    const token = session?.session?.access_token;
     const res = await fetch(
       `${SUPABASE_URL}/functions/v1/generate-deposit-address`,
       {
@@ -9842,24 +9840,24 @@ async function getUserDepositAddress(userId){
           "Content-Type":"application/json",
           "Authorization": `Bearer ${SUPABASE_KEY}`
         },
-        body: JSON.stringify({ user_id: userId, network: "both" })
+        body: JSON.stringify({ user_id: userId })
       }
     );
     const result = await res.json();
-    if(result.sol){
+    if(result.sol && result.memo){
       const ui = STATE.users.findIndex(x=>x.id===userId);
       if(ui>=0) STATE.users[ui]={...STATE.users[ui],
         depositSolAddress: result.sol,
-        depositEvmAddress: result.evm||PLATFORM_EVM_ADDRESS
+        depositEvmAddress: result.evm||PLATFORM_EVM_ADDRESS,
+        depositMemo: result.memo
       };
-      return { sol: result.sol, evm: result.evm||PLATFORM_EVM_ADDRESS };
+      return { sol: result.sol, evm: result.evm||PLATFORM_EVM_ADDRESS, memo: result.memo };
     }
   }catch(e){
     console.error("Error generando dirección:", e);
   }
 
-  // Fallback a dirección maestra
-  return { sol: PLATFORM_SOL_ADDRESS, evm: PLATFORM_EVM_ADDRESS };
+  return { sol: PLATFORM_SOL_ADDRESS, evm: PLATFORM_EVM_ADDRESS, memo: null };
 }
 
 function openDeposit(){
@@ -9965,6 +9963,33 @@ async function renderDepositModal(){
           Solana · USDC
         </div>
       </div>
+
+      <!-- Memo obligatorio -->
+      ${addr.memo?`
+      <div style="background:rgba(245,158,11,.08);border:2px solid #f59e0b;
+          border-radius:14px;padding:14px;margin-bottom:14px">
+        <div style="font-size:11px;font-weight:700;color:#f59e0b;text-transform:uppercase;
+            letter-spacing:.5px;margin-bottom:6px">
+          ⚠️ Tu código de referencia — OBLIGATORIO
+        </div>
+        <div style="display:flex;align-items:center;gap:10px">
+          <div id="dep-memo-box"
+            style="font-family:monospace;font-size:20px;font-weight:900;
+              letter-spacing:3px;color:var(--text);flex:1;cursor:pointer"
+            onclick="depCopyMemo()">
+            ${addr.memo}
+          </div>
+          <button onclick="depCopyMemo()"
+            style="padding:7px 14px;border-radius:8px;border:1.5px solid #f59e0b;
+              background:transparent;color:#f59e0b;cursor:pointer;font-size:12px;font-weight:700">
+            📋 Copiar
+          </button>
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.5">
+          Incluye este código en el campo <strong>Memo / Nota / Referencia</strong> de tu transferencia.
+          Sin él no podemos identificar tu depósito.
+        </div>
+      </div>`:""}
 
       <!-- Dirección única del usuario -->
       <div style="background:rgba(153,69,255,.05);border:1.5px solid rgba(153,69,255,.2);
@@ -10142,6 +10167,23 @@ function depUpdateLabel(){
   const netName = net==="sol" ? "Solana" : "Polygon";
   const tokName = tok==="usdc"?"USDC":tok==="usdt"?"USDT":"SOL";
   label.textContent = `${netName} (${tokName})`;
+}
+
+function depCopyMemo(){
+  const memo = STATE._depositAddr?.memo;
+  if(!memo) return;
+  navigator.clipboard.writeText(memo).then(()=>{
+    notify("📋 Código copiado — pégalo en el campo Memo/Nota de tu transferencia","success");
+    const box = document.getElementById("dep-memo-box");
+    if(box){ box.style.color="var(--yes)"; setTimeout(()=>{ box.style.color="var(--text)"; }, 1500); }
+  }).catch(()=>{
+    const ta = document.createElement("textarea");
+    ta.value = memo;
+    ta.style.position="fixed";ta.style.opacity="0";
+    document.body.appendChild(ta);ta.select();
+    document.execCommand("copy");document.body.removeChild(ta);
+    notify("📋 Código copiado","success");
+  });
 }
 
 function depCopyAddress(){
