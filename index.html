@@ -9813,9 +9813,12 @@ const PLATFORM_EVM_ADDRESS  = "0xB715A691A5ab505e492eEB6DeFd66F750d9199E3";
 // Si no tiene, usa la dirección maestra como fallback mientras
 // el admin o la Edge Function le asigna una individual.
 async function getUserDepositAddress(userId){
-  // Buscar en STATE primero
+  // Buscar en STATE primero (caché)
   const u = getUser();
-  if(u?.depositSolAddress) return {sol: u.depositSolAddress, evm: u.depositEvmAddress||PLATFORM_EVM_ADDRESS};
+  if(u?.depositSolAddress) return {
+    sol: u.depositSolAddress,
+    evm: u.depositEvmAddress || PLATFORM_EVM_ADDRESS
+  };
 
   // Buscar en DB
   const {data} = await db.from("users")
@@ -9830,12 +9833,42 @@ async function getUserDepositAddress(userId){
       depositSolAddress: data.deposit_sol_address,
       depositEvmAddress: data.deposit_evm_address||PLATFORM_EVM_ADDRESS
     };
-    return {sol: data.deposit_sol_address, evm: data.deposit_evm_address||PLATFORM_EVM_ADDRESS};
+    return {
+      sol: data.deposit_sol_address,
+      evm: data.deposit_evm_address||PLATFORM_EVM_ADDRESS
+    };
   }
 
-  // No tiene dirección asignada aún — usar la dirección maestra
-  // (el admin puede asignar individuales desde el panel)
-  return {sol: PLATFORM_SOL_ADDRESS, evm: PLATFORM_EVM_ADDRESS};
+  // No tiene dirección — llamar a la Edge Function para generarla
+  try{
+    const {data:session} = await db.auth.getSession();
+    const token = session?.session?.access_token;
+    const res = await fetch(
+      `${SUPABASE_URL}/functions/v1/generate-deposit-address`,
+      {
+        method:"POST",
+        headers:{
+          "Content-Type":"application/json",
+          "Authorization": `Bearer ${SUPABASE_ANON_KEY}`
+        },
+        body: JSON.stringify({ user_id: userId, network: "both" })
+      }
+    );
+    const result = await res.json();
+    if(result.sol){
+      const ui = STATE.users.findIndex(x=>x.id===userId);
+      if(ui>=0) STATE.users[ui]={...STATE.users[ui],
+        depositSolAddress: result.sol,
+        depositEvmAddress: result.evm||PLATFORM_EVM_ADDRESS
+      };
+      return { sol: result.sol, evm: result.evm||PLATFORM_EVM_ADDRESS };
+    }
+  }catch(e){
+    console.error("Error generando dirección:", e);
+  }
+
+  // Fallback a dirección maestra
+  return { sol: PLATFORM_SOL_ADDRESS, evm: PLATFORM_EVM_ADDRESS };
 }
 
 function openDeposit(){
@@ -9855,17 +9888,39 @@ function closeDepositModal(){
 function closeDepositIfBg(e){if(e.target.id==="deposit-overlay")closeDepositModal();}
 
 async function renderDepositModal(){
-  const existing=document.getElementById("deposit-overlay");if(existing)existing.remove();
+  const existing = document.getElementById("deposit-overlay");
+  if(existing) existing.remove();
   const u = getUser();
   if(!u) return;
 
-  // Cargar dirección del usuario
+  // Mostrar modal con estado de carga mientras se genera/obtiene la dirección
+  const loadingHtml = `<div class="overlay" id="deposit-overlay" onclick="closeDepositIfBg(event)">
+    <div class="modal" onclick="event.stopPropagation()"
+      style="max-width:460px;border-radius:20px;padding:28px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
+        <div style="font-weight:900;font-size:18px">💳 Depositar fondos</div>
+        <button onclick="closeDepositModal()" style="background:transparent;border:none;color:var(--muted);font-size:22px;cursor:pointer">×</button>
+      </div>
+      <div style="text-align:center;padding:40px 0;color:var(--muted)">
+        <div style="font-size:32px;margin-bottom:12px">⏳</div>
+        <div>Generando tu dirección de depósito...</div>
+      </div>
+    </div>
+  </div>`;
+  document.body.insertAdjacentHTML("beforeend", loadingHtml);
+
+  // Obtener/generar dirección del usuario
   const addr = await getUserDepositAddress(u.id);
   STATE._depositAddr = addr;
 
-  const html=`<div class="overlay" id="deposit-overlay" onclick="closeDepositIfBg(event)">
+  // Reemplazar con el modal completo
+  document.getElementById("deposit-overlay")?.remove();
+  fetchCryptoPrices();
+
+  const html = `<div class="overlay" id="deposit-overlay" onclick="closeDepositIfBg(event)">
     <div class="modal" onclick="event.stopPropagation()"
-      style="max-width:460px;max-height:90vh;overflow-y:auto;border-radius:20px;padding:28px">
+      style="max-width:460px;max-height:92vh;overflow-y:auto;border-radius:20px;padding:28px">
+
       <!-- Header -->
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
         <div style="font-weight:900;font-size:18px">💳 Depositar fondos</div>
@@ -9874,7 +9929,7 @@ async function renderDepositModal(){
       </div>
 
       <!-- Selector de red -->
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:20px">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:18px">
         <button id="dep-btn-sol" onclick="depSelectNetwork('sol')"
           style="padding:12px;border-radius:12px;border:2px solid #9945ff;
             background:rgba(153,69,255,.08);font-weight:700;font-size:13px;
@@ -9890,7 +9945,7 @@ async function renderDepositModal(){
       </div>
 
       <!-- Selector de token -->
-      <div id="dep-token-selector" style="display:flex;gap:8px;margin-bottom:20px">
+      <div id="dep-token-selector" style="display:flex;gap:8px;margin-bottom:18px">
         <button onclick="depSelectToken('usdc')" id="dep-tok-usdc"
           style="flex:1;padding:9px;border-radius:10px;border:2px solid #2775ca;
             background:rgba(39,117,202,.08);font-weight:700;font-size:12px;cursor:pointer;color:#2775ca">
@@ -9908,19 +9963,32 @@ async function renderDepositModal(){
         </button>
       </div>
 
-      <!-- Dirección de depósito -->
-      <div style="background:rgba(153,69,255,.05);border:1.5px solid rgba(153,69,255,.25);
-          border-radius:14px;padding:16px;margin-bottom:16px">
-        <div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;
-            letter-spacing:.5px;margin-bottom:10px">
-          Tu dirección de depósito — <span id="dep-network-label">Solana (USDC)</span>
+      <!-- QR Code -->
+      <div style="text-align:center;margin-bottom:16px">
+        <div id="dep-qr-container"
+          style="display:inline-block;padding:12px;background:#fff;border-radius:16px;
+            box-shadow:0 2px 16px rgba(0,0,0,.12)">
+          <canvas id="dep-qr-canvas" width="180" height="180"></canvas>
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-top:8px" id="dep-network-label">
+          Solana · USDC
+        </div>
+      </div>
+
+      <!-- Dirección única del usuario -->
+      <div style="background:rgba(153,69,255,.05);border:1.5px solid rgba(153,69,255,.2);
+          border-radius:14px;padding:14px;margin-bottom:14px">
+        <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;
+            letter-spacing:.5px;margin-bottom:8px">
+          🔐 Tu dirección única de depósito
         </div>
         <div id="dep-address-box"
           style="font-family:monospace;font-size:11px;word-break:break-all;
             background:var(--card);border:1px solid var(--border);border-radius:8px;
             padding:10px 12px;color:var(--text);margin-bottom:10px;
-            cursor:pointer;user-select:all"
-          onclick="depCopyAddress()">${addr.sol}
+            cursor:pointer;user-select:all;line-height:1.6"
+          onclick="depCopyAddress()">
+          ${addr.sol}
         </div>
         <button onclick="depCopyAddress()"
           style="width:100%;padding:10px;border-radius:8px;border:1.5px solid var(--border);
@@ -9929,38 +9997,31 @@ async function renderDepositModal(){
         </button>
       </div>
 
-      <!-- Instrucciones claras -->
+      <!-- Instrucciones -->
       <div style="background:var(--card2);border:1px solid var(--border);border-radius:12px;
-          padding:14px;margin-bottom:16px;font-size:12px;color:var(--muted);line-height:1.8">
-        <div style="font-weight:700;color:var(--text);margin-bottom:8px">
-          ✅ Cómo depositar — 3 pasos simples:
-        </div>
-        1. Copia tu dirección de arriba<br>
-        2. Desde cualquier wallet o exchange, envía a esa dirección<br>
-        3. Tu balance se acredita automáticamente en segundos<br>
-        <br>
-        <span id="dep-network-info">
-          🔷 Red: <strong>Solana</strong> · Compatible con Phantom, Trust Wallet,
-          Binance, Coinbase, Kraken o cualquier exchange
-        </span>
+          padding:14px;margin-bottom:14px;font-size:12px;color:var(--muted);line-height:1.8">
+        <div style="font-weight:700;color:var(--text);margin-bottom:8px">✅ 3 pasos simples:</div>
+        <div>1. Escanea el QR o copia tu dirección</div>
+        <div>2. Envía desde <strong>cualquier wallet o exchange</strong><br>
+          &nbsp;&nbsp;&nbsp;&nbsp;(Binance, Coinbase, Phantom, MetaMask...)</div>
+        <div>3. Tu balance se acredita <strong>automáticamente</strong></div>
       </div>
 
       <!-- Aviso de red -->
       <div id="dep-network-warning"
         style="background:#fff8e6;border:1px solid #f5c842;border-radius:8px;
-          padding:10px 12px;font-size:11px;color:#92620a;margin-bottom:16px">
-        ⚠️ Envía SOLO en la red <strong>Solana</strong>.
-        Enviar en otra red puede resultar en pérdida de fondos.
+          padding:9px 12px;font-size:11px;color:#92620a;margin-bottom:14px">
+        ⚠️ Envía SOLO en la red <strong>Solana</strong>. No uses Ethereum ni Polygon.
       </div>
 
-      <!-- Monto mínimo y tiempo -->
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px">
+      <!-- Stats -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px">
         <div style="background:var(--card2);border-radius:8px;padding:10px;text-align:center">
-          <div style="font-size:10px;color:var(--muted)">Monto mínimo</div>
+          <div style="font-size:10px;color:var(--muted)">Mínimo</div>
           <div style="font-size:14px;font-weight:700">$1.00</div>
         </div>
         <div style="background:var(--card2);border-radius:8px;padding:10px;text-align:center">
-          <div style="font-size:10px;color:var(--muted)">Tiempo estimado</div>
+          <div style="font-size:10px;color:var(--muted)">Acreditación</div>
           <div style="font-size:14px;font-weight:700">~5-30 seg</div>
         </div>
       </div>
@@ -9973,14 +10034,58 @@ async function renderDepositModal(){
     </div>
   </div>`;
 
-  document.body.insertAdjacentHTML("beforeend",html);
+  document.body.insertAdjacentHTML("beforeend", html);
   depSelectNetwork(STATE.depositNetwork||"sol");
   depSelectToken(STATE.depositToken||"usdc");
+  // Generar QR inicial
+  setTimeout(()=>depUpdateQR(), 100);
+}
+
+function depUpdateQR(){
+  const net  = STATE.depositNetwork||"sol";
+  const addr = STATE._depositAddr;
+  if(!addr) return;
+  const address = net==="sol" ? addr.sol : addr.evm;
+  if(!address) return;
+
+  // Generar QR usando la librería qrcode
+  const canvas = document.getElementById("dep-qr-canvas");
+  if(!canvas) return;
+
+  // Usar CDN de qrcode.js si no está cargado
+  if(typeof QRCode === "undefined"){
+    const script = document.createElement("script");
+    script.src = "https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js";
+    script.onload = () => _renderQR(address, canvas);
+    document.head.appendChild(script);
+  } else {
+    _renderQR(address, canvas);
+  }
+}
+
+function _renderQR(text, canvas){
+  try {
+    // Limpiar canvas anterior
+    const container = document.getElementById("dep-qr-container");
+    if(!container) return;
+    container.innerHTML = "";
+    // Crear nuevo QR
+    new QRCode(container, {
+      text: text,
+      width: 180,
+      height: 180,
+      colorDark: "#000000",
+      colorLight: "#ffffff",
+      correctLevel: QRCode.CorrectLevel.M
+    });
+  } catch(e) {
+    console.error("QR error:", e);
+  }
 }
 
 function depSelectNetwork(net){
   STATE.depositNetwork = net;
-  const addr = STATE._depositAddr || {sol:PLATFORM_SOL_ADDRESS, evm:PLATFORM_EVM_ADDRESS};
+  const addr = STATE._depositAddr || {sol:"", evm:""};
   const isSol = net==="sol";
 
   // Actualizar botones de red
@@ -10020,6 +10125,7 @@ function depSelectNetwork(net){
     : "⚠️ Envía SOLO en la red <strong>Polygon</strong>. No uses Ethereum mainnet.";
 
   depUpdateLabel();
+  setTimeout(depUpdateQR, 50);
 }
 
 function depSelectToken(tok){
