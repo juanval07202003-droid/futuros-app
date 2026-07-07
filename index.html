@@ -12041,11 +12041,51 @@ function depPreviewQR(input){
   if(!file) return;
   const reader = new FileReader();
   reader.onload = e => {
+    // Mostrar preview
     document.getElementById("aw-qr-img").src = e.target.result;
     document.getElementById("aw-qr-preview").style.display = "block";
     document.getElementById("aw-qr-placeholder").style.display = "none";
-    // Guardar base64 en STATE para enviarlo
     STATE._pendingQRBase64 = e.target.result;
+
+    // Leer el QR automáticamente con jsQR
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width  = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0);
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+
+      // Cargar jsQR dinámicamente si no está disponible
+      const tryDecode = () => {
+        if(typeof jsQR === "undefined") return;
+        const result = jsQR(imageData.data, imageData.width, imageData.height);
+        if(result && result.data){
+          const addrField = document.getElementById("aw-address");
+          if(addrField && !addrField.value){
+            addrField.value = result.data.trim();
+            addrField.style.borderColor = "var(--yes)";
+            setTimeout(()=> addrField.style.borderColor = "", 2000);
+            notify("✅ Dirección leída del QR automáticamente","success");
+          } else if(addrField && addrField.value){
+            notify("QR leído: " + result.data.trim().substring(0,20) + "...","info");
+          }
+        } else {
+          notify("No se pudo leer el QR. Escribe la dirección manualmente.","info");
+        }
+      };
+
+      if(typeof jsQR !== "undefined"){
+        tryDecode();
+      } else {
+        const script = document.createElement("script");
+        script.src = "https://cdnjs.cloudflare.com/ajax/libs/jsqr/1.4.0/jsQR.js";
+        script.onload = tryDecode;
+        document.head.appendChild(script);
+      }
+    };
+    img.src = e.target.result;
   };
   reader.readAsDataURL(file);
 }
@@ -12234,6 +12274,37 @@ function adminEditQRPreview(id, input){
       newImg.style.cssText="width:80px;height:80px;object-fit:contain";
       img.replaceWith(newImg);
     }
+
+    // Leer QR y rellenar dirección si está vacía
+    const imgEl = new Image();
+    imgEl.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = imgEl.width; canvas.height = imgEl.height;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(imgEl, 0, 0);
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const tryDecode = () => {
+        if(typeof jsQR === "undefined") return;
+        const result = jsQR(imageData.data, imageData.width, imageData.height);
+        if(result?.data){
+          const addrField = document.getElementById("edit-addr-"+id);
+          if(addrField){
+            addrField.value = result.data.trim();
+            addrField.style.borderColor = "var(--yes)";
+            setTimeout(()=> addrField.style.borderColor="",2000);
+            notify("✅ Dirección leída del QR","success");
+          }
+        }
+      };
+      if(typeof jsQR !== "undefined"){ tryDecode(); }
+      else {
+        const s = document.createElement("script");
+        s.src = "https://cdnjs.cloudflare.com/ajax/libs/jsqr/1.4.0/jsQR.js";
+        s.onload = tryDecode;
+        document.head.appendChild(s);
+      }
+    };
+    imgEl.src = e.target.result;
   };
   reader.readAsDataURL(file);
 }
