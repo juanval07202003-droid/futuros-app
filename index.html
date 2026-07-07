@@ -9796,315 +9796,115 @@ function renderWallet(){
 // Las direcciones de usuario se derivan de esta via índice secuencial
 // guardado en la DB — no se usa derivación criptográfica en el cliente
 // por seguridad. La asignación la hace el servidor (Edge Function o admin).
-const PLATFORM_SOL_ADDRESS = "8nb7zhT7F3ScEquCzhaQu2uQzgLtj4edgyXiATZyaUcN";
-const PLATFORM_EVM_ADDRESS  = "0xB715A691A5ab505e492eEB6DeFd66F750d9199E3";
-
-// Obtener o crear la dirección de depósito del usuario actual.
-// Si ya tiene una asignada en la DB, la devuelve directamente.
-// Si no tiene, usa la dirección maestra como fallback mientras
-// el admin o la Edge Function le asigna una individual.
-async function getUserDepositAddress(userId){
-  const u = getUser();
-  if(u?.depositSolAddress && u?.depositMemo) return {
-    sol: u.depositSolAddress,
-    evm: u.depositEvmAddress || PLATFORM_EVM_ADDRESS,
-    memo: u.depositMemo
-  };
-
-  const {data} = await db.from("users")
-    .select("deposit_sol_address,deposit_evm_address,deposit_memo")
-    .eq("id", userId)
-    .maybeSingle();
-
-  if(data?.deposit_sol_address && data?.deposit_memo){
-    const ui = STATE.users.findIndex(x=>x.id===userId);
-    if(ui>=0) STATE.users[ui]={...STATE.users[ui],
-      depositSolAddress: data.deposit_sol_address,
-      depositEvmAddress: data.deposit_evm_address||PLATFORM_EVM_ADDRESS,
-      depositMemo: data.deposit_memo
-    };
-    return {
-      sol: data.deposit_sol_address,
-      evm: data.deposit_evm_address||PLATFORM_EVM_ADDRESS,
-      memo: data.deposit_memo
-    };
-  }
-
-  // Llamar a generate-deposit-address
-  try{
-    const res = await fetch(
-      `${SUPABASE_URL}/functions/v1/generate-deposit-address`,
-      {
-        method:"POST",
-        headers:{
-          "Content-Type":"application/json",
-          "Authorization": `Bearer ${SUPABASE_KEY}`
-        },
-        body: JSON.stringify({ user_id: userId })
-      }
-    );
-    const result = await res.json();
-    if(result.sol && result.memo){
-      const ui = STATE.users.findIndex(x=>x.id===userId);
-      if(ui>=0) STATE.users[ui]={...STATE.users[ui],
-        depositSolAddress: result.sol,
-        depositEvmAddress: result.evm||PLATFORM_EVM_ADDRESS,
-        depositMemo: result.memo
-      };
-      return { sol: result.sol, evm: result.evm||PLATFORM_EVM_ADDRESS, memo: result.memo };
-    }
-  }catch(e){
-    console.error("Error generando dirección:", e);
-  }
-
-  return { sol: PLATFORM_SOL_ADDRESS, evm: PLATFORM_EVM_ADDRESS, memo: null };
-}
+// ═══════════════════════════════════════════════════════════════════
+// SISTEMA DE DEPÓSITO — Pool de wallets rotativas
+// ═══════════════════════════════════════════════════════════════════
+// El admin registra hasta 20 wallets Solana y 20 wallets Polygon.
+// Cuando un usuario abre "Depositar", el sistema bloquea una wallet
+// disponible por 5 minutos, muestra el QR y la dirección, y verifica
+// automáticamente vía Helius/Solscan si llegó el monto exacto.
+// ═══════════════════════════════════════════════════════════════════
 
 function openDeposit(){
   if(!getUser()){navigate("auth");return;}
-  STATE.depositOpen=true;
-  STATE.depositStep=1;
-  STATE.depositNetwork="sol"; // sol o poly
-  STATE.depositToken="usdc";  // usdc, usdt, sol
+  STATE.depositNetwork = STATE.depositNetwork||"sol";
+  STATE.depositAmount  = 10;
   renderDepositModal();
-  fetchCryptoPrices();
 }
 
 function closeDepositModal(){
-  STATE.depositOpen=false;
-  const el=document.getElementById("deposit-overlay");if(el)el.remove();
+  // Si había una sesión de depósito activa, liberarla
+  if(STATE.depositSession){
+    clearInterval(STATE.depositSession.timer);
+    // Liberar la wallet en DB
+    db.from("deposit_wallets")
+      .update({locked_until:null, locked_by:null, expected_amount:null})
+      .eq("id", STATE.depositSession.walletId)
+      .then(()=>{});
+    STATE.depositSession = null;
+  }
+  STATE.depositOpen = false;
+  const el = document.getElementById("deposit-overlay");
+  if(el) el.remove();
 }
-function closeDepositIfBg(e){if(e.target.id==="deposit-overlay")closeDepositModal();}
+
+function closeDepositIfBg(e){
+  if(e.target.id==="deposit-overlay") closeDepositModal();
+}
 
 async function renderDepositModal(){
-  const existing = document.getElementById("deposit-overlay");
-  if(existing) existing.remove();
+  document.getElementById("deposit-overlay")?.remove();
   const u = getUser();
   if(!u) return;
-
-  // Mostrar modal con estado de carga mientras se genera/obtiene la dirección
-  const loadingHtml = `<div class="overlay" id="deposit-overlay" onclick="closeDepositIfBg(event)">
-    <div class="modal" onclick="event.stopPropagation()"
-      style="max-width:460px;border-radius:20px;padding:28px">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
-        <div style="font-weight:900;font-size:18px">💳 Depositar fondos</div>
-        <button onclick="closeDepositModal()" style="background:transparent;border:none;color:var(--muted);font-size:22px;cursor:pointer">×</button>
-      </div>
-      <div style="text-align:center;padding:40px 0;color:var(--muted)">
-        <div style="font-size:32px;margin-bottom:12px">⏳</div>
-        <div>Generando tu dirección de depósito...</div>
-      </div>
-    </div>
-  </div>`;
-  document.body.insertAdjacentHTML("beforeend", loadingHtml);
-
-  // Obtener/generar dirección del usuario
-  const addr = await getUserDepositAddress(u.id);
-  STATE._depositAddr = addr;
-
-  // Reemplazar con el modal completo
-  document.getElementById("deposit-overlay")?.remove();
-  fetchCryptoPrices();
 
   const html = `<div class="overlay" id="deposit-overlay" onclick="closeDepositIfBg(event)">
     <div class="modal" onclick="event.stopPropagation()"
       style="max-width:460px;max-height:92vh;overflow-y:auto;border-radius:20px;padding:28px">
-
-      <!-- Header -->
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
         <div style="font-weight:900;font-size:18px">💳 Depositar fondos</div>
-        <button onclick="closeDepositModal()"
-          style="background:transparent;border:none;color:var(--muted);font-size:22px;cursor:pointer">×</button>
+        <button onclick="closeDepositModal()" style="background:transparent;border:none;color:var(--muted);font-size:22px;cursor:pointer">×</button>
       </div>
 
       <!-- Selector de red -->
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:18px">
-        <button id="dep-btn-sol" onclick="depSelectNetwork('sol')"
+        <button id="dep-btn-sol" onclick="depSetNetwork('sol')"
           style="padding:12px;border-radius:12px;border:2px solid #9945ff;
-            background:rgba(153,69,255,.08);font-weight:700;font-size:13px;
-            cursor:pointer;color:#9945ff">
+            background:rgba(153,69,255,.08);font-weight:700;font-size:13px;cursor:pointer;color:#9945ff">
           ◎ Solana
         </button>
-        <button id="dep-btn-poly" onclick="depSelectNetwork('poly')"
+        <button id="dep-btn-poly" onclick="depSetNetwork('poly')"
           style="padding:12px;border-radius:12px;border:2px solid var(--border);
-            background:var(--card2);font-weight:700;font-size:13px;
-            cursor:pointer;color:var(--muted)">
+            background:var(--card2);font-weight:700;font-size:13px;cursor:pointer;color:var(--muted)">
           ⬡ Polygon
         </button>
       </div>
 
-      <!-- Selector de token -->
-      <div id="dep-token-selector" style="display:flex;gap:8px;margin-bottom:18px">
-        <button onclick="depSelectToken('usdc')" id="dep-tok-usdc"
-          style="flex:1;padding:9px;border-radius:10px;border:2px solid #2775ca;
-            background:rgba(39,117,202,.08);font-weight:700;font-size:12px;cursor:pointer;color:#2775ca">
-          USDC
-        </button>
-        <button onclick="depSelectToken('usdt')" id="dep-tok-usdt"
-          style="flex:1;padding:9px;border-radius:10px;border:2px solid var(--border);
-            background:var(--card2);font-weight:700;font-size:12px;cursor:pointer;color:var(--muted)">
-          USDT
-        </button>
-        <button onclick="depSelectToken('sol')" id="dep-tok-sol"
-          style="flex:1;padding:9px;border-radius:10px;border:2px solid var(--border);
-            background:var(--card2);font-weight:700;font-size:12px;cursor:pointer;color:var(--muted)">
-          SOL
-        </button>
-      </div>
-
-      <!-- QR Code -->
-      <div style="text-align:center;margin-bottom:16px">
-        <div id="dep-qr-container"
-          style="display:inline-block;padding:12px;background:#fff;border-radius:16px;
-            box-shadow:0 2px 16px rgba(0,0,0,.12)">
-          <canvas id="dep-qr-canvas" width="180" height="180"></canvas>
-        </div>
-        <div style="font-size:11px;color:var(--muted);margin-top:8px" id="dep-network-label">
-          Solana · USDC
-        </div>
-      </div>
-
-      <!-- Memo obligatorio -->
-      ${addr.memo?`
-      <div style="background:rgba(245,158,11,.08);border:2px solid #f59e0b;
-          border-radius:14px;padding:14px;margin-bottom:14px">
-        <div style="font-size:11px;font-weight:700;color:#f59e0b;text-transform:uppercase;
-            letter-spacing:.5px;margin-bottom:6px">
-          ⚠️ Tu código de referencia — OBLIGATORIO
-        </div>
-        <div style="display:flex;align-items:center;gap:10px">
-          <div id="dep-memo-box"
-            style="font-family:monospace;font-size:20px;font-weight:900;
-              letter-spacing:3px;color:var(--text);flex:1;cursor:pointer"
-            onclick="depCopyMemo()">
-            ${addr.memo}
+      <!-- Monto -->
+      <div style="margin-bottom:18px">
+        <div style="font-size:12px;color:var(--muted);margin-bottom:6px">Monto a depositar (USD)</div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input id="dep-amount-input" type="number" min="1" step="1" value="10"
+            style="flex:1;padding:11px 14px;border:1.5px solid var(--border);border-radius:10px;
+              background:var(--bg);color:var(--text);font-size:18px;font-weight:700"
+            onchange="STATE.depositAmount=parseFloat(this.value)||10"/>
+          <div style="display:flex;gap:6px">
+            ${[5,10,25,50,100].map(v=>`
+              <button onclick="document.getElementById('dep-amount-input').value=${v};STATE.depositAmount=${v}"
+                style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);
+                  background:var(--card2);font-size:12px;font-weight:700;cursor:pointer">
+                $${v}
+              </button>`).join("")}
           </div>
-          <button onclick="depCopyMemo()"
-            style="padding:7px 14px;border-radius:8px;border:1.5px solid #f59e0b;
-              background:transparent;color:#f59e0b;cursor:pointer;font-size:12px;font-weight:700">
-            📋 Copiar
-          </button>
-        </div>
-        <div style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.5">
-          Incluye este código en el campo <strong>Memo / Nota / Referencia</strong> de tu transferencia.
-          Sin él no podemos identificar tu depósito.
-        </div>
-      </div>`:""}
-
-      <!-- Dirección única del usuario -->
-      <div style="background:rgba(153,69,255,.05);border:1.5px solid rgba(153,69,255,.2);
-          border-radius:14px;padding:14px;margin-bottom:14px">
-        <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;
-            letter-spacing:.5px;margin-bottom:8px">
-          🔐 Tu dirección única de depósito
-        </div>
-        <div id="dep-address-box"
-          style="font-family:monospace;font-size:11px;word-break:break-all;
-            background:var(--card);border:1px solid var(--border);border-radius:8px;
-            padding:10px 12px;color:var(--text);margin-bottom:10px;
-            cursor:pointer;user-select:all;line-height:1.6"
-          onclick="depCopyAddress()">
-          ${addr.sol}
-        </div>
-        <button onclick="depCopyAddress()"
-          style="width:100%;padding:10px;border-radius:8px;border:1.5px solid var(--border);
-            background:transparent;color:var(--text);cursor:pointer;font-size:13px;font-weight:600">
-          📋 Copiar dirección
-        </button>
-      </div>
-
-      <!-- Instrucciones -->
-      <div style="background:var(--card2);border:1px solid var(--border);border-radius:12px;
-          padding:14px;margin-bottom:14px;font-size:12px;color:var(--muted);line-height:1.8">
-        <div style="font-weight:700;color:var(--text);margin-bottom:8px">✅ 3 pasos simples:</div>
-        <div>1. Escanea el QR o copia tu dirección</div>
-        <div>2. Envía desde <strong>cualquier wallet o exchange</strong><br>
-          &nbsp;&nbsp;&nbsp;&nbsp;(Binance, Coinbase, Phantom, MetaMask...)</div>
-        <div>3. Tu balance se acredita <strong>automáticamente</strong></div>
-      </div>
-
-      <!-- Aviso de red -->
-      <div id="dep-network-warning"
-        style="background:#fff8e6;border:1px solid #f5c842;border-radius:8px;
-          padding:9px 12px;font-size:11px;color:#92620a;margin-bottom:14px">
-        ⚠️ Envía SOLO en la red <strong>Solana</strong>. No uses Ethereum ni Polygon.
-      </div>
-
-      <!-- Stats -->
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px">
-        <div style="background:var(--card2);border-radius:8px;padding:10px;text-align:center">
-          <div style="font-size:10px;color:var(--muted)">Mínimo</div>
-          <div style="font-size:14px;font-weight:700">$1.00</div>
-        </div>
-        <div style="background:var(--card2);border-radius:8px;padding:10px;text-align:center">
-          <div style="font-size:10px;color:var(--muted)">Acreditación</div>
-          <div style="font-size:14px;font-weight:700">~5-30 seg</div>
         </div>
       </div>
 
-      <button onclick="closeDepositModal()"
-        style="width:100%;padding:12px;border-radius:10px;border:1.5px solid var(--border);
-          background:transparent;color:var(--muted);cursor:pointer;font-size:13px">
-        Cerrar
+      <!-- Botón generar dirección -->
+      <button onclick="depRequestWallet()"
+        style="width:100%;padding:15px;border-radius:12px;border:none;
+          background:linear-gradient(135deg,#9945ff,#7c3aed);color:#fff;
+          font-weight:800;font-size:16px;cursor:pointer;margin-bottom:12px">
+        📋 Generar dirección de depósito
       </button>
+
+      <!-- Contenedor donde aparece la dirección/QR -->
+      <div id="dep-wallet-container"></div>
+
+      <div style="background:var(--card2);border:1px solid var(--border);border-radius:8px;
+          padding:10px 12px;font-size:11px;color:var(--muted)">
+        • La dirección se reserva por <strong>5 minutos</strong><br>
+        • Envía exactamente el monto indicado desde cualquier wallet o exchange<br>
+        • El balance se acredita automáticamente al detectar la transferencia
+      </div>
     </div>
   </div>`;
 
   document.body.insertAdjacentHTML("beforeend", html);
-  depSelectNetwork(STATE.depositNetwork||"sol");
-  depSelectToken(STATE.depositToken||"usdc");
-  // Generar QR inicial
-  setTimeout(()=>depUpdateQR(), 100);
+  depSetNetwork(STATE.depositNetwork||"sol");
 }
 
-function depUpdateQR(){
-  const net  = STATE.depositNetwork||"sol";
-  const addr = STATE._depositAddr;
-  if(!addr) return;
-  const address = net==="sol" ? addr.sol : addr.evm;
-  if(!address) return;
-
-  // Generar QR usando la librería qrcode
-  const canvas = document.getElementById("dep-qr-canvas");
-  if(!canvas) return;
-
-  // Usar CDN de qrcode.js si no está cargado
-  if(typeof QRCode === "undefined"){
-    const script = document.createElement("script");
-    script.src = "https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js";
-    script.onload = () => _renderQR(address, canvas);
-    document.head.appendChild(script);
-  } else {
-    _renderQR(address, canvas);
-  }
-}
-
-function _renderQR(text, canvas){
-  try {
-    // Limpiar canvas anterior
-    const container = document.getElementById("dep-qr-container");
-    if(!container) return;
-    container.innerHTML = "";
-    // Crear nuevo QR
-    new QRCode(container, {
-      text: text,
-      width: 180,
-      height: 180,
-      colorDark: "#000000",
-      colorLight: "#ffffff",
-      correctLevel: QRCode.CorrectLevel.M
-    });
-  } catch(e) {
-    console.error("QR error:", e);
-  }
-}
-
-function depSelectNetwork(net){
+function depSetNetwork(net){
   STATE.depositNetwork = net;
-  const addr = STATE._depositAddr || {sol:"", evm:""};
   const isSol = net==="sol";
-
-  // Actualizar botones de red
   const btnSol  = document.getElementById("dep-btn-sol");
   const btnPoly = document.getElementById("dep-btn-poly");
   if(btnSol){
@@ -10117,195 +9917,266 @@ function depSelectNetwork(net){
     btnPoly.style.background = !isSol ? "rgba(130,71,229,.08)" : "var(--card2)";
     btnPoly.style.color = !isSol ? "#8247e5" : "var(--muted)";
   }
-
-  // Ocultar SOL si estamos en Polygon
-  const tokSol = document.getElementById("dep-tok-sol");
-  if(tokSol) tokSol.style.display = isSol ? "" : "none";
-
-  // Cambiar token a usdc si estábamos en sol y cambiamos a poly
-  if(!isSol && STATE.depositToken==="sol") depSelectToken("usdc");
-
-  // Actualizar dirección en el cuadro
-  const box = document.getElementById("dep-address-box");
-  if(box) box.textContent = isSol ? (addr.sol||"Generando...") : (addr.evm||"Generando...");
-
-  // Actualizar info de red
-  const info = document.getElementById("dep-network-info");
-  if(info) info.innerHTML = isSol
-    ? "◎ Red: <strong>Solana</strong> · Compatible con Phantom, Trust Wallet, Binance, Coinbase, cualquier exchange"
-    : "⬡ Red: <strong>Polygon</strong> · Compatible con MetaMask, Phantom, Trust Wallet, Binance, Coinbase, cualquier exchange";
-
-  const warn = document.getElementById("dep-network-warning");
-  if(warn) warn.innerHTML = isSol
-    ? "⚠️ Envía SOLO en la red <strong>Solana</strong>. No uses Ethereum ni Polygon."
-    : "⚠️ Envía SOLO en la red <strong>Polygon</strong>. No uses Ethereum mainnet.";
-
-  depUpdateLabel();
-  setTimeout(depUpdateQR, 50);
-}
-
-function depSelectToken(tok){
-  STATE.depositToken = tok;
-  const tokens = ["usdc","usdt","sol"];
-  const colors  = {usdc:"#2775ca", usdt:"#26a17b", sol:"#9945ff"};
-  tokens.forEach(t => {
-    const btn = document.getElementById("dep-tok-"+t);
-    if(!btn) return;
-    const active = t===tok;
-    btn.style.border = active ? `2px solid ${colors[t]}` : "2px solid var(--border)";
-    btn.style.background = active ? `rgba(${t==="usdc"?"39,117,202":t==="usdt"?"38,161,123":"153,69,255"},.08)` : "var(--card2)";
-    btn.style.color = active ? colors[t] : "var(--muted)";
-  });
-  depUpdateLabel();
-}
-
-function depUpdateLabel(){
-  const net = STATE.depositNetwork||"sol";
-  const tok = STATE.depositToken||"usdc";
-  const label = document.getElementById("dep-network-label");
-  if(!label) return;
-  const netName = net==="sol" ? "Solana" : "Polygon";
-  const tokName = tok==="usdc"?"USDC":tok==="usdt"?"USDT":"SOL";
-  label.textContent = `${netName} (${tokName})`;
-}
-
-function depCopyMemo(){
-  const memo = STATE._depositAddr?.memo;
-  if(!memo) return;
-  navigator.clipboard.writeText(memo).then(()=>{
-    notify("📋 Código copiado — pégalo en el campo Memo/Nota de tu transferencia","success");
-    const box = document.getElementById("dep-memo-box");
-    if(box){ box.style.color="var(--yes)"; setTimeout(()=>{ box.style.color="var(--text)"; }, 1500); }
-  }).catch(()=>{
-    const ta = document.createElement("textarea");
-    ta.value = memo;
-    ta.style.position="fixed";ta.style.opacity="0";
-    document.body.appendChild(ta);ta.select();
-    document.execCommand("copy");document.body.removeChild(ta);
-    notify("📋 Código copiado","success");
-  });
-}
-
-function depCopyAddress(){
-  const box = document.getElementById("dep-address-box");
-  const addr = box?.textContent?.trim();
-  if(!addr) return;
-  navigator.clipboard.writeText(addr).then(()=>{
-    notify("📋 Dirección copiada — pégala en tu wallet o exchange","success");
-    // Flash visual
-    if(box){
-      box.style.background = "rgba(0,168,112,.12)";
-      setTimeout(()=>{ box.style.background = "var(--card)"; }, 1500);
-    }
-  }).catch(()=>{
-    // Fallback para móvil
-    const ta = document.createElement("textarea");
-    ta.value = addr;
-    ta.style.position="fixed";ta.style.opacity="0";
-    document.body.appendChild(ta);
-    ta.select();
-    document.execCommand("copy");
-    document.body.removeChild(ta);
-    notify("📋 Dirección copiada","success");
-  });
-}
-
-// Al crear un usuario nuevo, generar y asignar su dirección de depósito.
-// Por ahora usa la dirección maestra con un índice para distinguir.
-// En producción, el admin debe asignar wallets HD derivadas reales.
-async function assignDepositAddressIfNeeded(userId){
-  const {data} = await db.from("users")
-    .select("deposit_sol_address")
-    .eq("id", userId)
-    .maybeSingle();
-
-  if(data?.deposit_sol_address) return; // ya tiene
-
-  // Usar la dirección maestra — el admin asignará individuales
-  // después de configurar el sistema HD wallet
-  await db.rpc("assign_deposit_address",{
-    p_user_id:     userId,
-    p_sol_address: PLATFORM_SOL_ADDRESS,
-    p_evm_address: PLATFORM_EVM_ADDRESS,
-  });
-}
-
-async function fetchCryptoPrices(){
-  // Intentar múltiples fuentes en orden
-  const sources = [
-    async () => {
-      const r = await fetch("https://api.coingecko.com/api/v3/simple/price?ids=matic-network,solana&vs_currencies=usd",{signal:AbortSignal.timeout(4000)});
-      const d = await r.json();
-      return { matic: d?.["matic-network"]?.usd, sol: d?.["solana"]?.usd };
-    },
-    async () => {
-      const [rm, rs] = await Promise.all([
-        fetch("https://price.jup.ag/v6/price?ids=SOL",{signal:AbortSignal.timeout(4000)}),
-        fetch("https://api.binance.com/api/v3/ticker/price?symbol=MATICUSDT",{signal:AbortSignal.timeout(4000)})
-      ]);
-      const sol = (await rm.json())?.data?.SOL?.price;
-      const matic = parseFloat((await rs.json())?.price);
-      return { matic, sol };
-    },
-    async () => {
-      const r = await fetch("https://min-api.cryptocompare.com/data/pricemulti?fsyms=MATIC,SOL&tsyms=USD",{signal:AbortSignal.timeout(4000)});
-      const d = await r.json();
-      return { matic: d?.MATIC?.USD, sol: d?.SOL?.USD };
-    }
-  ];
-
-  for(const source of sources){
-    try{
-      const { matic, sol } = await source();
-      if(matic && matic > 0) STATE.maticPrice = matic;
-      if(sol   && sol   > 0) STATE.solPrice   = sol;
-      if(STATE.maticPrice && STATE.solPrice) break; // ambos obtenidos
-    }catch(e){
-      console.warn("[Prices] fuente fallida, intentando siguiente…", e.message);
-    }
+  // Actualizar botón generar con el color de la red
+  const genBtn = document.querySelector('#deposit-overlay button[onclick="depRequestWallet()"]');
+  if(genBtn){
+    genBtn.style.background = isSol
+      ? "linear-gradient(135deg,#9945ff,#7c3aed)"
+      : "linear-gradient(135deg,#8247e5,#6030c0)";
   }
-
-  // Fallback si todas las fuentes fallaron
-  if(!STATE.maticPrice) STATE.maticPrice = 0.10;
-  if(!STATE.solPrice)   STATE.solPrice   = 130;
-
-  // NOTA: antes esto intentaba refrescar el paso 2 (monto en USD) cada
-  // vez que llegaba el precio de MATIC/SOL — pero renderDepositStep2()
-  // nunca muestra ese precio (solo se usa en el paso 3, donde sí se
-  // lee STATE.maticPrice/solPrice directamente al renderizarse), así
-  // que ese refresco no aportaba nada visible y solo causaba que el
-  // <input> de monto personalizado se reconstruyera mientras el
-  // usuario tecleaba, cerrando el teclado virtual en móvil. Se quitó.
-}
-function closeDepositModal(){
-  STATE.depositOpen=false;
-  const el=document.getElementById("deposit-overlay");if(el)el.remove();
 }
 
-function openWithdraw(){
-  if(!getUser()){navigate("auth");return;}
-  STATE.withdrawOpen=true;
-  STATE.withdrawAmount="";
-  STATE.withdrawMethod = STATE.withdrawMethod||"usdc";
-  STATE.withdrawAddress = getWithdrawAddressForMethod(STATE.withdrawMethod);
-  renderWithdrawModal();
-}
-
-// Devuelve la dirección correcta según el método de retiro
-function getWithdrawAddressForMethod(method){
+async function depRequestWallet(){
   const u = getUser();
-  if(!u) return "";
-  const isSolana = method==="sol"||method==="solana";
-  if(isSolana){
-    // Para SOL usar la dirección Solana (base58, no empieza con 0x)
-    const solAddr = u.walletAddress && !u.walletAddress.startsWith("0x") ? u.walletAddress : null;
-    return solAddr || "";
-  } else {
-    // Para MATIC/USDC/USDT usar dirección EVM (0x...)
-    const evmAddr = u.evmAddress || (u.walletAddress?.startsWith("0x") ? u.walletAddress : null);
-    return evmAddr || "";
+  if(!u) return;
+  const net = STATE.depositNetwork||"sol";
+  const amount = STATE.depositAmount || parseFloat(document.getElementById("dep-amount-input")?.value)||10;
+  if(amount < 1){ notify("El monto mínimo es $1","error"); return; }
+
+  const container = document.getElementById("dep-wallet-container");
+  if(!container) return;
+  container.innerHTML = `<div style="text-align:center;padding:20px;color:var(--muted)">⏳ Buscando dirección disponible...</div>`;
+
+  // Bloquear una wallet disponible por 5 minutos
+  const lockUntil = new Date(Date.now() + 5*60*1000).toISOString();
+  const {data: wallets, error} = await db.from("deposit_wallets")
+    .select("*")
+    .eq("network", net)
+    .eq("active", true)
+    .or(`locked_until.is.null,locked_until.lt.${new Date().toISOString()}`)
+    .limit(1);
+
+  if(error || !wallets?.length){
+    container.innerHTML = `<div style="background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.3);
+        border-radius:10px;padding:14px;font-size:13px;color:var(--no);text-align:center">
+      ⏳ Todas las direcciones están en uso. Intenta en unos minutos.
+    </div>`;
+    return;
+  }
+
+  const wallet = wallets[0];
+  // Bloquear esta wallet
+  await db.from("deposit_wallets").update({
+    locked_until: lockUntil,
+    locked_by: u.id,
+    expected_amount: amount,
+    expected_network: net,
+  }).eq("id", wallet.id);
+
+  // Guardar sesión activa
+  STATE.depositSession = {
+    walletId: wallet.id,
+    address: wallet.address,
+    qrUrl: wallet.qr_url,
+    network: net,
+    amount,
+    expiresAt: Date.now() + 5*60*1000,
+    userId: u.id,
+    timer: null,
+  };
+
+  depShowWalletUI();
+
+  // Verificar automáticamente cada 10 segundos
+  STATE.depositSession.timer = setInterval(()=> depCheckPayment(), 10000);
+
+  // Cuenta regresiva visual
+  depStartCountdown();
+}
+
+function depShowWalletUI(){
+  const s = STATE.depositSession;
+  if(!s) return;
+  const container = document.getElementById("dep-wallet-container");
+  if(!container) return;
+
+  const isSol = s.network==="sol";
+  const netColor = isSol ? "#9945ff" : "#8247e5";
+  const netName  = isSol ? "Solana" : "Polygon";
+  const remaining = Math.max(0, Math.ceil((s.expiresAt - Date.now())/1000));
+  const mins = Math.floor(remaining/60);
+  const secs = remaining%60;
+
+  container.innerHTML = `
+    <!-- Contador -->
+    <div style="background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.3);
+        border-radius:10px;padding:10px 14px;margin-bottom:14px;
+        display:flex;justify-content:space-between;align-items:center">
+      <span style="font-size:12px;font-weight:700;color:#f59e0b">⏱ Dirección reservada</span>
+      <span id="dep-countdown" style="font-size:16px;font-weight:900;color:#f59e0b;font-family:monospace">
+        ${mins}:${String(secs).padStart(2,"0")}
+      </span>
+    </div>
+
+    <!-- Monto exacto -->
+    <div style="text-align:center;margin-bottom:14px">
+      <div style="font-size:11px;color:var(--muted)">Envía exactamente</div>
+      <div style="font-size:36px;font-weight:900;color:${netColor}">$${s.amount.toFixed(2)}</div>
+      <div style="font-size:11px;color:var(--muted)">vía red ${netName}</div>
+    </div>
+
+    <!-- QR -->
+    ${s.qrUrl ? `
+    <div style="text-align:center;margin-bottom:14px">
+      <div style="display:inline-block;padding:12px;background:#fff;border-radius:14px;
+          box-shadow:0 2px 16px rgba(0,0,0,.1)">
+        <img src="${s.qrUrl}" width="180" height="180" alt="QR depósito"
+          style="display:block;border-radius:4px"/>
+      </div>
+    </div>`:""}
+
+    <!-- Dirección -->
+    <div style="background:rgba(153,69,255,.05);border:1.5px solid rgba(153,69,255,.2);
+        border-radius:12px;padding:14px;margin-bottom:14px">
+      <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;
+          letter-spacing:.5px;margin-bottom:8px">📋 Dirección de depósito</div>
+      <div id="dep-address-box"
+        style="font-family:monospace;font-size:11px;word-break:break-all;
+          background:var(--card);border:1px solid var(--border);border-radius:8px;
+          padding:10px;color:var(--text);margin-bottom:8px;cursor:pointer"
+        onclick="depCopyAddress('${s.address}')">
+        ${s.address}
+      </div>
+      <button onclick="depCopyAddress('${s.address}')"
+        style="width:100%;padding:10px;border-radius:8px;border:1.5px solid var(--border);
+          background:transparent;color:var(--text);cursor:pointer;font-size:13px;font-weight:600">
+        📋 Copiar dirección
+      </button>
+    </div>
+
+    <!-- Estado verificación -->
+    <div id="dep-status" style="text-align:center;font-size:12px;color:var(--muted);margin-bottom:12px">
+      🔍 Verificando automáticamente cada 10 segundos...
+    </div>
+  `;
+}
+
+function depCopyAddress(address){
+  navigator.clipboard.writeText(address).then(()=>{
+    notify("📋 Dirección copiada","success");
+    const box = document.getElementById("dep-address-box");
+    if(box){ box.style.background="rgba(0,168,112,.1)"; setTimeout(()=>box.style.background="var(--card)",1200); }
+  }).catch(()=>{
+    const ta = document.createElement("textarea");
+    ta.value=address; ta.style.position="fixed"; ta.style.opacity="0";
+    document.body.appendChild(ta); ta.select(); document.execCommand("copy");
+    document.body.removeChild(ta); notify("📋 Dirección copiada","success");
+  });
+}
+
+function depStartCountdown(){
+  const tick = ()=>{
+    const s = STATE.depositSession;
+    if(!s) return;
+    const remaining = Math.max(0, Math.ceil((s.expiresAt - Date.now())/1000));
+    const mins = Math.floor(remaining/60);
+    const secs = remaining%60;
+    const el = document.getElementById("dep-countdown");
+    if(el) el.textContent = `${mins}:${String(secs).padStart(2,"0")}`;
+    if(remaining <= 0){
+      clearInterval(s.timer);
+      // Tiempo expirado — liberar wallet
+      db.from("deposit_wallets").update({
+        locked_until:null, locked_by:null, expected_amount:null
+      }).eq("id",s.walletId).then(()=>{});
+      STATE.depositSession = null;
+      const container = document.getElementById("dep-wallet-container");
+      if(container) container.innerHTML = `<div style="background:rgba(239,68,68,.08);
+        border:1px solid rgba(239,68,68,.3);border-radius:10px;padding:14px;
+        text-align:center;font-size:13px;color:var(--no)">
+        ⏰ Tiempo expirado. Genera una nueva dirección para intentar de nuevo.
+      </div>
+      <button onclick="depRequestWallet()" style="width:100%;margin-top:10px;padding:12px;
+        border-radius:10px;border:none;background:var(--yes);color:#fff;
+        font-weight:700;cursor:pointer">Intentar de nuevo</button>`;
+    }
+  };
+  setInterval(tick, 1000);
+}
+
+async function depCheckPayment(){
+  const s = STATE.depositSession;
+  if(!s) return;
+  const statusEl = document.getElementById("dep-status");
+
+  try{
+    // Verificar en Helius si llegó dinero a esta dirección
+    const HK = "7965959a-4d5e-4e1e-a18c-28f889be6b2f";
+    const url = `https://api.helius.xyz/v0/addresses/${s.address}/transactions?api-key=${HK}&type=TRANSFER&limit=5`;
+    const txs = await fetch(url).then(r=>r.json());
+
+    for(const tx of (txs||[])){
+      // Verificar que la TX sea reciente (últimos 6 minutos)
+      const txTime = tx.timestamp ? tx.timestamp*1000 : 0;
+      if(Date.now() - txTime > 6*60*1000) continue;
+
+      // Buscar transferencia de token al monto correcto
+      for(const t of (tx.tokenTransfers||[])){
+        if(t.toUserAccount !== s.address) continue;
+        const decimals = 6; // USDC/USDT
+        const received = t.tokenAmount / Math.pow(10, decimals);
+        if(Math.abs(received - s.amount) < 0.01){
+          // ¡Pago detectado!
+          await depCreditUser(tx.signature, received, t.mint);
+          return;
+        }
+      }
+      // SOL nativo
+      for(const t of (tx.nativeTransfers||[])){
+        if(t.toUserAccount !== s.address) continue;
+        const solPrice = STATE.solPrice || 150;
+        const solAmount = t.amount / 1e9;
+        const usdAmount = solAmount * solPrice;
+        if(Math.abs(usdAmount - s.amount) < s.amount * 0.05){ // 5% tolerancia para precio SOL
+          await depCreditUser(tx.signature, usdAmount, "SOL");
+          return;
+        }
+      }
+    }
+
+    if(statusEl) statusEl.innerHTML = `🔍 Verificando... última revisión ${new Date().toLocaleTimeString()}`;
+  }catch(e){
+    console.error("Error verificando pago:", e);
   }
 }
+
+async function depCreditUser(txHash, amount, token){
+  const s = STATE.depositSession;
+  if(!s) return;
+
+  clearInterval(s.timer);
+  STATE.depositSession = null;
+
+  // Acreditar
+  const {data, error} = await db.rpc("credit_deposit",{
+    p_user_id: s.userId,
+    p_amount: Math.round(amount*100)/100,
+    p_tx_hash: txHash,
+    p_network: s.network==="sol"?"SOL":"POLY",
+    p_token: token,
+  });
+
+  if(error){ notify("Error acreditando: "+error.message,"error"); return; }
+  if(data?.already_credited){ notify("Esta TX ya fue acreditada","info"); return; }
+
+  // Liberar la wallet
+  await db.from("deposit_wallets").update({
+    locked_until:null, locked_by:null, expected_amount:null
+  }).eq("id",s.walletId);
+
+  // Actualizar balance en STATE
+  const {data:freshU} = await db.from("users").select("balance").eq("id",s.userId).maybeSingle();
+  if(freshU){
+    const ui = STATE.users.findIndex(x=>x.id===s.userId);
+    if(ui>=0) STATE.users[ui]={...STATE.users[ui], balance: freshU.balance};
+    render();
+  }
+
+  notify(`💰 ¡Depósito confirmado! +$${amount.toFixed(2)} acreditados`,"success");
+  closeDepositModal();
+}
+
+
 function closeWithdrawModal(){
   STATE.withdrawOpen=false;
   const el=document.getElementById("withdraw-overlay");if(el)el.remove();
@@ -11638,6 +11509,7 @@ function renderAdmin(){
     {k:"news",      l:`Última hora`,                    count:STATE.breakingIds.length||null},
     {k:"trending",  l:`Tendencias`,                     count:null},
     {k:"stw",       l:`🪙 Token STW`,                       count:null},
+    {k:"wallets",   l:`💳 Wallets`,                         count:null},
   ];
   let content="";
   if(STATE.adminTab==="accounts")   content=renderAdminAccounts();
@@ -11655,12 +11527,189 @@ function renderAdmin(){
   if(STATE.adminTab==="news")       content=renderAdminNews();
   if(STATE.adminTab==="trending")   content=renderAdminTrending();
   if(STATE.adminTab==="stw")         content=renderAdminSTW();
+  if(STATE.adminTab==="wallets"){    content=renderAdminWallets(); setTimeout(loadAdminWallets,100); }
   return`<div class="container">
   <div style="display:flex;align-items:center;gap:12px;margin-bottom:28px"><h2>${t("admin_title")}</h2>${mkTag("ADMIN","var(--gold)")}</div>
   <div class="admin-tabs">${tabs.map(tb=>`<button class="admin-tab${STATE.adminTab===tb.k?" active":""}" onclick="setAdminTab('${tb.k}')">${tb.l}${tb.count!=null?`<span class="tab-count">${tb.count}</span>`:""}</button>`).join("")}</div>
   ${content}
 </div>`;
 }
+function renderAdminWallets(){
+  return`<div>
+    <h3 style="margin-bottom:20px">💳 Wallets de depósito</h3>
+
+    <!-- Agregar nueva wallet -->
+    <div class="card" style="padding:20px;margin-bottom:24px">
+      <div style="font-weight:700;font-size:14px;margin-bottom:16px">➕ Agregar wallet</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+        <div>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Red</div>
+          <select id="aw-network" style="width:100%;padding:10px;border-radius:8px;
+              border:1.5px solid var(--border);background:var(--bg);color:var(--text);font-size:13px">
+            <option value="sol">◎ Solana</option>
+            <option value="poly">⬡ Polygon</option>
+          </select>
+        </div>
+        <div>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Etiqueta (opcional)</div>
+          <input id="aw-label" placeholder="ej. Phantom Wallet 1" type="text"
+            style="width:100%;box-sizing:border-box;padding:10px;border-radius:8px;
+              border:1.5px solid var(--border);background:var(--bg);color:var(--text);font-size:13px"/>
+        </div>
+      </div>
+      <div style="margin-bottom:12px">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Dirección de la wallet *</div>
+        <input id="aw-address" placeholder="Dirección Solana o Polygon" type="text"
+          style="width:100%;box-sizing:border-box;padding:10px;border-radius:8px;
+            border:1.5px solid var(--border);background:var(--bg);color:var(--text);
+            font-size:12px;font-family:monospace"/>
+      </div>
+      <div style="margin-bottom:16px">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:4px">
+          URL del QR (imagen del QR que apunta a esa dirección)
+        </div>
+        <input id="aw-qr" placeholder="https://... (URL de imagen del QR)" type="url"
+          style="width:100%;box-sizing:border-box;padding:10px;border-radius:8px;
+            border:1.5px solid var(--border);background:var(--bg);color:var(--text);font-size:13px"/>
+        <div style="font-size:10px;color:var(--muted);margin-top:4px">
+          Genera el QR en qr-code-generator.com, sube la imagen a imgur.com y pega la URL aquí
+        </div>
+      </div>
+      <button onclick="adminAddWallet()"
+        style="padding:11px 24px;border-radius:10px;border:none;background:var(--yes);
+          color:#fff;font-weight:700;cursor:pointer;font-size:13px">
+        Guardar wallet
+      </button>
+    </div>
+
+    <!-- Lista de wallets existentes -->
+    <div id="admin-wallets-list">
+      <div style="text-align:center;color:var(--muted);padding:20px">Cargando wallets...</div>
+    </div>
+  </div>`;
+}
+
+async function loadAdminWallets(){
+  const el = document.getElementById("admin-wallets-list");
+  if(!el) return;
+
+  const {data: wallets, error} = await db.from("deposit_wallets")
+    .select("*")
+    .order("network")
+    .order("created_at");
+
+  if(error || !wallets?.length){
+    el.innerHTML = `<div style="text-align:center;color:var(--muted);padding:20px">
+      No hay wallets registradas aún. Agrega tu primera wallet arriba.
+    </div>`;
+    return;
+  }
+
+  const solWallets  = wallets.filter(w=>w.network==="sol");
+  const polyWallets = wallets.filter(w=>w.network==="poly");
+
+  const renderSection = (title, wList, netColor) => `
+    <div style="margin-bottom:20px">
+      <div style="font-weight:700;font-size:13px;color:${netColor};margin-bottom:10px">
+        ${title} (${wList.length})
+      </div>
+      ${wList.map(w => {
+        const isLocked = w.locked_until && new Date(w.locked_until) > new Date();
+        const lockedMin = isLocked ? Math.ceil((new Date(w.locked_until)-Date.now())/60000) : 0;
+        return `<div class="card" style="padding:14px;margin-bottom:8px;
+            opacity:${w.active?1:.5}">
+          <div style="display:flex;align-items:flex-start;gap:12px">
+            ${w.qr_url?`<img src="${w.qr_url}" width="60" height="60"
+              style="border-radius:8px;flex-shrink:0;border:1px solid var(--border)"
+              onerror="this.style.display='none'"/>`
+            :`<div style="width:60px;height:60px;border-radius:8px;background:var(--card2);
+                display:flex;align-items:center;justify-content:center;font-size:24px;
+                flex-shrink:0;border:1px dashed var(--border)">📋</div>`}
+            <div style="flex:1;min-width:0">
+              <div style="font-weight:700;font-size:13px;margin-bottom:2px">
+                ${escHtml(w.label||"Sin etiqueta")}
+                ${isLocked?`<span style="font-size:10px;background:rgba(245,158,11,.15);
+                  color:#f59e0b;padding:2px 8px;border-radius:20px;margin-left:6px">
+                  🔒 ${lockedMin}min</span>`:""}
+                ${!w.active?`<span style="font-size:10px;background:rgba(239,68,68,.1);
+                  color:var(--no);padding:2px 8px;border-radius:20px;margin-left:6px">Inactiva</span>`:""}
+              </div>
+              <div style="font-family:monospace;font-size:10px;color:var(--muted);
+                  word-break:break-all;margin-bottom:6px">
+                ${escHtml(w.address)}
+              </div>
+              <div style="display:flex;gap:6px;flex-wrap:wrap">
+                <button onclick="adminToggleWallet('${w.id}',${!w.active})"
+                  style="font-size:11px;padding:4px 10px;border-radius:6px;
+                    border:1px solid var(--border);background:transparent;
+                    color:var(--text);cursor:pointer">
+                  ${w.active?"Desactivar":"Activar"}
+                </button>
+                <button onclick="adminDeleteWalletRow('${w.id}')"
+                  style="font-size:11px;padding:4px 10px;border-radius:6px;
+                    border:1px solid var(--no);background:transparent;
+                    color:var(--no);cursor:pointer">
+                  Eliminar
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>`;
+      }).join("")}
+    </div>`;
+
+  el.innerHTML = `
+    ${renderSection("◎ Solana", solWallets, "#9945ff")}
+    ${renderSection("⬡ Polygon", polyWallets, "#8247e5")}
+    <div style="font-size:11px;color:var(--muted);text-align:center;margin-top:8px">
+      Máximo 20 wallets por red
+    </div>`;
+}
+
+async function adminAddWallet(){
+  const network = document.getElementById("aw-network")?.value;
+  const address = document.getElementById("aw-address")?.value?.trim();
+  const label   = document.getElementById("aw-label")?.value?.trim();
+  const qr_url  = document.getElementById("aw-qr")?.value?.trim();
+
+  if(!address){ notify("La dirección es obligatoria","error"); return; }
+  if(address.length < 20){ notify("La dirección parece inválida","error"); return; }
+
+  // Verificar límite de 20 por red
+  const {count} = await db.from("deposit_wallets")
+    .select("*",{count:"exact",head:true})
+    .eq("network",network);
+  if(count>=20){ notify("Máximo 20 wallets por red","error"); return; }
+
+  const {error} = await db.from("deposit_wallets").insert({
+    network, address, label: label||null, qr_url: qr_url||null, active: true
+  });
+
+  if(error){ notify("Error: "+error.message,"error"); return; }
+
+  // Limpiar campos
+  document.getElementById("aw-address").value = "";
+  document.getElementById("aw-label").value   = "";
+  document.getElementById("aw-qr").value      = "";
+
+  notify("✅ Wallet guardada","success");
+  loadAdminWallets();
+}
+
+async function adminToggleWallet(id, active){
+  const {error} = await db.from("deposit_wallets").update({active}).eq("id",id);
+  if(error){ notify("Error: "+error.message,"error"); return; }
+  notify(active?"✅ Wallet activada":"Wallet desactivada");
+  loadAdminWallets();
+}
+
+async function adminDeleteWalletRow(id){
+  const {error} = await db.from("deposit_wallets").delete().eq("id",id);
+  if(error){ notify("Error: "+error.message,"error"); return; }
+  notify("Wallet eliminada");
+  loadAdminWallets();
+}
+
 function setAdminTab(tab){
   STATE.adminTab=tab;
   if(tab==="withdrawals") dbLoadWithdrawals();
