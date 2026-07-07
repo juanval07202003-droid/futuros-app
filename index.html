@@ -9875,12 +9875,12 @@ async function renderDepositModal(){
               color:var(--text);font-size:24px;font-weight:900"
             onchange="STATE.depositAmount=parseFloat(this.value)||10"/>
         </div>
-        <div style="display:flex;gap:6px;margin-bottom:20px">
+        <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin-bottom:20px">
           ${[5,10,25,50,100].map(v=>`
             <button onclick="document.getElementById('dep-amount-input').value=${v};STATE.depositAmount=${v}"
-              style="flex:1;padding:8px 0;border-radius:8px;border:1.5px solid var(--border);
+              style="padding:8px 0;border-radius:8px;border:1.5px solid var(--border);
                 background:var(--card2);font-size:12px;font-weight:700;cursor:pointer;
-                color:var(--text)">$${v}</button>`).join("")}
+                color:var(--text);white-space:nowrap">$${v}</button>`).join("")}
         </div>
 
         <!-- Botón generar -->
@@ -10129,6 +10129,14 @@ async function depCheckPayment(){
   const s = STATE.depositSession;
   if(!s) return;
   const statusEl = document.getElementById("dep-status");
+
+  // Polygon: Alchemy detecta automáticamente via webhook — no necesitamos polling
+  if(s.network === "poly"){
+    if(statusEl) statusEl.innerHTML = `🔍 Esperando confirmación de Alchemy · última revisión <strong>${new Date().toLocaleTimeString()}</strong>`;
+    return;
+  }
+
+  // Solana: verificar via Helius
   try{
     const HK  = "7965959a-4d5e-4e1e-a18c-28f889be6b2f";
     const url = `https://api.helius.xyz/v0/addresses/${s.address}/transactions?api-key=${HK}&limit=10`;
@@ -10139,12 +10147,12 @@ async function depCheckPayment(){
     for(const tx of (txs||[])){
       if(tx.transactionError) continue;
       const txAge = Date.now()-(tx.timestamp||0)*1000;
-      if(txAge>6*60*1000) continue; // más de 6 minutos = ignorar
+      if(txAge>6*60*1000) continue;
 
       // Tokens SPL (USDC, USDT)
       for(const t of (tx.tokenTransfers||[])){
         if(t.toUserAccount!==s.address) continue;
-        const received = t.tokenAmount; // Helius normaliza con decimales
+        const received = t.tokenAmount;
         if(Math.abs(received-s.amount)<=0.05){
           await depCreditUser(tx.signature, received, t.mint); return;
         }
