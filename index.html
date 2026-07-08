@@ -3536,6 +3536,19 @@ document.addEventListener("visibilitychange", async () => {
     }
     // Reiniciar el timer periódico
     startPriceRefresh();
+
+    // ── Depósito móvil: el usuario volvió de su app de wallet ────────
+    // Los setIntervals se frenan en background en iOS/Android. Al volver
+    // se verifica de inmediato sin esperar el próximo tick de 10s.
+    if(STATE.depositSession){
+      depCheckPayment();
+      // Si el modal sigue abierto pero el DOM perdió la UI (algunos
+      // navegadores de wallet recrean el DOM al volver), redibujar.
+      if(!document.getElementById("dep-countdown") &&
+         document.getElementById("dep-wallet-container")){
+        depShowWalletUI();
+      }
+    }
   }
 });
 
@@ -5139,14 +5152,10 @@ const PRO_PERIODS = {
 async function loadProChart(marketId){
   const m = getMarket(marketId);
 
-  // Cargar TODAS las órdenes ejecutadas con su timestamp real.
-  // Se usa 'price' de la orden (que es el precio al que se ejecutó la orden,
-  // en el lado que pidió el usuario) normalizado a precio SÍ siempre.
-  // También cargamos las órdenes del MM (is_mm=true, order_type='mm') porque
-  // ellas reflejan el precio de cada contraparte creada — importante para
-  // mercados donde el usuario compra siempre contra el MM.
+  // Fuente ÚNICA de verdad: órdenes REALES de usuarios (no MM, no ventas).
+  // Cada orden ejecutada tiene el timestamp exacto en que se hizo la compra.
   const {data: ordersData} = await db.from('orders')
-    .select('created_at, side, price, order_type, is_mm')
+    .select('created_at, side, price, order_type, is_mm, is_mirror')
     .eq('market_id', marketId)
     .in('status', ['filled', 'partial'])
     .order('created_at', {ascending: true})
@@ -5155,48 +5164,35 @@ async function loadProChart(marketId){
   let trades = [];
 
   if(ordersData && ordersData.length > 0){
-    // Solo órdenes que representan movimientos de precio reales:
-    // - Órdenes de usuario ejecutadas (is_mm=false, order_type=limit o market)
-    // - Órdenes MM que son las contrapartes (order_type='mm', is_mm=true)
-    // Excluir: órdenes de reventa del MM (order_type='limit', is_mm=true)
-    //          que tienen precios de colocación, no precios de mercado.
-    // Solo órdenes REALES de usuarios (compras de SÍ o NO).
-    // Las contrapartes del MM (is_mm=true) se excluyen: duplican el mismo
-    // punto de precio de la orden del usuario y añaden ruido de spread,
-    // lo que hacía que las velas mostraran cuerpos falsos.
+    // Incluir SOLO compras reales de usuarios:
+    // · is_mm=false   → nunca órdenes del MM
+    // · is_mirror=false → nunca contrapartes espejo
+    // · order_type distinto de 'sell' y 'mm' → nunca órdenes de venta ni seed del MM
     const relevant = ordersData.filter(o =>
-      !o.is_mm && o.order_type !== 'sell'
+      !o.is_mm &&
+      !o.is_mirror &&
+      o.order_type !== 'sell' &&
+      o.order_type !== 'mm'
     );
 
     trades = relevant.map(o => {
-      // Normalizar siempre a precio SÍ para que el gráfico sea consistente
+      // Normalizar siempre a precio SÍ (0-1)
       const price = o.side === 'YES'
         ? o.price
         : Math.round((1 - o.price) * 10000) / 10000;
-      return {
-        price,
-        ts: new Date(o.created_at).getTime(),
-      };
+      return { price, ts: new Date(o.created_at).getTime() };
     }).filter(t => t.price > 0.01 && t.price < 0.99);
   }
 
-  // Si no hay órdenes aún, usar price_history interpolado como fallback
-  if(trades.length < 2){
-    const priceHist = m?.priceHistory || [];
-    if(priceHist.length >= 2){
-      const now   = Date.now();
-      const start = m?.createdAt ? new Date(m.createdAt).getTime() : now - priceHist.length * 60000;
-      const step  = (now - start) / Math.max(priceHist.length - 1, 1);
-      trades = priceHist.map((price, i) => ({ price, ts: start + i * step }));
-    }
-  }
+  // NO usar priceHistory como fallback de trades — contiene precios interpolados
+  // que crean velas con cuerpo aunque nadie haya comprado en esos períodos.
+  // Si no hay trades reales, el gráfico mostrará solo dojis al precio actual.
 
-  // El precio actual exacto del mercado siempre como punto final.
-  // Se marca como sintético (syn) para que NO cuente como "operación real":
-  // si no cuenta, un período nuevo sin compras se dibuja como doji plano al
-  // precio del mercado en vez de una vela con cuerpo falso.
+  // Punto sintético final: precio actual del mercado. Marcado como syn=true
+  // para que NO genere cuerpo de vela — solo fuerza el doji de la vela
+  // actual al precio exacto del mercado en este momento.
   if(m?.priceYes != null){
-    trades.push({ price: m.priceYes, ts: Date.now(), syn:true });
+    trades.push({ price: m.priceYes, ts: Date.now(), syn: true });
   }
 
   PRO_CHART_STATE.trades   = trades.filter(t => t.price > 0 && t.price < 1);
@@ -5220,73 +5216,67 @@ function buildCandleSVG(trades, period){
   const chartW = W - PAD_L - PAD_R;
   const chartH = H - PAD_T - PAD_B;
 
-  if(!trades.length){
+  // Separar trades reales del punto sintético (precio actual)
+  const realTrades = trades.filter(t => !t.syn);
+  const synPrice   = trades.find(t => t.syn)?.price ?? null;
+
+  if(!realTrades.length && synPrice == null){
     return `<text x="${W/2}" y="${H/2}" fill="var(--muted)" font-size="11"
       text-anchor="middle">Sin operaciones para mostrar velas</text>`;
   }
 
   const now = Date.now();
 
-  // ── Agrupar trades en buckets por período ────────────────────────
+  // ── Agrupar SOLO trades reales en buckets ────────────────────────
   const bucketed = {};
-  trades.forEach(t => {
+  realTrades.forEach(t => {
     const bucket = Math.floor(t.ts / periodMs) * periodMs;
     if(!bucketed[bucket]) bucketed[bucket] = [];
-    bucketed[bucket].push(t);
+    bucketed[bucket].push(t.price);
   });
 
-  // ── Construir el rango completo de períodos (sin saltar huecos) ──
-  // Cada período de tiempo tiene SIEMPRE su propia vela:
-  //  - Con operaciones reales: O = primer trade del período, C = último,
-  //    H/L = máximo/mínimo de los trades del período. La apertura es el
-  //    primer trade REAL (no el cierre anterior) — así una vela solo
-  //    muestra cuerpo si de verdad hubo movimiento dentro de su período.
-  //  - Sin operaciones: doji plano (una rayita) al último precio conocido.
-  const firstTs = trades[0].ts;
-  const firstBucket = Math.floor(firstTs / periodMs) * periodMs;
-  const lastBucket  = Math.floor(now / periodMs) * periodMs;
+  // ── Rango de períodos a mostrar ──────────────────────────────────
+  // Empezar desde el primer trade real o, si no hay ninguno,
+  // desde 20 períodos atrás para mostrar la vela actual con contexto.
+  const nowBucket   = Math.floor(now / periodMs) * periodMs;
+  const firstBucket = realTrades.length
+    ? Math.floor(realTrades[0].ts / periodMs) * periodMs
+    : nowBucket - 20 * periodMs;
+  const lastBucket  = nowBucket;
 
-  let lastClose = trades[0].price;
+  // ── Construir velas ──────────────────────────────────────────────
+  // Reglas estrictas:
+  //  · Con trades reales en el período → vela con cuerpo:
+  //      o = cierre anterior (continuidad, nunca cuerpo falso al inicio)
+  //      c = precio del último trade del período
+  //      h/l = max/min incluyendo apertura y todos los precios del período
+  //  · Sin trades → doji: línea horizontal al precio del período anterior.
+  //    NO se dibuja cuerpo aunque el precio actual del mercado haya cambiado.
+  //    Solo la vela en curso (la de nowBucket) usa el precio actual como cierre.
+  let lastClose = synPrice ?? (realTrades[0]?.price ?? 0.5);
   const allCandles = [];
 
   for(let b = firstBucket; b <= lastBucket; b += periodMs){
-    const pts  = bucketed[b] || [];
-    const real = pts.filter(p => !p.syn).map(p => p.price);
-    if(real.length > 0){
-      // Apertura = cierre de la vela anterior (continuidad estándar de
-      // velas). Así una vela nueva NUNCA aparece "al alza" por sí sola:
-      // solo muestra cuerpo si el precio realmente se movió respecto al
-      // cierre anterior por compras de SÍ/NO de usuarios.
-      const open  = (lastClose != null) ? lastClose : real[0];
-      const close = real[real.length-1];
-      const high  = Math.max(open, ...real);
-      const low   = Math.min(open, ...real);
-      allCandles.push({ ts:b, o:open, h:high, l:low, c:close });
+    const prices = bucketed[b] || [];
+    const isCurrent = (b === nowBucket);
+
+    if(prices.length > 0){
+      const open  = lastClose;              // apertura = cierre anterior SIEMPRE
+      const close = prices[prices.length-1];
+      const high  = Math.max(open, ...prices);
+      const low   = Math.min(open, ...prices);
+      const c = { ts:b, o:open, h:high, l:low, c:close };
+      if(isCurrent) c.current = true;
+      allCandles.push(c);
       lastClose = close;
     } else {
-      // Período sin operaciones reales: doji plano.
-      // Si contiene el punto sintético (precio actual del mercado), el
-      // doji va exactamente al precio actual — nunca una vela con cuerpo.
-      const p = pts.length ? pts[pts.length-1].price : lastClose;
-      allCandles.push({ ts:b, o:p, h:p, l:p, c:p, doji:true });
-      lastClose = p;
-    }
-  }
-
-  // Marcar la última vela como "en curso" y forzar su cierre al precio
-  // EXACTO del mercado en este momento
-  const m = getMarket(PRO_CHART_STATE.marketId);
-  if(allCandles.length){
-    const last = allCandles[allCandles.length-1];
-    last.current = true;
-    if(m?.priceYes != null){
-      if(last.doji){
-        last.o = last.h = last.l = last.c = m.priceYes;
-      } else {
-        last.c = m.priceYes;
-        last.h = Math.max(last.h, m.priceYes);
-        last.l = Math.min(last.l, m.priceYes);
-      }
+      // Doji puro: o=h=l=c = precio anterior.
+      // La vela en curso usa el precio de mercado actual (synPrice) como nivel,
+      // pero SIGUE siendo un doji si no hubo trades — línea, no cuerpo.
+      const p = (isCurrent && synPrice != null) ? synPrice : lastClose;
+      allCandles.push({ ts:b, o:p, h:p, l:p, c:p, doji:true, current:isCurrent });
+      // lastClose NO cambia por el precio de mercado — solo cambia por trades reales
+      if(!isCurrent) lastClose = p;
     }
   }
 
@@ -5296,9 +5286,9 @@ function buildCandleSVG(trades, period){
   const CANDLE_SLOT = PRO_CHART_STATE.zoomSlot || 12;
   const maxVisible  = Math.floor(chartW / CANDLE_SLOT);
   const offset      = Math.max(0, Math.min(PRO_CHART_STATE.offset||0, Math.max(0, allCandles.length - maxVisible)));
-  const endIdx   = allCandles.length - offset;
-  const startIdx = Math.max(0, endIdx - maxVisible);
-  const visible  = allCandles.slice(startIdx, endIdx);
+  const endIdx      = allCandles.length - offset;
+  const startIdx    = Math.max(0, endIdx - maxVisible);
+  const visible     = allCandles.slice(startIdx, endIdx);
 
   if(!visible.length) return `<text x="${W/2}" y="${H/2}" fill="var(--muted)" font-size="11"
     text-anchor="middle">Sin datos</text>`;
@@ -5332,32 +5322,38 @@ function buildCandleSVG(trades, period){
   visible.forEach((c, i) => {
     const x    = PAD_L + i * CANDLE_SLOT;
     const cx   = (x + cW/2).toFixed(1);
-    const bull = c.c >= c.o;
-    const col  = c.doji ? 'var(--muted)' : c.current ? '#888' : (bull ? '#26a69a' : '#ef5350');
+    const bull = c.c > c.o;                    // alcista solo si cierre > apertura
+    const col  = c.doji
+      ? 'rgba(120,120,120,0.45)'               // doji: gris tenue
+      : c.current
+        ? (bull ? '#26a69a' : c.c < c.o ? '#ef5350' : 'var(--muted)')
+        : (bull ? '#26a69a' : '#ef5350');
 
-    if(c.doji){
-      // Doji: solo una línea horizontal fina al precio anterior
+    if(c.doji || c.o === c.c){
+      // Doji / período sin movimiento: solo una línea horizontal fina
       const y = yPos(c.c).toFixed(1);
-      candleSvgs += `<line x1="${x}" y1="${y}" x2="${(x+cW)}" y2="${y}"
-        stroke="${col}" stroke-width="1" opacity="0.5"/>`;
+      candleSvgs += `<line x1="${x}" y1="${y}" x2="${(x+cW).toFixed(1)}" y2="${y}"
+        stroke="${col}" stroke-width="1.2"/>`;
     } else {
       const bodyTop = yPos(Math.max(c.o, c.c));
       const bodyBot = yPos(Math.min(c.o, c.c));
-      const bodyH   = Math.max(1.5, bodyBot - bodyTop);
+      // Sin mínimo forzado: si el cuerpo es <1px se dibuja igual de pequeño
+      // (respeta el movimiento real sin inflar velas artificialmente)
+      const bodyH = Math.max(0.5, bodyBot - bodyTop);
       // Mecha superior
       candleSvgs += `<line x1="${cx}" y1="${yPos(c.h).toFixed(1)}" x2="${cx}" y2="${bodyTop.toFixed(1)}"
-        stroke="${col}" stroke-width="1.5"/>`;
-      // Cuerpo
+        stroke="${col}" stroke-width="1.2"/>`;
+      // Cuerpo: hueco si es la vela en curso, relleno si es histórica
       if(c.current){
-        candleSvgs += `<rect x="${x}" y="${bodyTop.toFixed(1)}" width="${cW}" height="${bodyH.toFixed(1)}"
-          fill="none" stroke="${col}" stroke-width="1.5" rx="0.5"/>`;
+        candleSvgs += `<rect x="${x.toFixed(1)}" y="${bodyTop.toFixed(1)}" width="${cW}" height="${bodyH.toFixed(1)}"
+          fill="none" stroke="${col}" stroke-width="1.2" rx="0.5"/>`;
       } else {
-        candleSvgs += `<rect x="${x}" y="${bodyTop.toFixed(1)}" width="${cW}" height="${bodyH.toFixed(1)}"
+        candleSvgs += `<rect x="${x.toFixed(1)}" y="${bodyTop.toFixed(1)}" width="${cW}" height="${bodyH.toFixed(1)}"
           fill="${col}" rx="0.5"/>`;
       }
       // Mecha inferior
       candleSvgs += `<line x1="${cx}" y1="${bodyBot.toFixed(1)}" x2="${cx}" y2="${yPos(c.l).toFixed(1)}"
-        stroke="${col}" stroke-width="1.5"/>`;
+        stroke="${col}" stroke-width="1.2"/>`;
     }
 
     // Etiqueta X
@@ -10152,69 +10148,142 @@ function depShowWalletUI(){
   if(!container) return;
   const en = STATE.lang==="en";
 
-  const isSol = s.network==="sol";
+  const isSol   = s.network==="sol";
   const netColor = isSol ? "#9945ff" : "#8247e5";
   const netName  = isSol ? "Solana" : "Polygon";
   const remaining = Math.max(0, Math.ceil((s.expiresAt - Date.now())/1000));
   const mins = Math.floor(remaining/60);
   const secs = remaining%60;
 
+  // ── Deep links para abrir la wallet del usuario directamente ──────
+  // Si el usuario está en el navegador de su wallet, estos botones
+  // abren la app correcta con la dirección pre-cargada (no tienen que
+  // copiar/salir/pegar — todo en un solo toque).
+  const addr = encodeURIComponent(s.address);
+  const solDeepLinks = `
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:10px">
+      <a href="phantom://ul/v1/browse?ref=statwaves" target="_blank"
+        style="display:flex;flex-direction:column;align-items:center;gap:3px;padding:9px 4px;
+          border-radius:10px;border:1.5px solid var(--border);background:var(--card2);
+          text-decoration:none;color:var(--text)">
+        <span style="font-size:18px">👻</span>
+        <span style="font-size:9px;font-weight:700">Phantom</span>
+      </a>
+      <a href="solflare://ul/v1/browse?ref=statwaves" target="_blank"
+        style="display:flex;flex-direction:column;align-items:center;gap:3px;padding:9px 4px;
+          border-radius:10px;border:1.5px solid var(--border);background:var(--card2);
+          text-decoration:none;color:var(--text)">
+        <span style="font-size:18px">☀️</span>
+        <span style="font-size:9px;font-weight:700">Solflare</span>
+      </a>
+      <a href="https://link.trustwallet.com/send?asset=c501&address=${addr}" target="_blank"
+        style="display:flex;flex-direction:column;align-items:center;gap:3px;padding:9px 4px;
+          border-radius:10px;border:1.5px solid var(--border);background:var(--card2);
+          text-decoration:none;color:var(--text)">
+        <span style="font-size:18px">🛡️</span>
+        <span style="font-size:9px;font-weight:700">Trust</span>
+      </a>
+    </div>`;
+
+  const polyDeepLinks = `
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:10px">
+      <a href="https://metamask.app.link/send/${s.address}@137" target="_blank"
+        style="display:flex;flex-direction:column;align-items:center;gap:3px;padding:9px 4px;
+          border-radius:10px;border:1.5px solid var(--border);background:var(--card2);
+          text-decoration:none;color:var(--text)">
+        <span style="font-size:18px">🦊</span>
+        <span style="font-size:9px;font-weight:700">MetaMask</span>
+      </a>
+      <a href="https://link.trustwallet.com/send?asset=c60_t0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174&address=${addr}" target="_blank"
+        style="display:flex;flex-direction:column;align-items:center;gap:3px;padding:9px 4px;
+          border-radius:10px;border:1.5px solid var(--border);background:var(--card2);
+          text-decoration:none;color:var(--text)">
+        <span style="font-size:18px">🛡️</span>
+        <span style="font-size:9px;font-weight:707">Trust</span>
+      </a>
+      <a href="https://go.cb-wallet.com/send?network=polygon&to=${addr}" target="_blank"
+        style="display:flex;flex-direction:column;align-items:center;gap:3px;padding:9px 4px;
+          border-radius:10px;border:1.5px solid var(--border);background:var(--card2);
+          text-decoration:none;color:var(--text)">
+        <span style="font-size:18px">🔵</span>
+        <span style="font-size:9px;font-weight:707">Coinbase</span>
+      </a>
+    </div>`;
+
   container.innerHTML = `
-    <!-- Contador -->
+    <!-- Contador siempre visible arriba -->
     <div style="background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.3);
-        border-radius:10px;padding:10px 14px;margin-bottom:14px;
+        border-radius:10px;padding:10px 14px;margin-bottom:12px;
         display:flex;justify-content:space-between;align-items:center">
-      <span style="font-size:12px;font-weight:700;color:#f59e0b">⏱ ${en?"Address reserved for you":"Dirección reservada para ti"}</span>
+      <span style="font-size:12px;font-weight:700;color:#f59e0b">
+        ⏱ ${en?"Reserved for you":"Reservada para ti"}
+      </span>
       <span id="dep-countdown" style="font-size:16px;font-weight:900;color:#f59e0b;font-family:monospace">
         ${mins}:${String(secs).padStart(2,"0")}
       </span>
     </div>
 
-    <!-- Monto -->
-    <div style="text-align:center;margin-bottom:14px">
-      <div style="font-size:11px;color:var(--muted)">${en?"Suggested amount":"Monto sugerido"}</div>
-      <div style="font-size:36px;font-weight:900;color:${netColor}">$${s.amount.toFixed(2)}</div>
-      <div style="font-size:11px;color:var(--muted)">${en?"via":"vía red"} ${netName} · ${isSol?"SOL / USDC / USDT":"USDC / USDT"}</div>
-      <div style="font-size:10.5px;color:var(--muted);margin-top:4px">
-        ${en?"The exact amount that arrives at this address is what gets credited":"Se acreditará el monto exacto que llegue a esta dirección"}
-      </div>
-    </div>
+    <!-- QR y dirección: siempre juntos y visibles — NO colapsar nunca -->
+    <div style="background:var(--card2);border:1.5px solid var(--border);border-radius:14px;
+        padding:16px;margin-bottom:12px">
 
-    <!-- QR -->
-    ${s.qrUrl ? `
-    <div style="text-align:center;margin-bottom:14px">
-      <div style="display:inline-block;padding:12px;background:#fff;border-radius:14px;
-          box-shadow:0 2px 16px rgba(0,0,0,.1)">
-        <img src="${s.qrUrl}" width="180" height="180" alt="QR"
-          style="display:block;border-radius:4px"/>
-      </div>
-    </div>`:""}
+      ${s.qrUrl ? `
+      <!-- QR grande: el usuario puede escanearlo desde su wallet sin tocar nada -->
+      <div style="text-align:center;margin-bottom:12px">
+        <div style="display:inline-block;padding:10px;background:#fff;border-radius:12px;
+            box-shadow:0 2px 12px rgba(0,0,0,.08)">
+          <img src="${s.qrUrl}" width="160" height="160" alt="QR"
+            style="display:block;border-radius:4px"/>
+        </div>
+        <div style="font-size:10px;color:var(--muted);margin-top:6px">
+          ${en?"Scan this QR from your wallet app":"Escanea este QR desde tu app de wallet"}
+        </div>
+      </div>` : ""}
 
-    <!-- Dirección -->
-    <div style="background:rgba(153,69,255,.05);border:1.5px solid rgba(153,69,255,.2);
-        border-radius:12px;padding:14px;margin-bottom:14px">
+      <!-- Dirección siempre visible en texto — sin necesidad de expandir nada -->
       <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;
-          letter-spacing:.5px;margin-bottom:8px">📋 ${en?"Deposit address":"Dirección de depósito"}</div>
-      <div id="dep-address-box"
-        style="font-family:monospace;font-size:11px;word-break:break-all;
+          letter-spacing:.5px;margin-bottom:6px">
+        ${en?"Deposit address":"Dirección de depósito"} · ${netName}
+      </div>
+      <div style="font-family:monospace;font-size:12px;word-break:break-all;letter-spacing:.3px;
           background:var(--card);border:1px solid var(--border);border-radius:8px;
-          padding:10px;color:var(--text);margin-bottom:8px;cursor:pointer"
-        onclick="depCopyAddress('${s.address}')">
+          padding:10px 12px;color:var(--text);margin-bottom:8px;
+          user-select:all;-webkit-user-select:all">
         ${s.address}
       </div>
-      <button onclick="depCopyAddress('${s.address}')"
-        style="width:100%;padding:10px;border-radius:8px;border:1.5px solid var(--border);
-          background:transparent;color:var(--text);cursor:pointer;font-size:13px;font-weight:600">
+
+      <!-- Copiar: fallback manual por si el navegador de wallet bloquea el clipboard -->
+      <button onclick="depCopyAddress('${s.address}')" id="dep-copy-btn"
+        style="width:100%;padding:11px;border-radius:10px;
+          background:${netColor};color:#fff;border:none;
+          font-weight:800;font-size:13px;cursor:pointer;margin-bottom:10px">
         📋 ${en?"Copy address":"Copiar dirección"}
       </button>
+
+      <!-- Deep links: abrir wallet directamente sin salir del flujo -->
+      <div style="font-size:10px;color:var(--muted);font-weight:700;text-transform:uppercase;
+          letter-spacing:.5px;margin-bottom:6px;text-align:center">
+        ${en?"Or open directly in your wallet:":"O abre directamente en tu wallet:"}
+      </div>
+      ${isSol ? solDeepLinks : polyDeepLinks}
+    </div>
+
+    <!-- Aviso: el usuario puede volver a esta pantalla si salió -->
+    <div style="background:rgba(245,158,11,.07);border:1px solid rgba(245,158,11,.25);
+        border-radius:10px;padding:10px 14px;margin-bottom:12px;font-size:11.5px;
+        color:#b45309;line-height:1.6">
+      💡 ${en
+        ? "<strong>Transferred and this screen closed?</strong> Your deposit will be credited automatically — you don't need to keep this window open."
+        : "<strong>¿Transferiste y se cerró esta pantalla?</strong> Tu depósito se acreditará automáticamente — no necesitas mantener esta ventana abierta."}
     </div>
 
     <!-- Estado verificación -->
-    <div id="dep-status" style="text-align:center;font-size:12px;color:var(--muted);margin-bottom:12px">
-      🔍 ${en?"Checking automatically every 10 seconds...":"Verificando automáticamente cada 10 segundos..."}
+    <div id="dep-status" style="text-align:center;font-size:11.5px;color:var(--muted);margin-bottom:4px">
+      🔍 ${en?"Checking automatically...":"Verificando automáticamente..."}
     </div>
   `;
 }
+
 
 function depCopyAddress(address){
   const en = STATE.lang==="en";
