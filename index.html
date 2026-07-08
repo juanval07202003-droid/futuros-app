@@ -9866,21 +9866,17 @@ async function renderDepositModal(){
         <!-- Monto -->
         <div style="font-size:11px;color:var(--muted);margin-bottom:6px;font-weight:700;
             text-transform:uppercase;letter-spacing:.5px">Monto en USD</div>
-        <div style="position:relative;margin-bottom:10px">
-          <span style="position:absolute;left:14px;top:50%;transform:translateY(-50%);
-              font-size:22px;font-weight:900;color:var(--muted)">$</span>
-          <input id="dep-amount-input" type="number" min="1" step="1" value="10"
-            style="width:100%;box-sizing:border-box;padding:14px 14px 14px 34px;
-              border:1.5px solid var(--border);border-radius:12px;background:var(--card2);
-              color:var(--text);font-size:24px;font-weight:900"
-            onchange="STATE.depositAmount=parseFloat(this.value)||10"/>
-        </div>
+        <input id="dep-amount-input" type="number" min="1" step="1" value="10"
+          style="width:100%;box-sizing:border-box;padding:13px 14px;
+            border:1.5px solid var(--border);border-radius:12px;background:var(--card2);
+            color:var(--text);font-size:20px;font-weight:800;margin-bottom:8px"
+          onchange="STATE.depositAmount=parseFloat(this.value)||10"/>
         <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin-bottom:20px">
           ${[5,10,25,50,100].map(v=>`
             <button onclick="document.getElementById('dep-amount-input').value=${v};STATE.depositAmount=${v}"
-              style="padding:8px 0;border-radius:8px;border:1.5px solid var(--border);
-                background:var(--card2);font-size:12px;font-weight:700;cursor:pointer;
-                color:var(--text);white-space:nowrap">$${v}</button>`).join("")}
+              style="width:100%;padding:9px 0;border-radius:8px;border:1.5px solid var(--border);
+                background:var(--card2);font-size:13px;font-weight:700;cursor:pointer;
+                color:var(--text);box-sizing:border-box">$${v}</button>`).join("")}
         </div>
 
         <!-- Botón generar -->
@@ -10513,62 +10509,6 @@ function depTickCountdown(){
   }
 }
 
-async function depCheckPayment(){
-  const s = STATE.depositSession;
-  if(!s) return;
-
-  const statusEl = document.getElementById("dep-status");
-  const now = new Date().toLocaleTimeString();
-
-  try{
-    const HK = "7965959a-4d5e-4e1e-a18c-28f889be6b2f";
-
-    // Buscar TXs recientes a esta dirección (últimos 6 minutos)
-    const url = `https://api.helius.xyz/v0/addresses/${s.address}/transactions?api-key=${HK}&limit=10`;
-    const resp = await fetch(url);
-    if(!resp.ok) throw new Error("Helius: "+resp.status);
-    const txs = await resp.json();
-
-    for(const tx of (txs||[])){
-      // Solo TXs de los últimos 6 minutos
-      const txAge = Date.now() - (tx.timestamp||0)*1000;
-      if(txAge > 6*60*1000) continue;
-      if(tx.transactionError) continue; // TX fallida
-
-      // ── USDC / USDT (tokens SPL) ──────────────────────────────
-      for(const t of (tx.tokenTransfers||[])){
-        if(t.toUserAccount !== s.address) continue;
-        // USDC = 6 decimales, USDT = 6 decimales — ambos 1:1 con USD
-        const received = t.tokenAmount; // Helius ya normaliza con decimals
-        if(Math.abs(received - s.amount) <= 0.02){ // 2 centavos de tolerancia
-          await depCreditUser(tx.signature, received, t.mint);
-          return;
-        }
-      }
-
-      // ── SOL nativo ───────────────────────────────────────────
-      for(const t of (tx.nativeTransfers||[])){
-        if(t.toUserAccount !== s.address) continue;
-        const solAmount = t.amount / 1e9;
-        const solPrice  = STATE.solPrice || parseFloat(Deno?.env?.get?.("SOL_USD_PRICE")||"150");
-        const usdValue  = Math.round(solAmount * solPrice * 100)/100;
-        const tolerance = s.amount * 0.05; // 5% tolerancia por volatilidad del precio
-        if(Math.abs(usdValue - s.amount) <= tolerance){
-          await depCreditUser(tx.signature, usdValue, "SOL");
-          return;
-        }
-      }
-    }
-
-    if(statusEl) statusEl.innerHTML =
-      `🔍 Verificando automáticamente · última revisión <strong>${now}</strong>`;
-
-  }catch(e){
-    console.error("depCheckPayment error:", e);
-    if(statusEl) statusEl.innerHTML =
-      `⚠️ Error verificando (${e.message}) · reintentando...`;
-  }
-}
 
 async function depCreditUser(txHash, amount, token){
   const s = STATE.depositSession;
@@ -11968,13 +11908,136 @@ function renderAdmin(){
   if(STATE.adminTab==="news")       content=renderAdminNews();
   if(STATE.adminTab==="trending")   content=renderAdminTrending();
   if(STATE.adminTab==="stw")         content=renderAdminSTW();
-  if(STATE.adminTab==="wallets"){    content=renderAdminWallets(); setTimeout(loadAdminWallets,100); }
+  if(STATE.adminTab==="wallets"){
+    if(STATE._walletPinOk && Date.now()-STATE._walletPinOk < 15*60*1000){
+      content=renderAdminWallets(); setTimeout(loadAdminWallets,100);
+    } else {
+      content=renderWalletPinModal();
+    }
+  }
   return`<div class="container">
   <div style="display:flex;align-items:center;gap:12px;margin-bottom:28px"><h2>${t("admin_title")}</h2>${mkTag("ADMIN","var(--gold)")}</div>
   <div class="admin-tabs">${tabs.map(tb=>`<button class="admin-tab${STATE.adminTab===tb.k?" active":""}" onclick="setAdminTab('${tb.k}')">${tb.l}${tb.count!=null?`<span class="tab-count">${tb.count}</span>`:""}</button>`).join("")}</div>
   ${content}
 </div>`;
 }
+// Hash SHA-256 del PIN de acceso al panel de wallets
+const _WP = "6e616995155c5c345dd5f0af14420296280d4d999e8717d86d65e549d1821d6b";
+
+function renderWalletPinModal(){
+  STATE._walletPinAttempts = STATE._walletPinAttempts || 0;
+  const blocked = STATE._walletPinBlockedUntil && Date.now() < STATE._walletPinBlockedUntil;
+  const blockSecs = blocked ? Math.ceil((STATE._walletPinBlockedUntil - Date.now())/1000) : 0;
+
+  return`<div style="max-width:340px;margin:60px auto;text-align:center">
+    <div style="font-size:40px;margin-bottom:16px">🔐</div>
+    <div style="font-weight:900;font-size:20px;margin-bottom:6px">Acceso restringido</div>
+    <div style="font-size:13px;color:var(--muted);margin-bottom:28px">
+      Ingresa el PIN para acceder al panel de wallets
+    </div>
+
+    ${blocked ? `
+    <div style="background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.3);
+        border-radius:10px;padding:14px;color:var(--no);font-size:13px;margin-bottom:16px">
+      🚫 Demasiados intentos fallidos.<br>
+      Espera <strong id="pin-block-timer">${blockSecs}s</strong> para intentar de nuevo.
+    </div>` : ""}
+
+    <div style="display:flex;gap:10px;justify-content:center;margin-bottom:20px">
+      ${[1,2,3,4,5,6].map(i=>`
+        <div id="pin-dot-${i}"
+          style="width:16px;height:16px;border-radius:50%;border:2px solid var(--border);
+            background:transparent;transition:all .15s"></div>`).join("")}
+    </div>
+
+    <input id="wallet-pin-input" type="password" inputmode="numeric"
+      maxlength="6" placeholder="••••••" autocomplete="off"
+      ${blocked?"disabled":""}
+      oninput="walletPinInput(this)"
+      onkeydown="if(event.key==='Enter')verifyWalletPin()"
+      style="width:100%;box-sizing:border-box;padding:14px;border-radius:12px;
+        border:2px solid var(--border);background:var(--card2);color:var(--text);
+        font-size:24px;text-align:center;letter-spacing:8px;font-weight:700;
+        margin-bottom:12px;outline:none"/>
+
+    <button onclick="verifyWalletPin()" ${blocked?"disabled":""}
+      style="width:100%;padding:14px;border-radius:12px;border:none;
+        background:linear-gradient(135deg,#9945ff,#7c3aed);color:#fff;
+        font-weight:800;font-size:15px;cursor:pointer;
+        opacity:${blocked?.5:1}">
+      Verificar PIN
+    </button>
+
+    <div id="pin-error" style="color:var(--no);font-size:12px;margin-top:10px;min-height:18px"></div>
+  </div>`;
+}
+
+function walletPinInput(input){
+  const val = input.value;
+  for(let i=1;i<=6;i++){
+    const dot = document.getElementById("pin-dot-"+i);
+    if(!dot) continue;
+    if(i<=val.length){
+      dot.style.background = "#9945ff";
+      dot.style.borderColor = "#9945ff";
+    } else {
+      dot.style.background = "transparent";
+      dot.style.borderColor = "var(--border)";
+    }
+  }
+  if(val.length===6) setTimeout(verifyWalletPin, 150);
+}
+
+async function verifyWalletPin(){
+  if(STATE._walletPinBlockedUntil && Date.now() < STATE._walletPinBlockedUntil) return;
+
+  const input = document.getElementById("wallet-pin-input");
+  const pin   = input?.value?.trim();
+  if(!pin || pin.length < 4){
+    document.getElementById("pin-error").textContent = "Ingresa el PIN completo";
+    return;
+  }
+
+  // Hash del PIN ingresado con Web Crypto
+  const enc     = new TextEncoder();
+  const hashBuf = await crypto.subtle.digest("SHA-256", enc.encode(pin));
+  const hashHex = Array.from(new Uint8Array(hashBuf)).map(b=>b.toString(16).padStart(2,"0")).join("");
+
+  if(hashHex === _WP){
+    // PIN correcto
+    STATE._walletPinOk = Date.now();
+    STATE._walletPinAttempts = 0;
+    STATE._walletPinBlockedUntil = null;
+    render(); // re-renderiza el admin mostrando el panel de wallets
+  } else {
+    // PIN incorrecto
+    STATE._walletPinAttempts = (STATE._walletPinAttempts||0) + 1;
+    const errEl = document.getElementById("pin-error");
+
+    if(STATE._walletPinAttempts >= 3){
+      STATE._walletPinBlockedUntil = Date.now() + 30*1000;
+      STATE._walletPinAttempts = 0;
+      if(errEl) errEl.textContent = "Bloqueado 30 segundos por intentos fallidos.";
+      // Cuenta regresiva de bloqueo
+      const timer = setInterval(()=>{
+        const rem = Math.ceil((STATE._walletPinBlockedUntil - Date.now())/1000);
+        const el  = document.getElementById("pin-block-timer");
+        if(el) el.textContent = rem+"s";
+        if(rem <= 0){ clearInterval(timer); render(); }
+      }, 1000);
+      render();
+    } else {
+      if(errEl) errEl.textContent = `PIN incorrecto. ${3-STATE._walletPinAttempts} intento(s) restante(s).`;
+      if(input){ input.value=""; input.focus(); }
+      // Resetear dots
+      for(let i=1;i<=6;i++){
+        const d=document.getElementById("pin-dot-"+i);
+        if(d){d.style.background="transparent";d.style.borderColor="var(--border)";}
+      }
+    }
+  }
+}
+
 function renderAdminWallets(){
   return`<div>
     <h3 style="margin-bottom:4px">💳 Wallets de depósito</h3>
