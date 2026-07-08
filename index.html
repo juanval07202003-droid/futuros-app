@@ -10126,9 +10126,83 @@ async function depCheckPayment(){
   if(!s) return;
   const statusEl = document.getElementById("dep-status");
 
-  // Polygon: Alchemy detecta automáticamente via webhook — no necesitamos polling
+  // Polygon: doble verificación
+  //  1) ¿El webhook de Alchemy ya acreditó? → buscar la tx de depósito en la DB
+  //  2) Fallback: consultar Alchemy directamente por transferencias entrantes a la
+  //     dirección bloqueada y acreditar vía credit_deposit (idempotente por tx_hash,
+  //     así no hay doble acreditación aunque el webhook también funcione)
   if(s.network === "poly"){
-    if(statusEl) statusEl.innerHTML = `🔍 Esperando confirmación de Alchemy · última revisión <strong>${new Date().toLocaleTimeString()}</strong>`;
+    if(statusEl) statusEl.innerHTML = `🔍 Verificando transferencia · última revisión <strong>${new Date().toLocaleTimeString()}</strong>`;
+
+    // ── 1) ¿El webhook ya acreditó en la DB? ──
+    try{
+      const {data:rows} = await db.from("transactions")
+        .select("id, amount, network, created_at")
+        .eq("user_id", s.userId)
+        .eq("type", "deposit")
+        .ilike("network", "%POLY%")
+        .gte("created_at", s.startedAtISO)
+        .order("created_at", {ascending:false})
+        .limit(1);
+      if(rows && rows.length){
+        await depFinishAlreadyCredited(rows[0].amount);
+        return;
+      }
+    }catch(_){ /* seguir con el fallback */ }
+
+    // ── 2) Fallback: verificar directamente en Alchemy ──
+    try{
+      const resp = await fetch("https://polygon-mainnet.g.alchemy.com/v2/g9tfDTOzHyhXPRiQDRoPi", {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({
+          jsonrpc: "2.0", id: 1,
+          method: "alchemy_getAssetTransfers",
+          params: [{
+            toAddress: s.address,
+            category: ["external","erc20"],
+            order: "desc",
+            maxCount: "0xa",
+            withMetadata: true,
+            excludeZeroValue: true,
+          }]
+        })
+      });
+      if(!resp.ok) throw new Error("Alchemy "+resp.status);
+      const j = await resp.json();
+      if(j.error) throw new Error(j.error.message||"Alchemy RPC error");
+      const transfers = j?.result?.transfers || [];
+      const maticPrice = STATE.maticPrice || 0.5;
+
+      for(const tr of transfers){
+        if((tr.to||"").toLowerCase() !== s.address.toLowerCase()) continue;
+        // Solo TXs recientes (últimos 10 min) para no acreditar depósitos viejos
+        const ts = tr.metadata?.blockTimestamp ? new Date(tr.metadata.blockTimestamp).getTime() : 0;
+        if(ts && (Date.now()-ts) > 10*60*1000) continue;
+
+        const asset = (tr.asset||"").toUpperCase();
+        const val = parseFloat(tr.value)||0;
+        if(!val || !tr.hash) continue;
+
+        if(asset==="USDC" || asset==="USDT" || asset==="USDC.E"){
+          // Stablecoins: valor 1:1 con USD, tolerancia ±$0.05
+          if(Math.abs(val - s.amount) <= 0.05){
+            await depCreditUser(tr.hash, val, asset==="USDT"?"USDT":"USDC");
+            return;
+          }
+        } else if(asset==="MATIC" || asset==="POL"){
+          // Nativo: convertir a USD, tolerancia ±5%
+          const usdVal = Math.round(val*maticPrice*100)/100;
+          if(Math.abs(usdVal - s.amount) <= s.amount*0.05){
+            await depCreditUser(tr.hash, usdVal, "MATIC");
+            return;
+          }
+        }
+      }
+      if(statusEl) statusEl.innerHTML = `🔍 Verificando en Polygon · última revisión <strong>${new Date().toLocaleTimeString()}</strong>`;
+    }catch(e){
+      if(statusEl) statusEl.innerHTML = `⚠️ Error verificando (${e.message}) · reintentando...`;
+    }
     return;
   }
 
@@ -10237,69 +10311,105 @@ async function renderDepositModal(){
   const u = getUser();
   if(!u) return;
 
+  const curAmt = STATE.depositAmount || 10;
+
   const html = `<div class="overlay" id="deposit-overlay" onclick="closeDepositIfBg(event)">
     <div class="modal" onclick="event.stopPropagation()"
-      style="max-width:460px;max-height:92vh;overflow-y:auto;border-radius:20px;padding:28px">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
-        <div style="font-weight:900;font-size:18px">💳 Depositar fondos</div>
-        <button onclick="closeDepositModal()" style="background:transparent;border:none;color:var(--muted);font-size:22px;cursor:pointer">×</button>
+      style="max-width:420px;width:100%;max-height:92vh;overflow-y:auto;overflow-x:hidden;
+        border-radius:22px;padding:24px;box-sizing:border-box">
+
+      <!-- Header -->
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px">
+        <div>
+          <div style="font-weight:900;font-size:19px;letter-spacing:-.3px">Depositar fondos</div>
+          <div style="font-size:12px;color:var(--muted);margin-top:3px">Elige la red y el monto a depositar</div>
+        </div>
+        <button onclick="closeDepositModal()" aria-label="Cerrar"
+          style="background:var(--card2);border:none;color:var(--muted);width:30px;height:30px;
+            border-radius:50%;font-size:14px;cursor:pointer;display:flex;align-items:center;
+            justify-content:center;flex-shrink:0">✕</button>
       </div>
 
       <!-- Selector de red -->
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:18px">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:18px">
         <button id="dep-btn-sol" onclick="depSetNetwork('sol')"
-          style="padding:12px;border-radius:12px;border:2px solid #9945ff;
-            background:rgba(153,69,255,.08);font-weight:700;font-size:13px;cursor:pointer;color:#9945ff">
-          ◎ Solana
+          style="display:flex;flex-direction:column;align-items:center;gap:3px;padding:13px 8px;
+            border-radius:14px;border:2px solid #9945ff;background:rgba(153,69,255,.07);
+            cursor:pointer;color:#9945ff;transition:all .15s">
+          <span style="font-size:17px;line-height:1">◎</span>
+          <span style="font-weight:800;font-size:13px">Solana</span>
+          <span style="font-size:9.5px;opacity:.75;font-weight:600">SOL · USDC · USDT</span>
         </button>
         <button id="dep-btn-poly" onclick="depSetNetwork('poly')"
-          style="padding:12px;border-radius:12px;border:2px solid var(--border);
-            background:var(--card2);font-weight:700;font-size:13px;cursor:pointer;color:var(--muted)">
-          ⬡ Polygon
+          style="display:flex;flex-direction:column;align-items:center;gap:3px;padding:13px 8px;
+            border-radius:14px;border:2px solid var(--border);background:var(--card2);
+            cursor:pointer;color:var(--muted);transition:all .15s">
+          <span style="font-size:17px;line-height:1">⬡</span>
+          <span style="font-weight:800;font-size:13px">Polygon</span>
+          <span style="font-size:9.5px;opacity:.75;font-weight:600">MATIC · USDC · USDT</span>
         </button>
       </div>
 
       <!-- Monto -->
       <div style="margin-bottom:18px">
-        <div style="font-size:12px;color:var(--muted);margin-bottom:6px">Monto a depositar (USD)</div>
-        <div style="display:flex;gap:8px;align-items:center">
-          <input id="dep-amount-input" type="number" min="1" step="1" value="10"
-            style="flex:1;padding:11px 14px;border:1.5px solid var(--border);border-radius:10px;
-              background:var(--bg);color:var(--text);font-size:18px;font-weight:700"
-            onchange="STATE.depositAmount=parseFloat(this.value)||10"/>
-          <div style="display:flex;gap:6px">
-            ${[5,10,25,50,100].map(v=>`
-              <button onclick="document.getElementById('dep-amount-input').value=${v};STATE.depositAmount=${v}"
-                style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);
-                  background:var(--card2);font-size:12px;font-weight:700;cursor:pointer">
-                $${v}
-              </button>`).join("")}
-          </div>
+        <div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;
+            letter-spacing:.5px;margin-bottom:8px">Monto a depositar (USD)</div>
+        <div style="position:relative;margin-bottom:8px">
+          <span style="position:absolute;left:14px;top:50%;transform:translateY(-50%);
+              font-size:17px;font-weight:800;color:var(--muted);pointer-events:none">$</span>
+          <input id="dep-amount-input" type="number" min="1" step="1" value="${curAmt}"
+            style="width:100%;box-sizing:border-box;padding:13px 14px 13px 32px;
+              border:1.5px solid var(--border);border-radius:12px;
+              background:var(--bg);color:var(--text);font-size:19px;font-weight:800;outline:none"
+            oninput="depSetAmount(parseFloat(this.value)||0,false)"/>
+        </div>
+        <div id="dep-quick-amounts" style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px">
+          ${[5,10,25,50,100].map(v=>`
+            <button data-amt="${v}" onclick="depSetAmount(${v},true)"
+              style="padding:8px 0;border-radius:9px;
+                border:1.5px solid ${v===curAmt?"var(--yes)":"var(--border)"};
+                background:${v===curAmt?"rgba(0,152,168,.08)":"var(--card2)"};
+                color:${v===curAmt?"var(--yes)":"var(--text)"};
+                font-size:12px;font-weight:800;cursor:pointer;transition:all .12s">$${v}</button>`).join("")}
         </div>
       </div>
 
       <!-- Botón generar dirección -->
-      <button onclick="depRequestWallet()"
-        style="width:100%;padding:15px;border-radius:12px;border:none;
+      <button id="dep-generate-btn" onclick="depRequestWallet()"
+        style="width:100%;padding:14px;border-radius:12px;border:none;
           background:linear-gradient(135deg,#9945ff,#7c3aed);color:#fff;
-          font-weight:800;font-size:16px;cursor:pointer;margin-bottom:12px">
-        📋 Generar dirección de depósito
+          font-weight:800;font-size:15px;cursor:pointer;margin-bottom:14px;
+          box-shadow:0 6px 18px rgba(124,58,237,.25);transition:all .15s">
+        Generar dirección de depósito
       </button>
 
       <!-- Contenedor donde aparece la dirección/QR -->
       <div id="dep-wallet-container"></div>
 
-      <div style="background:var(--card2);border:1px solid var(--border);border-radius:8px;
-          padding:10px 12px;font-size:11px;color:var(--muted)">
-        • La dirección se reserva por <strong>5 minutos</strong><br>
-        • Envía exactamente el monto indicado desde cualquier wallet o exchange<br>
-        • El balance se acredita automáticamente al detectar la transferencia
+      <div style="background:var(--card2);border:1px solid var(--border);border-radius:12px;
+          padding:12px 14px;font-size:11.5px;color:var(--muted);line-height:1.8">
+        <div>⏱&nbsp; La dirección se reserva por <strong style="color:var(--text)">5 minutos</strong></div>
+        <div>💸&nbsp; Envía <strong style="color:var(--text)">exactamente</strong> el monto indicado desde cualquier wallet o exchange</div>
+        <div>✅&nbsp; El balance se acredita automáticamente al detectar la transferencia</div>
       </div>
     </div>
   </div>`;
 
   document.body.insertAdjacentHTML("beforeend", html);
   depSetNetwork(STATE.depositNetwork||"sol");
+}
+
+// Selecciona monto: sincroniza input, STATE y resalta el chip activo
+function depSetAmount(v, fromChip){
+  STATE.depositAmount = v;
+  const input = document.getElementById("dep-amount-input");
+  if(fromChip && input) input.value = v;
+  document.querySelectorAll("#dep-quick-amounts button").forEach(b=>{
+    const on = parseFloat(b.dataset.amt)===v;
+    b.style.border     = "1.5px solid "+(on?"var(--yes)":"var(--border)");
+    b.style.background = on?"rgba(0,152,168,.08)":"var(--card2)";
+    b.style.color      = on?"var(--yes)":"var(--text)";
+  });
 }
 
 function depSetNetwork(net){
@@ -10318,11 +10428,14 @@ function depSetNetwork(net){
     btnPoly.style.color = !isSol ? "#8247e5" : "var(--muted)";
   }
   // Actualizar botón generar con el color de la red
-  const genBtn = document.querySelector('#deposit-overlay button[onclick="depRequestWallet()"]');
+  const genBtn = document.getElementById("dep-generate-btn");
   if(genBtn){
     genBtn.style.background = isSol
       ? "linear-gradient(135deg,#9945ff,#7c3aed)"
       : "linear-gradient(135deg,#8247e5,#6030c0)";
+    genBtn.style.boxShadow = isSol
+      ? "0 6px 18px rgba(124,58,237,.25)"
+      : "0 6px 18px rgba(130,71,229,.25)";
   }
 }
 
@@ -10337,8 +10450,8 @@ async function depRequestWallet(){
   if(!container) return;
 
   // Deshabilitar el botón para evitar doble clic
-  const btn = document.querySelector('#deposit-overlay button[onclick="depRequestWallet()"]');
-  if(btn){ btn.disabled=true; btn.textContent="⏳ Buscando dirección..."; }
+  const btn = document.getElementById("dep-generate-btn");
+  if(btn){ btn.disabled=true; btn.style.opacity=".7"; btn.textContent="⏳ Reservando dirección..."; }
 
   container.innerHTML = `<div style="text-align:center;padding:20px;color:var(--muted)">
     ⏳ Reservando dirección de depósito...
@@ -10353,7 +10466,7 @@ async function depRequestWallet(){
     p_minutes:  5
   });
 
-  if(btn){ btn.disabled=false; btn.textContent="📋 Generar dirección de depósito"; }
+  if(btn){ btn.disabled=false; btn.style.opacity="1"; btn.textContent="Generar dirección de depósito"; }
 
   if(error || !data || data.error){
     container.innerHTML = `<div style="background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.3);
@@ -10380,6 +10493,8 @@ async function depRequestWallet(){
     network:   net,
     amount,
     expiresAt: Date.now() + 5*60*1000,
+    // Margen de 60s hacia atrás para tolerar desfase de reloj cliente/servidor
+    startedAtISO: new Date(Date.now() - 60*1000).toISOString(),
     userId:    u.id,
     timer:     null,
     checkTimer: null,
@@ -10526,7 +10641,8 @@ async function depCreditUser(txHash, amount, token){
     <div style="font-size:13px;color:var(--muted)">Acreditando $${amount.toFixed(2)}...</div>
   </div>`;
 
-  const tokenSymbol = token === "SOL" ? "SOL"
+  const tokenSymbol =
+    (token==="SOL"||token==="MATIC"||token==="POL"||token==="USDC"||token==="USDT") ? (token==="POL"?"MATIC":token)
     : token === "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" ? "USDC" : "USDT";
 
   // Acreditar via RPC (idempotente — el tx_hash evita doble acreditación)
@@ -10554,6 +10670,36 @@ async function depCreditUser(txHash, amount, token){
   }
 
   notify(`💰 ¡Depósito confirmado! +$${amount.toFixed(2)} acreditados`,"success");
+  closeDepositModal();
+}
+
+// El webhook (server-side) ya acreditó el depósito en la DB.
+// Solo hay que limpiar la sesión, liberar la wallet y refrescar el balance en UI.
+async function depFinishAlreadyCredited(amount){
+  const s = STATE.depositSession;
+  if(!s) return;
+  clearInterval(s.timer);
+  clearInterval(s.checkTimer);
+
+  const container = document.getElementById("dep-wallet-container");
+  if(container) container.innerHTML = `<div style="text-align:center;padding:24px">
+    <div style="font-size:32px;margin-bottom:12px">💰</div>
+    <div style="font-weight:700;font-size:16px;margin-bottom:4px">¡Transferencia detectada!</div>
+    <div style="font-size:13px;color:var(--muted)">Depósito acreditado</div>
+  </div>`;
+
+  await db.rpc("unlock_deposit_wallet", { p_wallet_id: s.walletId });
+  const userId = s.userId;
+  STATE.depositSession = null;
+
+  const {data:freshU} = await db.from("users").select("balance").eq("id",userId).maybeSingle();
+  if(freshU){
+    const ui = STATE.users.findIndex(x=>x.id===userId);
+    if(ui>=0) STATE.users[ui]={...STATE.users[ui], balance: freshU.balance};
+    render();
+  }
+
+  notify(`💰 ¡Depósito confirmado! +$${(+amount).toFixed(2)} acreditados`,"success");
   closeDepositModal();
 }
 
