@@ -2736,7 +2736,7 @@ function slugify(text){
 }
 
 function navigate(view,opts={}){
-  if((view==="portfolio"||view==="wallet")&&!getUser()){navigate("auth");return;}
+  if((view==="portfolio"||view==="wallet"||view==="p2p")&&!getUser()){navigate("auth");return;}
   if(view==="pro" && !isProPanelAllowed()){
     notify("📊 Modo Pro solo está disponible en computador","error");
     return;
@@ -2916,6 +2916,7 @@ function render(){
     case"wallet":   app.innerHTML=renderWallet();
       (()=>{ const wu=getUser(); if(wu) loadUserTransactions(STATE.walletViewUserId||wu.id); })();
       break;
+    case"p2p":      app.innerHTML=renderP2P();      loadP2PData(); break;
     case"admin":    app.innerHTML=renderAdmin();    break;
     case"bemm":     app.innerHTML=renderBeMM();     startBeMMCountdown(); loadSTWNotifyCount(); break;
     case"terms":    app.innerHTML=renderPolicy("terms");    break;
@@ -4424,7 +4425,6 @@ async function sendSolanaDeposit(token, amountUSD){
     const RPC_URLS = [
       "https://solana-mainnet.g.alchemy.com/v2/g9tfDTOzHyhXPRiQDRoPi",
       "https://rpc.ankr.com/solana",
-      "https://mainnet.helius-rpc.com/?api-key=public",
     ];
     let connection = null;
     for(const url of RPC_URLS){
@@ -4633,7 +4633,6 @@ async function verifySolTxManual(amountUSD, token){
     const {Connection} = web3;
     const RPC_URLS = [
       "https://rpc.ankr.com/solana",
-      "https://mainnet.helius-rpc.com/?api-key=public",
     ];
     let connection = null;
     for(const url of RPC_URLS){
@@ -5161,9 +5160,12 @@ async function loadProChart(marketId){
     // - Órdenes MM que son las contrapartes (order_type='mm', is_mm=true)
     // Excluir: órdenes de reventa del MM (order_type='limit', is_mm=true)
     //          que tienen precios de colocación, no precios de mercado.
+    // Solo órdenes REALES de usuarios (compras de SÍ o NO).
+    // Las contrapartes del MM (is_mm=true) se excluyen: duplican el mismo
+    // punto de precio de la orden del usuario y añaden ruido de spread,
+    // lo que hacía que las velas mostraran cuerpos falsos.
     const relevant = ordersData.filter(o =>
-      (!o.is_mm && o.order_type !== 'sell') ||
-      (o.is_mm && o.order_type === 'mm')
+      !o.is_mm && o.order_type !== 'sell'
     );
 
     trades = relevant.map(o => {
@@ -5189,9 +5191,12 @@ async function loadProChart(marketId){
     }
   }
 
-  // El precio actual exacto del mercado siempre como punto final
-  if(trades.length > 0 && m?.priceYes != null){
-    trades.push({ price: m.priceYes, ts: Date.now() });
+  // El precio actual exacto del mercado siempre como punto final.
+  // Se marca como sintético (syn) para que NO cuente como "operación real":
+  // si no cuenta, un período nuevo sin compras se dibuja como doji plano al
+  // precio del mercado en vez de una vela con cuerpo falso.
+  if(m?.priceYes != null){
+    trades.push({ price: m.priceYes, ts: Date.now(), syn:true });
   }
 
   PRO_CHART_STATE.trades   = trades.filter(t => t.price > 0 && t.price < 1);
@@ -5227,44 +5232,62 @@ function buildCandleSVG(trades, period){
   trades.forEach(t => {
     const bucket = Math.floor(t.ts / periodMs) * periodMs;
     if(!bucketed[bucket]) bucketed[bucket] = [];
-    bucketed[bucket].push(t.price);
+    bucketed[bucket].push(t);
   });
 
   // ── Construir el rango completo de períodos (sin saltar huecos) ──
-  // Esto garantiza que cada período de tiempo tenga su propia vela,
-  // aunque no haya operaciones — en ese caso es un doji (O=H=L=C=close anterior)
+  // Cada período de tiempo tiene SIEMPRE su propia vela:
+  //  - Con operaciones reales: O = primer trade del período, C = último,
+  //    H/L = máximo/mínimo de los trades del período. La apertura es el
+  //    primer trade REAL (no el cierre anterior) — así una vela solo
+  //    muestra cuerpo si de verdad hubo movimiento dentro de su período.
+  //  - Sin operaciones: doji plano (una rayita) al último precio conocido.
   const firstTs = trades[0].ts;
   const firstBucket = Math.floor(firstTs / periodMs) * periodMs;
   const lastBucket  = Math.floor(now / periodMs) * periodMs;
 
-  let lastClose = bucketed[firstBucket] ? bucketed[firstBucket][0] : trades[0].price;
+  let lastClose = trades[0].price;
   const allCandles = [];
 
   for(let b = firstBucket; b <= lastBucket; b += periodMs){
-    const prices = bucketed[b];
-    if(prices && prices.length > 0){
-      const open  = lastClose;       // open = close de la vela anterior (encadenadas)
-      const close = prices[prices.length-1];
-      const high  = Math.max(open, ...prices);
-      const low   = Math.min(open, ...prices);
+    const pts  = bucketed[b] || [];
+    const real = pts.filter(p => !p.syn).map(p => p.price);
+    if(real.length > 0){
+      // Apertura = cierre de la vela anterior (continuidad estándar de
+      // velas). Así una vela nueva NUNCA aparece "al alza" por sí sola:
+      // solo muestra cuerpo si el precio realmente se movió respecto al
+      // cierre anterior por compras de SÍ/NO de usuarios.
+      const open  = (lastClose != null) ? lastClose : real[0];
+      const close = real[real.length-1];
+      const high  = Math.max(open, ...real);
+      const low   = Math.min(open, ...real);
       allCandles.push({ ts:b, o:open, h:high, l:low, c:close });
       lastClose = close;
     } else {
-      // Período sin operaciones: doji al precio anterior
-      allCandles.push({ ts:b, o:lastClose, h:lastClose, l:lastClose, c:lastClose, doji:true });
+      // Período sin operaciones reales: doji plano.
+      // Si contiene el punto sintético (precio actual del mercado), el
+      // doji va exactamente al precio actual — nunca una vela con cuerpo.
+      const p = pts.length ? pts[pts.length-1].price : lastClose;
+      allCandles.push({ ts:b, o:p, h:p, l:p, c:p, doji:true });
+      lastClose = p;
     }
   }
 
-  // Marcar la última vela como "en curso"
-  if(allCandles.length) allCandles[allCandles.length-1].current = true;
-
-  // Asegurar precio exacto del mercado en la última vela
+  // Marcar la última vela como "en curso" y forzar su cierre al precio
+  // EXACTO del mercado en este momento
   const m = getMarket(PRO_CHART_STATE.marketId);
-  if(m?.priceYes != null && allCandles.length){
+  if(allCandles.length){
     const last = allCandles[allCandles.length-1];
-    last.c = m.priceYes;
-    last.h = Math.max(last.h, m.priceYes);
-    last.l = Math.min(last.l, m.priceYes);
+    last.current = true;
+    if(m?.priceYes != null){
+      if(last.doji){
+        last.o = last.h = last.l = last.c = m.priceYes;
+      } else {
+        last.c = m.priceYes;
+        last.h = Math.max(last.h, m.priceYes);
+        last.l = Math.min(last.l, m.priceYes);
+      }
+    }
   }
 
   PRO_CHART_STATE._totalCandles = allCandles.length;
@@ -5364,7 +5387,7 @@ function buildCandleSVG(trades, period){
     <text x="${W-PAD_R+2+(PAD_R-4)/2}" y="${(lastY+3.5).toFixed(1)}" fill="white"
       font-size="8.5" text-anchor="middle" font-weight="800">${(lastVis.c*100).toFixed(1)}%</text>
     <text x="${W/2}" y="${H-2}" fill="var(--muted)" font-size="7.5" text-anchor="middle">
-      scroll=zoom · Ctrl+scroll=navegar</text>`;
+      arrastrar=navegar historial · scroll=zoom · Ctrl+scroll=navegar</text>`;
 }
 
 function handleProChartScroll(e){
@@ -5391,6 +5414,40 @@ function handleProChartScroll(e){
     PRO_CHART_STATE.zoomSlot = next;
   }
   renderProChartInPlace();
+}
+
+// ── Navegación por arrastre (dejar presionado y mover) ──────────────
+// Funciona con mouse y touch (pointer events). Arrastrar a la derecha
+// muestra velas más antiguas; a la izquierda vuelve al presente.
+function proChartPanStart(e){
+  const svg = document.getElementById('pro-chart-svg');
+  if(!svg) return;
+  PRO_CHART_STATE._panning     = true;
+  PRO_CHART_STATE._panStartX   = e.clientX;
+  PRO_CHART_STATE._panStartOff = PRO_CHART_STATE.offset || 0;
+  // Escala px-pantalla → px-viewBox (el SVG de 700 se estira al ancho real)
+  PRO_CHART_STATE._panScale    = 700 / (svg.getBoundingClientRect().width || 700);
+  try{ svg.setPointerCapture(e.pointerId); }catch(_){}
+  svg.style.cursor = 'grabbing';
+  e.preventDefault();
+}
+function proChartPanMove(e){
+  if(!PRO_CHART_STATE._panning) return;
+  const dxPx     = (e.clientX - PRO_CHART_STATE._panStartX) * (PRO_CHART_STATE._panScale || 1);
+  const slot     = PRO_CHART_STATE.zoomSlot || 12;
+  const dCandles = Math.round(dxPx / slot);   // + derecha = ver más pasado
+  const total    = PRO_CHART_STATE._totalCandles || 0;
+  PRO_CHART_STATE.offset = Math.max(0, Math.min(
+    PRO_CHART_STATE._panStartOff + dCandles,
+    Math.max(0, total - 5)
+  ));
+  renderProChartInPlace();
+}
+function proChartPanEnd(e){
+  if(!PRO_CHART_STATE._panning) return;
+  PRO_CHART_STATE._panning = false;
+  const svg = document.getElementById('pro-chart-svg');
+  if(svg) svg.style.cursor = 'crosshair';
 }
 
 function setProChartPeriod(period){
@@ -5453,8 +5510,13 @@ function mkProChartSVG(market){
       ${periodBtns}
     </div>
     <svg id="pro-chart-svg" viewBox="0 0 700 220" preserveAspectRatio="none"
-      style="width:100%;height:220px;display:block;overflow:visible;cursor:crosshair"
-      onwheel="handleProChartScroll(event)">
+      style="width:100%;height:220px;display:block;overflow:visible;cursor:crosshair;touch-action:none;user-select:none"
+      onwheel="handleProChartScroll(event)"
+      onpointerdown="proChartPanStart(event)"
+      onpointermove="proChartPanMove(event)"
+      onpointerup="proChartPanEnd(event)"
+      onpointercancel="proChartPanEnd(event)"
+      onpointerleave="proChartPanEnd(event)">
       <text x="350" y="110" fill="var(--muted)" font-size="11" text-anchor="middle">Cargando velas…</text>
     </svg>`;
 }
@@ -5496,7 +5558,7 @@ async function loadProOrderBook(marketId){
     .order("price", {ascending:false});
 
   const {data:trades} = await db.from("contracts")
-    .select("shares,yes_price,no_price,created_at,updated_at")
+    .select("shares,yes_price,no_price,yes_user_id,no_user_id,created_at,updated_at")
     .eq("market_id", marketId)
     .order("updated_at", {ascending:false})
     .limit(15);
@@ -5573,24 +5635,34 @@ function renderProOrderBookHTML(orders, trades){
         <div style="font-weight:700;color:${color};text-align:left;z-index:1">${pct(r.price)}</div>
         <div style="position:relative;height:16px;background:var(--card2);border-radius:2px;overflow:hidden">
           <div style="position:absolute;top:0;height:100%;background:${bg};${barStyle}"></div>
-          ${r.isMM?`<div style="position:absolute;top:0;right:4px;line-height:16px;font-size:8px;color:var(--muted);z-index:1">MM</div>`:""}
+          
         </div>
         <div style="color:var(--muted);text-align:right;z-index:1">${r.shares.toFixed(1)}</div>
       `:`
         <div style="color:var(--muted);text-align:left;z-index:1">${r.shares.toFixed(1)}</div>
         <div style="position:relative;height:16px;background:var(--card2);border-radius:2px;overflow:hidden">
           <div style="position:absolute;top:0;height:100%;background:${bg};${barStyle}"></div>
-          ${r.isMM?`<div style="position:absolute;top:0;left:4px;line-height:16px;font-size:8px;color:var(--muted);z-index:1">MM</div>`:""}
+          
         </div>
         <div style="font-weight:700;color:${color};text-align:right;z-index:1">${pct(r.price)}</div>
       `}
     </div>`;
   };
 
-  const tapeRows = trades.slice(0,12).map(tr=>{
+  // Cinta de operaciones: mostrar SIEMPRE el lado del usuario REAL.
+  // Cada contrato tiene dos lados y uno suele ser el MM/admin — ese lado
+  // se oculta: la fila muestra la compra del usuario, sin rastro del MM.
+  const tapeAdminIds = new Set(STATE.users.filter(u=>u.role==="admin").map(u=>String(u.id)));
+  const tapeRows = trades
+    .filter(tr => !(tapeAdminIds.has(String(tr.yes_user_id)) && tapeAdminIds.has(String(tr.no_user_id))))
+    .slice(0,12).map(tr=>{
     const ago = timeAgo(tr.updated_at || tr.created_at);
-    // yes_price >= 0.5 indica que el comprador apostó SÍ (pagó más del 50% por ese lado)
-    const isSide = tr.yes_price >= 0.5 ? "YES" : "NO";
+    const yesIsAdmin = tapeAdminIds.has(String(tr.yes_user_id));
+    const noIsAdmin  = tapeAdminIds.has(String(tr.no_user_id));
+    // El lado real del usuario: si el MM tomó SÍ, la compra real fue NO (y viceversa)
+    const isSide = yesIsAdmin ? "NO"
+                 : noIsAdmin  ? "YES"
+                 : (tr.yes_price >= 0.5 ? "YES" : "NO");
     const sideColor = isSide === "YES" ? "var(--yes)" : "var(--no)";
     const sideBg    = isSide === "YES" ? "rgba(0,200,150,.12)" : "rgba(224,40,74,.10)";
     const displayPrice = isSide === "YES" ? tr.yes_price : (1 - tr.yes_price);
@@ -6693,7 +6765,7 @@ async function renderObBook(marketId, el){
         <div style="font-size:10px;font-weight:700;color:${color}">${pct(r.price)}</div>
         <div style="position:relative;height:14px;border-radius:2px;overflow:hidden;background:var(--card2)">
           <div style="position:absolute;top:0;left:0;height:100%;width:${w}%;background:${bg};opacity:.4"></div>
-          ${r.isMM?`<div style="position:absolute;top:0;left:3px;line-height:14px;font-size:9px;color:var(--muted)">MM</div>`:""}
+          
         </div>
         <div style="font-size:10px;color:var(--muted);text-align:right">${usd(Math.round(r.usd*100)/100)}</div>
       </div>`;
@@ -8934,10 +9006,19 @@ async function loadUserPnlHistory(userId){
 async function loadProSentiment(marketId){
   const el = document.getElementById("pro-sentiment-"+marketId);
 
-  const [{data:mFresh},{data:cData}] = await Promise.all([
+  // TODOS los admins/MM quedan fuera del sentimiento (puede haber más de uno)
+  const adminIds = new Set(STATE.users.filter(u=>u.role==="admin").map(u=>String(u.id)));
+
+  const [{data:mFresh},{data:buyOrders}] = await Promise.all([
     db.from("markets").select("q_yes,q_no").eq("id",marketId).maybeSingle(),
-    db.from("contracts").select("yes_user_id,no_user_id")
-      .eq("market_id",marketId).eq("status","active"),
+    // Compras REALES de usuarios: nunca órdenes del MM (is_mm=true), ni
+    // contrapartes/espejo (is_mirror / order_type='mm'), ni ventas.
+    // El sentimiento es el número de compras de la gente por lado.
+    db.from("orders").select("side,user_id,is_mirror,order_type,is_mm")
+      .eq("market_id",marketId)
+      .eq("is_mm",false)
+      .neq("order_type","sell")
+      .in("status",["filled","partial"]),
   ]);
 
   const qY = mFresh?.q_yes||0;
@@ -8947,10 +9028,16 @@ async function loadProSentiment(marketId){
 
   if(!el) return;
 
-  const adminId = STATE.users.find(u=>u.role==="admin")?.id||null;
-  const cs = cData||[];
-  const countY = cs.filter(c=>c.yes_user_id && c.yes_user_id!==adminId).length;
-  const countN = cs.filter(c=>c.no_user_id  && c.no_user_id!==adminId).length;
+  // Excluir espejos/contrapartes del MM y cualquier compra de un admin.
+  // Sin este filtro el MM (que compra la contraparte de cada orden) haría
+  // que ambos lados mostraran siempre la misma cantidad de compras.
+  const buys = (buyOrders||[]).filter(o=>
+    !o.is_mirror &&
+    o.order_type !== "mm" &&
+    !adminIds.has(String(o.user_id))
+  );
+  const countY = buys.filter(o=>o.side==="YES").length;
+  const countN = buys.filter(o=>o.side==="NO").length;
   const total  = countY+countN;
   const pctY   = total>0 ? Math.round(countY/total*100) : 50;
   const pctN   = 100-pctY;
@@ -9746,6 +9833,23 @@ function renderWallet(){
         </button>`}
   </div>
 
+  <!-- Shortcut: Comercio P2P / Wire transfer -->
+  <div class="card" style="margin-bottom:16px;padding:16px;display:flex;align-items:center;gap:14px;
+      cursor:pointer;transition:all .15s;border:1.5px solid rgba(0,152,168,.18)"
+    onclick="navigate('p2p')"
+    onmouseover="this.style.borderColor='rgba(0,152,168,.45)'"
+    onmouseout="this.style.borderColor='rgba(0,152,168,.18)'">
+    <div style="width:42px;height:42px;border-radius:12px;background:rgba(0,152,168,.10);
+        display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0">🤝</div>
+    <div style="flex:1;min-width:0">
+      <div style="font-weight:800;font-size:14px">${STATE.lang==="en"?"P2P Trading / Wire transfer":"Comercio P2P / Wire transfer"}</div>
+      <div style="font-size:11.5px;color:var(--muted);margin-top:2px">
+        ${STATE.lang==="en"?"Buy and sell balance with other users · Zelle 🇺🇸":"Compra y vende saldo con otros usuarios · Zelle 🇺🇸"}
+      </div>
+    </div>
+    <span style="color:var(--muted);font-size:16px;flex-shrink:0">›</span>
+  </div>
+
   ${adminUserSelector}
 
   <div class="card" style="overflow:hidden">
@@ -9770,7 +9874,7 @@ function renderWallet(){
 // ═══════════════════════════════════════════════════════════════════
 // Cada usuario tiene su propia dirección Solana de depósito.
 // El usuario envía desde CUALQUIER wallet o exchange a esa dirección.
-// Helius detecta la TX y acredita automáticamente via webhook.
+// Alchemy detecta la TX (webhook + verificación directa) y acredita automáticamente.
 // ═══════════════════════════════════════════════════════════════════
 
 // Dirección maestra de la plataforma (Solana)
@@ -9789,512 +9893,16 @@ function openDeposit(){
   renderDepositModal();
 }
 
+// (Bloque duplicado de depósito eliminado — las funciones activas están más abajo.
+//  El polling de Solana ahora usa Alchemy; Helius fue removido por completo.)
+
 function closeDepositModal(){
+  // Si había una sesión de depósito activa, liberarla INMEDIATAMENTE
+  // (sin esperar los 5 minutos) para que otro usuario pueda usar la wallet
   if(STATE.depositSession){
     clearInterval(STATE.depositSession.timer);
     clearInterval(STATE.depositSession.checkTimer);
-    db.rpc("unlock_deposit_wallet",{p_wallet_id:STATE.depositSession.walletId}).then(()=>{});
-    STATE.depositSession = null;
-  }
-  STATE.depositOpen = false;
-  document.getElementById("deposit-overlay")?.remove();
-}
-
-function closeDepositIfBg(e){if(e.target.id==="deposit-overlay")closeDepositModal();}
-
-async function renderDepositModal(){
-  document.getElementById("deposit-overlay")?.remove();
-  const u = getUser();
-  if(!u) return;
-
-  const html=`<div class="overlay" id="deposit-overlay" onclick="closeDepositIfBg(event)">
-    <div class="modal" onclick="event.stopPropagation()"
-      style="max-width:440px;max-height:92vh;overflow-y:auto;border-radius:24px;padding:0;
-        background:var(--card)">
-
-      <!-- Header con gradiente -->
-      <div style="background:linear-gradient(135deg,#9945ff 0%,#7c3aed 50%,#6d28d9 100%);
-          border-radius:24px 24px 0 0;padding:24px 24px 20px;position:relative">
-        <button onclick="closeDepositModal()"
-          style="position:absolute;top:16px;right:16px;background:rgba(255,255,255,.2);
-            border:none;color:#fff;width:30px;height:30px;border-radius:50%;
-            font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center">×</button>
-        <div style="color:rgba(255,255,255,.8);font-size:12px;font-weight:600;
-            text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">Depósito</div>
-        <div style="color:#fff;font-size:24px;font-weight:900">Agregar fondos</div>
-      </div>
-
-      <div style="padding:20px">
-        <!-- Red -->
-        <div style="font-size:11px;color:var(--muted);margin-bottom:6px;font-weight:700;
-            text-transform:uppercase;letter-spacing:.5px">Red blockchain</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px">
-          <button id="dep-btn-sol" onclick="depSetNetwork('sol')"
-            style="padding:12px;border-radius:12px;border:2px solid #9945ff;
-              background:rgba(153,69,255,.1);font-weight:700;font-size:13px;
-              cursor:pointer;color:#9945ff;display:flex;align-items:center;
-              justify-content:center;gap:6px">
-            <span style="font-size:16px">◎</span> Solana
-          </button>
-          <button id="dep-btn-poly" onclick="depSetNetwork('poly')"
-            style="padding:12px;border-radius:12px;border:2px solid var(--border);
-              background:var(--card2);font-weight:700;font-size:13px;
-              cursor:pointer;color:var(--muted);display:flex;align-items:center;
-              justify-content:center;gap:6px">
-            <span style="font-size:16px">⬡</span> Polygon
-          </button>
-        </div>
-
-        <!-- Token -->
-        <div style="font-size:11px;color:var(--muted);margin-bottom:6px;font-weight:700;
-            text-transform:uppercase;letter-spacing:.5px">Token</div>
-        <div id="dep-token-row" style="display:flex;gap:6px;margin-bottom:16px">
-          <button id="dep-tok-usdc" onclick="depSetToken('usdc')"
-            style="flex:1;padding:9px 6px;border-radius:10px;border:2px solid #2775ca;
-              background:rgba(39,117,202,.1);font-weight:700;font-size:12px;
-              cursor:pointer;color:#2775ca">USDC</button>
-          <button id="dep-tok-usdt" onclick="depSetToken('usdt')"
-            style="flex:1;padding:9px 6px;border-radius:10px;border:2px solid var(--border);
-              background:var(--card2);font-weight:700;font-size:12px;
-              cursor:pointer;color:var(--muted)">USDT</button>
-          <button id="dep-tok-sol" onclick="depSetToken('sol')"
-            style="flex:1;padding:9px 6px;border-radius:10px;border:2px solid var(--border);
-              background:var(--card2);font-weight:700;font-size:12px;
-              cursor:pointer;color:var(--muted)">SOL</button>
-        </div>
-
-        <!-- Monto -->
-        <div style="font-size:11px;color:var(--muted);margin-bottom:6px;font-weight:700;
-            text-transform:uppercase;letter-spacing:.5px">Monto en USD</div>
-        <input id="dep-amount-input" type="number" min="1" step="1" value="10"
-          style="width:100%;box-sizing:border-box;padding:13px 14px;
-            border:1.5px solid var(--border);border-radius:12px;background:var(--card2);
-            color:var(--text);font-size:20px;font-weight:800;margin-bottom:8px"
-          onchange="STATE.depositAmount=parseFloat(this.value)||10"/>
-        <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin-bottom:20px">
-          ${[5,10,25,50,100].map(v=>`
-            <button onclick="document.getElementById('dep-amount-input').value=${v};STATE.depositAmount=${v}"
-              style="width:100%;padding:9px 0;border-radius:8px;border:1.5px solid var(--border);
-                background:var(--card2);font-size:13px;font-weight:700;cursor:pointer;
-                color:var(--text);box-sizing:border-box">$${v}</button>`).join("")}
-        </div>
-
-        <!-- Botón generar -->
-        <button id="dep-generate-btn" onclick="depRequestWallet()"
-          style="width:100%;padding:16px;border-radius:14px;border:none;
-            background:linear-gradient(135deg,#9945ff,#7c3aed);color:#fff;
-            font-weight:800;font-size:16px;cursor:pointer;margin-bottom:16px;
-            box-shadow:0 4px 20px rgba(153,69,255,.35);letter-spacing:.3px">
-          🔐 Generar dirección de depósito
-        </button>
-
-        <!-- Área dinámica -->
-        <div id="dep-wallet-container"></div>
-
-        <!-- Info -->
-        <div style="background:var(--card2);border-radius:10px;padding:12px 14px;
-            font-size:11px;color:var(--muted);line-height:1.8;margin-top:4px">
-          <div>⏱ La dirección se reserva <strong>5 minutos</strong> exclusivamente para ti</div>
-          <div>⚡ Balance acreditado automáticamente al confirmar la TX</div>
-          <div>🔒 Cada dirección se bloquea para evitar conflictos</div>
-        </div>
-      </div>
-    </div>
-  </div>`;
-
-  document.body.insertAdjacentHTML("beforeend",html);
-  depSetNetwork("sol");
-  depSetToken("usdc");
-}
-
-function depSetNetwork(net){
-  STATE.depositNetwork = net;
-  const isSol = net==="sol";
-  const s = document.getElementById("dep-btn-sol");
-  const p = document.getElementById("dep-btn-poly");
-  if(s){ s.style.border=isSol?"2px solid #9945ff":"2px solid var(--border)"; s.style.background=isSol?"rgba(153,69,255,.08)":"var(--card2)"; s.style.color=isSol?"#9945ff":"var(--muted)"; }
-  if(p){ p.style.border=!isSol?"2px solid #8247e5":"2px solid var(--border)"; p.style.background=!isSol?"rgba(130,71,229,.08)":"var(--card2)"; p.style.color=!isSol?"#8247e5":"var(--muted)"; }
-  // SOL token solo disponible en red Solana
-  const tokSol = document.getElementById("dep-tok-sol");
-  if(tokSol) tokSol.style.display = isSol?"":"none";
-  if(!isSol && STATE.depositToken==="sol") depSetToken("usdc");
-  const genBtn = document.getElementById("dep-generate-btn");
-  if(genBtn) genBtn.style.background = isSol
-    ?"linear-gradient(135deg,#9945ff,#7c3aed)"
-    :"linear-gradient(135deg,#8247e5,#6030c0)";
-}
-
-function depSetToken(tok){
-  STATE.depositToken = tok;
-  const colors = {usdc:"#2775ca", usdt:"#26a17b", sol:"#9945ff"};
-  ["usdc","usdt","sol"].forEach(t=>{
-    const b = document.getElementById("dep-tok-"+t);
-    if(!b) return;
-    const active = t===tok;
-    b.style.border = active?`2px solid ${colors[t]}`:"2px solid var(--border)";
-    b.style.background = active?`rgba(${t==="usdc"?"39,117,202":t==="usdt"?"38,161,123":"153,69,255"},.08)`:"var(--card2)";
-    b.style.color = active?colors[t]:"var(--muted)";
-  });
-}
-
-async function depRequestWallet(){
-  const u = getUser();
-  if(!u) return;
-  const net    = STATE.depositNetwork||"sol";
-  const tok    = STATE.depositToken||"usdc";
-  const amount = STATE.depositAmount||parseFloat(document.getElementById("dep-amount-input")?.value)||10;
-  if(amount<1){notify("El monto mínimo es $1","error");return;}
-
-  const container = document.getElementById("dep-wallet-container");
-  if(!container) return;
-  const btn = document.getElementById("dep-generate-btn");
-  if(btn){btn.disabled=true;btn.textContent="⏳ Reservando dirección...";}
-
-  container.innerHTML=`<div style="text-align:center;padding:20px;color:var(--muted)">⏳ Buscando dirección disponible...</div>`;
-
-  const {data, error} = await db.rpc("lock_deposit_wallet",{
-    p_network: net, p_user_id: u.id, p_amount: amount, p_minutes: 5
-  });
-
-  if(btn){btn.disabled=false;btn.textContent="🔐 Generar dirección de depósito";}
-
-  if(error||!data||data.error){
-    container.innerHTML=`<div style="background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.3);
-        border-radius:10px;padding:16px;text-align:center">
-      <div style="font-weight:700;color:var(--no);margin-bottom:6px">Sin direcciones disponibles</div>
-      <div style="font-size:12px;color:var(--muted);margin-bottom:12px">
-        Todas las direcciones están en uso. Intenta en unos minutos.
-      </div>
-      <button onclick="depRequestWallet()" style="padding:10px 20px;border-radius:8px;border:1.5px solid var(--border);
-          background:transparent;color:var(--text);cursor:pointer;font-size:13px;font-weight:600">
-        🔄 Intentar de nuevo
-      </button>
-    </div>`;
-    return;
-  }
-
-  STATE.depositSession = {
-    walletId:  data.wallet_id,
-    address:   data.address,
-    qrUrl:     data.qr_url,
-    network:   net,
-    token:     tok,
-    amount,
-    expiresAt: Date.now()+5*60*1000,
-    userId:    u.id,
-    timer:     null,
-    checkTimer:null,
-  };
-
-  depShowWalletUI();
-  STATE.depositSession.timer      = setInterval(depTickCountdown, 1000);
-  STATE.depositSession.checkTimer = setInterval(depCheckPayment, 10000);
-  // Primera verificación inmediata por si ya hay una TX
-  setTimeout(depCheckPayment, 2000);
-}
-
-function depShowWalletUI(){
-  const s = STATE.depositSession;
-  if(!s) return;
-  const container = document.getElementById("dep-wallet-container");
-  if(!container) return;
-  const netColor = s.network==="sol"?"#9945ff":"#8247e5";
-  const netName  = s.network==="sol"?"Solana":"Polygon";
-  const tokName  = s.token==="usdc"?"USDC":s.token==="usdt"?"USDT":"SOL";
-
-  container.innerHTML=`
-    <!-- Countdown -->
-    <div style="background:rgba(245,158,11,.08);border:1.5px solid rgba(245,158,11,.3);
-        border-radius:10px;padding:10px 14px;margin-bottom:14px;
-        display:flex;justify-content:space-between;align-items:center">
-      <span style="font-size:12px;font-weight:700;color:#f59e0b">⏱ Dirección reservada</span>
-      <span id="dep-countdown" style="font-size:18px;font-weight:900;color:#f59e0b;font-family:monospace">
-        5:00
-      </span>
-    </div>
-
-    <!-- Monto -->
-    <div style="text-align:center;margin-bottom:14px">
-      <div style="font-size:11px;color:var(--muted)">Envía exactamente</div>
-      <div style="font-size:36px;font-weight:900;color:${netColor}">
-        $${s.amount.toFixed(2)} ${tokName}
-      </div>
-      <div style="font-size:11px;color:var(--muted)">Red: <strong>${netName}</strong></div>
-    </div>
-
-    <!-- QR -->
-    ${s.qrUrl?`
-    <div style="text-align:center;margin-bottom:14px">
-      <div style="display:inline-block;padding:10px;background:#fff;border-radius:14px;
-          box-shadow:0 2px 16px rgba(0,0,0,.1)">
-        <img src="${escHtml(s.qrUrl)}" style="width:180px;height:180px;display:block;object-fit:contain"
-          onerror="this.parentElement.style.display='none'" alt="QR depósito"/>
-      </div>
-    </div>`:""}
-
-    <!-- Dirección -->
-    <div style="background:rgba(153,69,255,.05);border:1.5px solid rgba(153,69,255,.2);
-        border-radius:12px;padding:14px;margin-bottom:12px">
-      <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;
-          letter-spacing:.5px;margin-bottom:8px">📋 Dirección de depósito</div>
-      <div onclick="depCopyAddress('${escHtml(s.address)}')"
-        style="font-family:monospace;font-size:11px;word-break:break-all;
-          background:var(--card);border:1px solid var(--border);border-radius:8px;
-          padding:10px;color:var(--text);margin-bottom:8px;cursor:pointer;
-          user-select:all;line-height:1.6">
-        ${escHtml(s.address)}
-      </div>
-      <button onclick="depCopyAddress('${escHtml(s.address)}')"
-        style="width:100%;padding:10px;border-radius:8px;border:1.5px solid var(--border);
-          background:transparent;color:var(--text);cursor:pointer;font-size:13px;font-weight:600">
-        📋 Copiar dirección
-      </button>
-    </div>
-
-    <!-- Estado verificación -->
-    <div id="dep-status" style="text-align:center;font-size:11px;color:var(--muted);margin-bottom:12px">
-      🔍 Verificando automáticamente cada 10 segundos...
-    </div>
-
-    <!-- Botón cancelar -->
-    <button onclick="depCancelSession()"
-      style="width:100%;padding:11px;border-radius:10px;border:1.5px solid var(--border);
-        background:transparent;color:var(--muted);cursor:pointer;font-size:13px;font-weight:600">
-      ✕ Cancelar y liberar dirección
-    </button>`;
-}
-
-function depCopyAddress(addr){
-  navigator.clipboard.writeText(addr).then(()=>{
-    notify("📋 Dirección copiada","success");
-  }).catch(()=>{
-    const ta=document.createElement("textarea");
-    ta.value=addr;ta.style.position="fixed";ta.style.opacity="0";
-    document.body.appendChild(ta);ta.select();document.execCommand("copy");
-    document.body.removeChild(ta);notify("📋 Dirección copiada","success");
-  });
-}
-
-async function depCancelSession(){
-  const s = STATE.depositSession;
-  if(!s) return;
-  clearInterval(s.timer);
-  clearInterval(s.checkTimer);
-  await db.rpc("unlock_deposit_wallet",{p_wallet_id:s.walletId});
-  STATE.depositSession = null;
-  // Volver al estado inicial del modal
-  const container = document.getElementById("dep-wallet-container");
-  if(container) container.innerHTML=`<div style="text-align:center;font-size:12px;color:var(--muted);padding:8px">
-    Dirección liberada. Puedes generar una nueva cuando quieras.
-  </div>`;
-  notify("Dirección liberada","info");
-}
-
-function depTickCountdown(){
-  const s = STATE.depositSession;
-  if(!s) return;
-  const rem  = Math.max(0,Math.ceil((s.expiresAt-Date.now())/1000));
-  const mins = Math.floor(rem/60);
-  const secs = rem%60;
-  const el   = document.getElementById("dep-countdown");
-  if(el){
-    el.textContent=`${mins}:${String(secs).padStart(2,"0")}`;
-    if(rem<60) el.style.color="var(--no)";
-  }
-  if(rem<=0){
-    clearInterval(s.timer);
-    clearInterval(s.checkTimer);
-    db.rpc("unlock_deposit_wallet",{p_wallet_id:s.walletId}).then(()=>{});
-    STATE.depositSession=null;
-    const container=document.getElementById("dep-wallet-container");
-    if(container) container.innerHTML=`
-      <div style="background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.3);
-          border-radius:10px;padding:16px;text-align:center;margin-bottom:12px">
-        <div style="font-size:20px;margin-bottom:8px">⏰</div>
-        <div style="font-weight:700;color:var(--no);margin-bottom:4px">Tiempo expirado</div>
-        <div style="font-size:12px;color:var(--muted)">No se detectó ninguna transferencia en 5 minutos.</div>
-      </div>
-      <button onclick="depRequestWallet()" style="width:100%;padding:12px;border-radius:10px;
-          border:none;background:var(--yes);color:#fff;font-weight:700;cursor:pointer">
-        🔄 Intentar de nuevo
-      </button>`;
-  }
-}
-
-async function depCheckPayment(){
-  const s = STATE.depositSession;
-  if(!s) return;
-  const statusEl = document.getElementById("dep-status");
-
-  // Polygon: doble verificación
-  //  1) ¿El webhook de Alchemy ya acreditó? → buscar la tx de depósito en la DB
-  //  2) Fallback: consultar Alchemy directamente por transferencias entrantes a la
-  //     dirección bloqueada y acreditar vía credit_deposit (idempotente por tx_hash,
-  //     así no hay doble acreditación aunque el webhook también funcione)
-  if(s.network === "poly"){
-    if(statusEl) statusEl.innerHTML = `🔍 Verificando transferencia · última revisión <strong>${new Date().toLocaleTimeString()}</strong>`;
-
-    // ── 1) ¿El webhook ya acreditó en la DB? ──
-    try{
-      const {data:rows} = await db.from("transactions")
-        .select("id, amount, network, created_at")
-        .eq("user_id", s.userId)
-        .eq("type", "deposit")
-        .ilike("network", "%POLY%")
-        .gte("created_at", s.startedAtISO)
-        .order("created_at", {ascending:false})
-        .limit(1);
-      if(rows && rows.length){
-        await depFinishAlreadyCredited(rows[0].amount);
-        return;
-      }
-    }catch(_){ /* seguir con el fallback */ }
-
-    // ── 2) Fallback: verificar directamente en Alchemy ──
-    try{
-      const resp = await fetch("https://polygon-mainnet.g.alchemy.com/v2/g9tfDTOzHyhXPRiQDRoPi", {
-        method: "POST",
-        headers: {"Content-Type":"application/json"},
-        body: JSON.stringify({
-          jsonrpc: "2.0", id: 1,
-          method: "alchemy_getAssetTransfers",
-          params: [{
-            toAddress: s.address,
-            category: ["external","erc20"],
-            order: "desc",
-            maxCount: "0xa",
-            withMetadata: true,
-            excludeZeroValue: true,
-          }]
-        })
-      });
-      if(!resp.ok) throw new Error("Alchemy "+resp.status);
-      const j = await resp.json();
-      if(j.error) throw new Error(j.error.message||"Alchemy RPC error");
-      const transfers = j?.result?.transfers || [];
-      const maticPrice = STATE.maticPrice || 0.5;
-
-      for(const tr of transfers){
-        if((tr.to||"").toLowerCase() !== s.address.toLowerCase()) continue;
-        // Solo TXs recientes (últimos 10 min) para no acreditar depósitos viejos
-        const ts = tr.metadata?.blockTimestamp ? new Date(tr.metadata.blockTimestamp).getTime() : 0;
-        if(ts && (Date.now()-ts) > 10*60*1000) continue;
-
-        const asset = (tr.asset||"").toUpperCase();
-        const val = parseFloat(tr.value)||0;
-        if(!val || !tr.hash) continue;
-
-        if(asset==="USDC" || asset==="USDT" || asset==="USDC.E"){
-          // Stablecoins: valor 1:1 con USD, tolerancia ±$0.05
-          if(Math.abs(val - s.amount) <= 0.05){
-            await depCreditUser(tr.hash, val, asset==="USDT"?"USDT":"USDC");
-            return;
-          }
-        } else if(asset==="MATIC" || asset==="POL"){
-          // Nativo: convertir a USD, tolerancia ±5%
-          const usdVal = Math.round(val*maticPrice*100)/100;
-          if(Math.abs(usdVal - s.amount) <= s.amount*0.05){
-            await depCreditUser(tr.hash, usdVal, "MATIC");
-            return;
-          }
-        }
-      }
-      if(statusEl) statusEl.innerHTML = `🔍 Verificando en Polygon · última revisión <strong>${new Date().toLocaleTimeString()}</strong>`;
-    }catch(e){
-      if(statusEl) statusEl.innerHTML = `⚠️ Error verificando (${e.message}) · reintentando...`;
-    }
-    return;
-  }
-
-  // Solana: verificar via Helius
-  try{
-    const HK  = "7965959a-4d5e-4e1e-a18c-28f889be6b2f";
-    const url = `https://api.helius.xyz/v0/addresses/${s.address}/transactions?api-key=${HK}&limit=10`;
-    const resp = await fetch(url);
-    if(!resp.ok) throw new Error("Helius "+resp.status);
-    const txs = await resp.json();
-
-    for(const tx of (txs||[])){
-      if(tx.transactionError) continue;
-      const txAge = Date.now()-(tx.timestamp||0)*1000;
-      if(txAge>6*60*1000) continue;
-
-      // Tokens SPL (USDC, USDT)
-      for(const t of (tx.tokenTransfers||[])){
-        if(t.toUserAccount!==s.address) continue;
-        const received = t.tokenAmount;
-        if(Math.abs(received-s.amount)<=0.05){
-          await depCreditUser(tx.signature, received, t.mint); return;
-        }
-      }
-      // SOL nativo
-      for(const t of (tx.nativeTransfers||[])){
-        if(t.toUserAccount!==s.address) continue;
-        const sol = t.amount/1e9;
-        const usd = Math.round(sol*(STATE.solPrice||150)*100)/100;
-        if(Math.abs(usd-s.amount)<=s.amount*0.05){
-          await depCreditUser(tx.signature, usd, "SOL"); return;
-        }
-      }
-    }
-    if(statusEl) statusEl.innerHTML=`🔍 Verificando · última revisión <strong>${new Date().toLocaleTimeString()}</strong>`;
-  }catch(e){
-    if(statusEl) statusEl.textContent=`⚠️ Error verificando (${e.message})`;
-  }
-}
-
-async function depCreditUser(txHash, amount, token){
-  const s = STATE.depositSession;
-  if(!s) return;
-  clearInterval(s.timer);
-  clearInterval(s.checkTimer);
-
-  const container = document.getElementById("dep-wallet-container");
-  if(container) container.innerHTML=`<div style="text-align:center;padding:24px">
-    <div style="font-size:36px;margin-bottom:12px">💰</div>
-    <div style="font-weight:800;font-size:16px;margin-bottom:4px">¡Transferencia detectada!</div>
-    <div style="font-size:13px;color:var(--muted)">Acreditando $${amount.toFixed(2)}...</div>
-  </div>`;
-
-  const tokSymbol = token==="SOL"?"SOL"
-    :token==="EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"?"USDC":"USDT";
-  const netStr = s.network==="sol"?tokSymbol+"-SOL":tokSymbol+"-POLY";
-
-  const {data, error} = await db.rpc("credit_deposit",{
-    p_user_id: s.userId,
-    p_amount:  Math.round(amount*100)/100,
-    p_tx_hash: txHash,
-    p_network: netStr,
-    p_token:   tokSymbol,
-  });
-
-  if(error){notify("Error: "+error.message,"error");return;}
-  if(data?.already_credited){notify("Esta TX ya fue procesada","info");return;}
-
-  // Liberar wallet
-  await db.rpc("unlock_deposit_wallet",{p_wallet_id:s.walletId});
-  STATE.depositSession=null;
-
-  // Actualizar balance
-  const {data:fu}=await db.from("users").select("balance").eq("id",s.userId).maybeSingle();
-  if(fu){
-    const ui=STATE.users.findIndex(x=>x.id===s.userId);
-    if(ui>=0) STATE.users[ui]={...STATE.users[ui],balance:fu.balance};
-    render();
-  }
-  notify(`💰 +$${amount.toFixed(2)} acreditados en tu balance`,"success");
-  closeDepositModal();
-}
-
-function closeDepositModal(){
-  // Si había una sesión de depósito activa, liberarla
-  if(STATE.depositSession){
-    clearInterval(STATE.depositSession.timer);
-    // Liberar la wallet en DB
-    db.from("deposit_wallets")
-      .update({locked_until:null, locked_by:null, expected_amount:null})
-      .eq("id", STATE.depositSession.walletId)
-      .then(()=>{});
+    db.rpc("unlock_deposit_wallet", { p_wallet_id: STATE.depositSession.walletId }).then(()=>{});
     STATE.depositSession = null;
   }
   STATE.depositOpen = false;
@@ -10310,7 +9918,7 @@ async function renderDepositModal(){
   document.getElementById("deposit-overlay")?.remove();
   const u = getUser();
   if(!u) return;
-
+  const en = STATE.lang==="en";
   const curAmt = STATE.depositAmount || 10;
 
   const html = `<div class="overlay" id="deposit-overlay" onclick="closeDepositIfBg(event)">
@@ -10321,17 +9929,17 @@ async function renderDepositModal(){
       <!-- Header -->
       <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px">
         <div>
-          <div style="font-weight:900;font-size:19px;letter-spacing:-.3px">Depositar fondos</div>
-          <div style="font-size:12px;color:var(--muted);margin-top:3px">Elige la red y el monto a depositar</div>
+          <div style="font-weight:900;font-size:19px;letter-spacing:-.3px">${en?"Deposit funds":"Depositar fondos"}</div>
+          <div style="font-size:12px;color:var(--muted);margin-top:3px">${en?"Choose the network and amount":"Elige la red y el monto a depositar"}</div>
         </div>
-        <button onclick="closeDepositModal()" aria-label="Cerrar"
+        <button onclick="closeDepositModal()" aria-label="${en?"Close":"Cerrar"}"
           style="background:var(--card2);border:none;color:var(--muted);width:30px;height:30px;
             border-radius:50%;font-size:14px;cursor:pointer;display:flex;align-items:center;
             justify-content:center;flex-shrink:0">✕</button>
       </div>
 
       <!-- Selector de red -->
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:18px">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
         <button id="dep-btn-sol" onclick="depSetNetwork('sol')"
           style="display:flex;flex-direction:column;align-items:center;gap:3px;padding:13px 8px;
             border-radius:14px;border:2px solid #9945ff;background:rgba(153,69,255,.07);
@@ -10346,14 +9954,27 @@ async function renderDepositModal(){
             cursor:pointer;color:var(--muted);transition:all .15s">
           <span style="font-size:17px;line-height:1">⬡</span>
           <span style="font-weight:800;font-size:13px">Polygon</span>
-          <span style="font-size:9.5px;opacity:.75;font-weight:600">MATIC · USDC · USDT</span>
+          <span style="font-size:9.5px;opacity:.75;font-weight:600">USDC · USDT</span>
         </button>
       </div>
+
+      <!-- Opción P2P / Wire transfer -->
+      <button onclick="closeDepositModal();navigate('p2p')"
+        style="width:100%;display:flex;align-items:center;gap:10px;padding:12px 14px;
+          border-radius:14px;border:2px solid var(--border);background:var(--card2);
+          cursor:pointer;margin-bottom:18px;text-align:left;transition:all .15s">
+        <span style="font-size:18px">🏦</span>
+        <span style="flex:1">
+          <span style="display:block;font-weight:800;font-size:13px;color:var(--text)">${en?"P2P / Wire transfer":"Comercio P2P / Wire transfer"}</span>
+          <span style="display:block;font-size:10px;color:var(--muted);font-weight:600">${en?"Buy balance from other users · Zelle":"Compra saldo a otros usuarios · Zelle"}</span>
+        </span>
+        <span style="color:var(--muted);font-size:14px">›</span>
+      </button>
 
       <!-- Monto -->
       <div style="margin-bottom:18px">
         <div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;
-            letter-spacing:.5px;margin-bottom:8px">Monto a depositar (USD)</div>
+            letter-spacing:.5px;margin-bottom:8px">${en?"Amount to deposit (USD)":"Monto a depositar (USD)"}</div>
         <div style="position:relative;margin-bottom:8px">
           <span style="position:absolute;left:14px;top:50%;transform:translateY(-50%);
               font-size:17px;font-weight:800;color:var(--muted);pointer-events:none">$</span>
@@ -10380,7 +10001,7 @@ async function renderDepositModal(){
           background:linear-gradient(135deg,#9945ff,#7c3aed);color:#fff;
           font-weight:800;font-size:15px;cursor:pointer;margin-bottom:14px;
           box-shadow:0 6px 18px rgba(124,58,237,.25);transition:all .15s">
-        Generar dirección de depósito
+        ${en?"Generate deposit address":"Generar dirección de depósito"}
       </button>
 
       <!-- Contenedor donde aparece la dirección/QR -->
@@ -10388,9 +10009,9 @@ async function renderDepositModal(){
 
       <div style="background:var(--card2);border:1px solid var(--border);border-radius:12px;
           padding:12px 14px;font-size:11.5px;color:var(--muted);line-height:1.8">
-        <div>⏱&nbsp; La dirección se reserva por <strong style="color:var(--text)">5 minutos</strong></div>
-        <div>💸&nbsp; Envía <strong style="color:var(--text)">exactamente</strong> el monto indicado desde cualquier wallet o exchange</div>
-        <div>✅&nbsp; El balance se acredita automáticamente al detectar la transferencia</div>
+        <div>⏱&nbsp; ${en?`The address is reserved for <strong style="color:var(--text)">5 minutes</strong>, only for you`:`La dirección se reserva por <strong style="color:var(--text)">5 minutos</strong>, solo para ti`}</div>
+        <div>💸&nbsp; ${en?`Send from any wallet or exchange — <strong style="color:var(--text)">the exact amount received</strong> is what gets credited`:`Envía desde cualquier wallet o exchange — se acredita <strong style="color:var(--text)">el monto exacto que recibamos</strong>`}</div>
+        <div>✅&nbsp; ${en?"Your balance is credited automatically when the transfer is detected":"El balance se acredita automáticamente al detectar la transferencia"}</div>
       </div>
     </div>
   </div>`;
@@ -10419,15 +10040,14 @@ function depSetNetwork(net){
   const btnPoly = document.getElementById("dep-btn-poly");
   if(btnSol){
     btnSol.style.border = isSol ? "2px solid #9945ff" : "2px solid var(--border)";
-    btnSol.style.background = isSol ? "rgba(153,69,255,.08)" : "var(--card2)";
+    btnSol.style.background = isSol ? "rgba(153,69,255,.07)" : "var(--card2)";
     btnSol.style.color = isSol ? "#9945ff" : "var(--muted)";
   }
   if(btnPoly){
     btnPoly.style.border = !isSol ? "2px solid #8247e5" : "2px solid var(--border)";
-    btnPoly.style.background = !isSol ? "rgba(130,71,229,.08)" : "var(--card2)";
+    btnPoly.style.background = !isSol ? "rgba(130,71,229,.07)" : "var(--card2)";
     btnPoly.style.color = !isSol ? "#8247e5" : "var(--muted)";
   }
-  // Actualizar botón generar con el color de la red
   const genBtn = document.getElementById("dep-generate-btn");
   if(genBtn){
     genBtn.style.background = isSol
@@ -10442,23 +10062,37 @@ function depSetNetwork(net){
 async function depRequestWallet(){
   const u = getUser();
   if(!u) return;
+  const en     = STATE.lang==="en";
   const net    = STATE.depositNetwork||"sol";
   const amount = STATE.depositAmount || parseFloat(document.getElementById("dep-amount-input")?.value)||10;
-  if(amount < 1){ notify("El monto mínimo es $1","error"); return; }
+  if(amount < 1){ notify(en?"Minimum amount is $1":"El monto mínimo es $1","error"); return; }
 
   const container = document.getElementById("dep-wallet-container");
   if(!container) return;
 
+  // ── UNA SOLA WALLET POR USUARIO ──
+  // Si el usuario ya tenía una dirección reservada (p. ej. cambió de red o
+  // de monto y volvió a presionar el botón), se libera INMEDIATAMENTE la
+  // anterior para que otro usuario pueda usarla — sin esperar los 5 min.
+  if(STATE.depositSession){
+    clearInterval(STATE.depositSession.timer);
+    clearInterval(STATE.depositSession.checkTimer);
+    const prevId = STATE.depositSession.walletId;
+    STATE.depositSession = null;
+    try{ await db.rpc("unlock_deposit_wallet", { p_wallet_id: prevId }); }catch(_){}
+  }
+
   // Deshabilitar el botón para evitar doble clic
   const btn = document.getElementById("dep-generate-btn");
-  if(btn){ btn.disabled=true; btn.style.opacity=".7"; btn.textContent="⏳ Reservando dirección..."; }
+  if(btn){ btn.disabled=true; btn.style.opacity=".7"; btn.textContent=en?"⏳ Reserving address...":"⏳ Reservando dirección..."; }
 
   container.innerHTML = `<div style="text-align:center;padding:20px;color:var(--muted)">
-    ⏳ Reservando dirección de depósito...
+    ⏳ ${en?"Reserving deposit address...":"Reservando dirección de depósito..."}
   </div>`;
 
-  // Usar RPC atómica para bloquear la wallet — evita condición de carrera
-  // si dos usuarios piden al mismo tiempo
+  // RPC atómica: bloquea una wallet libre para ESTE usuario. La versión
+  // SQL también libera cualquier otra wallet que este usuario tuviera
+  // bloqueada (garantía a nivel de base de datos de 1 wallet por usuario).
   const {data, error} = await db.rpc("lock_deposit_wallet", {
     p_network:  net,
     p_user_id:  u.id,
@@ -10466,20 +10100,20 @@ async function depRequestWallet(){
     p_minutes:  5
   });
 
-  if(btn){ btn.disabled=false; btn.style.opacity="1"; btn.textContent="Generar dirección de depósito"; }
+  if(btn){ btn.disabled=false; btn.style.opacity="1"; btn.textContent=en?"Generate deposit address":"Generar dirección de depósito"; }
 
   if(error || !data || data.error){
     container.innerHTML = `<div style="background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.3);
         border-radius:10px;padding:16px;text-align:center">
       <div style="font-size:16px;margin-bottom:8px">😔</div>
-      <div style="font-weight:700;color:var(--no);margin-bottom:4px">Sin direcciones disponibles</div>
+      <div style="font-weight:700;color:var(--no);margin-bottom:4px">${en?"No addresses available":"Sin direcciones disponibles"}</div>
       <div style="font-size:12px;color:var(--muted)">
-        Todas las direcciones están en uso. Intenta en unos minutos.
+        ${en?"All addresses are in use. Try again in a few minutes.":"Todas las direcciones están en uso. Intenta en unos minutos."}
       </div>
       <button onclick="depRequestWallet()" style="margin-top:12px;padding:10px 20px;
           border-radius:8px;border:1.5px solid var(--border);background:transparent;
           color:var(--text);cursor:pointer;font-size:13px;font-weight:600">
-        🔄 Intentar de nuevo
+        🔄 ${en?"Try again":"Intentar de nuevo"}
       </button>
     </div>`;
     return;
@@ -10498,12 +10132,14 @@ async function depRequestWallet(){
     userId:    u.id,
     timer:     null,
     checkTimer: null,
+    _checking: false,
   };
 
   depShowWalletUI();
 
   // Verificar pago automáticamente cada 10 segundos
   STATE.depositSession.checkTimer = setInterval(depCheckPayment, 10000);
+  setTimeout(depCheckPayment, 3000);
 
   // Cuenta regresiva visual cada segundo
   STATE.depositSession.timer = setInterval(depTickCountdown, 1000);
@@ -10514,6 +10150,7 @@ function depShowWalletUI(){
   if(!s) return;
   const container = document.getElementById("dep-wallet-container");
   if(!container) return;
+  const en = STATE.lang==="en";
 
   const isSol = s.network==="sol";
   const netColor = isSol ? "#9945ff" : "#8247e5";
@@ -10527,17 +10164,20 @@ function depShowWalletUI(){
     <div style="background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.3);
         border-radius:10px;padding:10px 14px;margin-bottom:14px;
         display:flex;justify-content:space-between;align-items:center">
-      <span style="font-size:12px;font-weight:700;color:#f59e0b">⏱ Dirección reservada</span>
+      <span style="font-size:12px;font-weight:700;color:#f59e0b">⏱ ${en?"Address reserved for you":"Dirección reservada para ti"}</span>
       <span id="dep-countdown" style="font-size:16px;font-weight:900;color:#f59e0b;font-family:monospace">
         ${mins}:${String(secs).padStart(2,"0")}
       </span>
     </div>
 
-    <!-- Monto exacto -->
+    <!-- Monto -->
     <div style="text-align:center;margin-bottom:14px">
-      <div style="font-size:11px;color:var(--muted)">Envía exactamente</div>
+      <div style="font-size:11px;color:var(--muted)">${en?"Suggested amount":"Monto sugerido"}</div>
       <div style="font-size:36px;font-weight:900;color:${netColor}">$${s.amount.toFixed(2)}</div>
-      <div style="font-size:11px;color:var(--muted)">vía red ${netName}</div>
+      <div style="font-size:11px;color:var(--muted)">${en?"via":"vía red"} ${netName} · ${isSol?"SOL / USDC / USDT":"USDC / USDT"}</div>
+      <div style="font-size:10.5px;color:var(--muted);margin-top:4px">
+        ${en?"The exact amount that arrives at this address is what gets credited":"Se acreditará el monto exacto que llegue a esta dirección"}
+      </div>
     </div>
 
     <!-- QR -->
@@ -10545,7 +10185,7 @@ function depShowWalletUI(){
     <div style="text-align:center;margin-bottom:14px">
       <div style="display:inline-block;padding:12px;background:#fff;border-radius:14px;
           box-shadow:0 2px 16px rgba(0,0,0,.1)">
-        <img src="${s.qrUrl}" width="180" height="180" alt="QR depósito"
+        <img src="${s.qrUrl}" width="180" height="180" alt="QR"
           style="display:block;border-radius:4px"/>
       </div>
     </div>`:""}
@@ -10554,7 +10194,7 @@ function depShowWalletUI(){
     <div style="background:rgba(153,69,255,.05);border:1.5px solid rgba(153,69,255,.2);
         border-radius:12px;padding:14px;margin-bottom:14px">
       <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;
-          letter-spacing:.5px;margin-bottom:8px">📋 Dirección de depósito</div>
+          letter-spacing:.5px;margin-bottom:8px">📋 ${en?"Deposit address":"Dirección de depósito"}</div>
       <div id="dep-address-box"
         style="font-family:monospace;font-size:11px;word-break:break-all;
           background:var(--card);border:1px solid var(--border);border-radius:8px;
@@ -10565,33 +10205,35 @@ function depShowWalletUI(){
       <button onclick="depCopyAddress('${s.address}')"
         style="width:100%;padding:10px;border-radius:8px;border:1.5px solid var(--border);
           background:transparent;color:var(--text);cursor:pointer;font-size:13px;font-weight:600">
-        📋 Copiar dirección
+        📋 ${en?"Copy address":"Copiar dirección"}
       </button>
     </div>
 
     <!-- Estado verificación -->
     <div id="dep-status" style="text-align:center;font-size:12px;color:var(--muted);margin-bottom:12px">
-      🔍 Verificando automáticamente cada 10 segundos...
+      🔍 ${en?"Checking automatically every 10 seconds...":"Verificando automáticamente cada 10 segundos..."}
     </div>
   `;
 }
 
 function depCopyAddress(address){
+  const en = STATE.lang==="en";
   navigator.clipboard.writeText(address).then(()=>{
-    notify("📋 Dirección copiada","success");
+    notify(en?"📋 Address copied":"📋 Dirección copiada","success");
     const box = document.getElementById("dep-address-box");
     if(box){ box.style.background="rgba(0,168,112,.1)"; setTimeout(()=>box.style.background="var(--card)",1200); }
   }).catch(()=>{
     const ta = document.createElement("textarea");
     ta.value=address; ta.style.position="fixed"; ta.style.opacity="0";
     document.body.appendChild(ta); ta.select(); document.execCommand("copy");
-    document.body.removeChild(ta); notify("📋 Dirección copiada","success");
+    document.body.removeChild(ta); notify(en?"📋 Address copied":"📋 Dirección copiada","success");
   });
 }
 
 function depTickCountdown(){
   const s = STATE.depositSession;
   if(!s) return;
+  const en = STATE.lang==="en";
   const remaining = Math.max(0, Math.ceil((s.expiresAt - Date.now())/1000));
   const mins = Math.floor(remaining/60);
   const secs = remaining%60;
@@ -10612,15 +10254,184 @@ function depTickCountdown(){
       <div style="background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.3);
           border-radius:10px;padding:16px;text-align:center;margin-bottom:12px">
         <div style="font-size:20px;margin-bottom:8px">⏰</div>
-        <div style="font-weight:700;color:var(--no);margin-bottom:4px">Tiempo expirado</div>
+        <div style="font-weight:700;color:var(--no);margin-bottom:4px">${en?"Time expired":"Tiempo expirado"}</div>
         <div style="font-size:12px;color:var(--muted)">
-          No se detectó ninguna transferencia en 5 minutos.
+          ${en?"No transfer was detected within 5 minutes.":"No se detectó ninguna transferencia en 5 minutos."}
         </div>
       </div>
       <button onclick="depRequestWallet()" style="width:100%;padding:12px;border-radius:10px;
           border:none;background:var(--yes);color:#fff;font-weight:700;cursor:pointer;font-size:14px">
-        🔄 Intentar de nuevo
+        🔄 ${en?"Try again":"Intentar de nuevo"}
       </button>`;
+  }
+}
+
+// ── Precio de SOL en vivo ────────────────────────────────────────────
+// El precio de SOL fluctúa: se consulta en el MOMENTO exacto de detectar
+// la transferencia (caché de 60s). Fallback: STATE.solPrice o 150.
+async function fetchSolPriceUSD(){
+  const cache = STATE._solPriceCache;
+  if(cache && (Date.now()-cache.ts) < 60*1000) return cache.v;
+  try{
+    const r = await fetch("https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd");
+    if(r.ok){
+      const j = await r.json();
+      const p = j?.solana?.usd;
+      if(p && p > 0){
+        STATE._solPriceCache = {v:p, ts:Date.now()};
+        STATE.solPrice = p;
+        return p;
+      }
+    }
+  }catch(_){}
+  return STATE.solPrice || 150;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// VERIFICACIÓN DE PAGO — 100% vía Alchemy (Helius eliminado)
+// Se acredita EXACTAMENTE lo que llegó a la dirección, sin importar el
+// monto que el usuario dijo que iba a enviar:
+//  · USDC / USDT → el valor exacto del token (1:1 con USD)
+//  · SOL         → cantidad exacta × precio de SOL en el momento
+//  · MATIC       → NO se acepta (solo stablecoins en Polygon)
+// Doble mecanismo por red: verificación de la DB (webhook server-side)
+// + consulta directa a Alchemy como respaldo. credit_deposit es
+// idempotente por tx_hash → nunca se acredita dos veces ni a dos
+// usuarios (solo el dueño del lock recibe el crédito).
+// ═══════════════════════════════════════════════════════════════════
+const ALCHEMY_KEY      = "g9tfDTOzHyhXPRiQDRoPi";
+const ALCHEMY_POLY_RPC = "https://polygon-mainnet.g.alchemy.com/v2/"+ALCHEMY_KEY;
+const ALCHEMY_SOL_RPC  = "https://solana-mainnet.g.alchemy.com/v2/"+ALCHEMY_KEY;
+const SOL_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+const SOL_USDT_MINT = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
+
+async function alchemyRpc(url, method, params){
+  const resp = await fetch(url, {
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({jsonrpc:"2.0", id:1, method, params})
+  });
+  if(!resp.ok) throw new Error("Alchemy "+resp.status);
+  const j = await resp.json();
+  if(j.error) throw new Error(j.error.message||"RPC error");
+  return j.result;
+}
+
+async function depCheckPayment(){
+  const s = STATE.depositSession;
+  if(!s || s._checking) return;
+  s._checking = true;
+  try{ await _depCheckPaymentInner(s); }
+  finally{ if(STATE.depositSession===s) s._checking = false; }
+}
+
+async function _depCheckPaymentInner(s){
+  const en = STATE.lang==="en";
+  const statusEl = document.getElementById("dep-status");
+  const setStatus = (msg)=>{ if(statusEl) statusEl.innerHTML = msg; };
+  const timeStr = new Date().toLocaleTimeString();
+
+  // ── 1) ¿El webhook de Alchemy ya acreditó en la DB? (ambas redes) ──
+  try{
+    const netTag = s.network==="poly" ? "%POLY%" : "%SOL%";
+    const {data:rows} = await db.from("transactions")
+      .select("id, amount, network, created_at")
+      .eq("user_id", s.userId)
+      .eq("type", "deposit")
+      .ilike("network", netTag)
+      .gte("created_at", s.startedAtISO)
+      .order("created_at", {ascending:false})
+      .limit(1);
+    if(rows && rows.length){
+      await depFinishAlreadyCredited(rows[0].amount);
+      return;
+    }
+  }catch(_){ /* seguir con la verificación directa */ }
+
+  // ── 2) Verificación directa en Alchemy ──
+  try{
+    if(s.network === "poly"){
+      // Polygon: transferencias ERC-20 entrantes. SOLO USDC/USDT — no MATIC.
+      const result = await alchemyRpc(ALCHEMY_POLY_RPC, "alchemy_getAssetTransfers", [{
+        toAddress: s.address,
+        category: ["erc20"],
+        order: "desc",
+        maxCount: "0xa",
+        withMetadata: true,
+        excludeZeroValue: true,
+      }]);
+      const transfers = result?.transfers || [];
+      for(const tr of transfers){
+        if((tr.to||"").toLowerCase() !== s.address.toLowerCase()) continue;
+        const ts = tr.metadata?.blockTimestamp ? new Date(tr.metadata.blockTimestamp).getTime() : 0;
+        if(ts && (Date.now()-ts) > 10*60*1000) continue; // solo TXs recientes
+        const asset = (tr.asset||"").toUpperCase();
+        const val = parseFloat(tr.value)||0;
+        if(!val || !tr.hash) continue;
+        if(asset==="USDC" || asset==="USDT" || asset==="USDC.E"){
+          const exact = Math.round(val*100)/100;   // EXACTAMENTE lo recibido
+          if(exact >= 0.01){
+            await depCreditUser(tr.hash, exact, asset==="USDT"?"USDT":"USDC");
+            return;
+          }
+        }
+        // MATIC / POL / otros tokens: ignorados a propósito
+      }
+    } else {
+      // Solana: firmas recientes de la dirección → analizar cada TX
+      const sigs = await alchemyRpc(ALCHEMY_SOL_RPC, "getSignaturesForAddress",
+        [s.address, {limit: 8}]);
+      s._seenSigs = s._seenSigs || {};
+      for(const sg of (sigs||[])){
+        if(sg.err) continue;
+        if(s._seenSigs[sg.signature]) continue;
+        if(sg.blockTime && (Date.now() - sg.blockTime*1000) > 10*60*1000){
+          s._seenSigs[sg.signature] = true; continue;
+        }
+        const tx = await alchemyRpc(ALCHEMY_SOL_RPC, "getTransaction",
+          [sg.signature, {encoding:"jsonParsed", maxSupportedTransactionVersion:0, commitment:"confirmed"}]);
+        s._seenSigs[sg.signature] = true;
+        if(!tx || tx.meta?.err) continue;
+
+        // 2a) Tokens SPL (USDC/USDT): delta de balance del owner = dirección
+        const pre  = tx.meta?.preTokenBalances  || [];
+        const post = tx.meta?.postTokenBalances || [];
+        const delta = (mint)=>{
+          const p0 = pre .filter(b=>b.owner===s.address && b.mint===mint)
+                         .reduce((a,b)=>a+(b.uiTokenAmount?.uiAmount||0),0);
+          const p1 = post.filter(b=>b.owner===s.address && b.mint===mint)
+                         .reduce((a,b)=>a+(b.uiTokenAmount?.uiAmount||0),0);
+          return p1 - p0;
+        };
+        const dUsdc = delta(SOL_USDC_MINT);
+        const dUsdt = delta(SOL_USDT_MINT);
+        if(dUsdc > 0.009){
+          await depCreditUser(sg.signature, Math.round(dUsdc*100)/100, "USDC"); return;
+        }
+        if(dUsdt > 0.009){
+          await depCreditUser(sg.signature, Math.round(dUsdt*100)/100, "USDT"); return;
+        }
+
+        // 2b) SOL nativo: delta de lamports de la dirección
+        const keys = tx.transaction?.message?.accountKeys || [];
+        const idx  = keys.findIndex(k => (k.pubkey||k) === s.address);
+        if(idx >= 0 && tx.meta?.preBalances && tx.meta?.postBalances){
+          const lamports = (tx.meta.postBalances[idx]||0) - (tx.meta.preBalances[idx]||0);
+          if(lamports > 0){
+            const sol = lamports/1e9;
+            // Precio de SOL EN ESTE MOMENTO (fluctúa) → USD exacto
+            const price = await fetchSolPriceUSD();
+            const usdVal = Math.round(sol*price*100)/100;
+            if(usdVal >= 0.01){
+              await depCreditUser(sg.signature, usdVal, "SOL"); return;
+            }
+          }
+        }
+      }
+    }
+    setStatus(`🔍 ${en?"Checking":"Verificando"} ${s.network==="poly"?"Polygon":"Solana"} · <strong>${timeStr}</strong>`);
+  }catch(e){
+    setStatus(`⚠️ ${en?"Error checking":"Error verificando"} (${e.message}) · ${en?"retrying...":"reintentando..."}`);
   }
 }
 
@@ -10628,6 +10439,7 @@ function depTickCountdown(){
 async function depCreditUser(txHash, amount, token){
   const s = STATE.depositSession;
   if(!s) return;
+  const en = STATE.lang==="en";
 
   // Detener timers primero para evitar doble acreditación
   clearInterval(s.timer);
@@ -10637,8 +10449,8 @@ async function depCreditUser(txHash, amount, token){
   const container = document.getElementById("dep-wallet-container");
   if(container) container.innerHTML = `<div style="text-align:center;padding:24px">
     <div style="font-size:32px;margin-bottom:12px">💰</div>
-    <div style="font-weight:700;font-size:16px;margin-bottom:4px">¡Transferencia detectada!</div>
-    <div style="font-size:13px;color:var(--muted)">Acreditando $${amount.toFixed(2)}...</div>
+    <div style="font-weight:700;font-size:16px;margin-bottom:4px">${en?"Transfer detected!":"¡Transferencia detectada!"}</div>
+    <div style="font-size:13px;color:var(--muted)">${en?"Crediting":"Acreditando"} $${amount.toFixed(2)}...</div>
   </div>`;
 
   const tokenSymbol =
@@ -10654,8 +10466,8 @@ async function depCreditUser(txHash, amount, token){
     p_token:   tokenSymbol,
   });
 
-  if(error){ notify("Error acreditando: "+error.message,"error"); return; }
-  if(data?.already_credited){ notify("ℹ️ Esta TX ya fue procesada","info"); return; }
+  if(error){ notify((en?"Error crediting: ":"Error acreditando: ")+error.message,"error"); return; }
+  if(data?.already_credited){ notify(en?"ℹ️ This TX was already processed":"ℹ️ Esta TX ya fue procesada","info"); return; }
 
   // Liberar la wallet vía RPC
   await db.rpc("unlock_deposit_wallet", { p_wallet_id: s.walletId });
@@ -10669,7 +10481,7 @@ async function depCreditUser(txHash, amount, token){
     render();
   }
 
-  notify(`💰 ¡Depósito confirmado! +$${amount.toFixed(2)} acreditados`,"success");
+  notify(en?`💰 Deposit confirmed! +$${amount.toFixed(2)} credited`:`💰 ¡Depósito confirmado! +$${amount.toFixed(2)} acreditados`,"success");
   closeDepositModal();
 }
 
@@ -10678,14 +10490,15 @@ async function depCreditUser(txHash, amount, token){
 async function depFinishAlreadyCredited(amount){
   const s = STATE.depositSession;
   if(!s) return;
+  const en = STATE.lang==="en";
   clearInterval(s.timer);
   clearInterval(s.checkTimer);
 
   const container = document.getElementById("dep-wallet-container");
   if(container) container.innerHTML = `<div style="text-align:center;padding:24px">
     <div style="font-size:32px;margin-bottom:12px">💰</div>
-    <div style="font-weight:700;font-size:16px;margin-bottom:4px">¡Transferencia detectada!</div>
-    <div style="font-size:13px;color:var(--muted)">Depósito acreditado</div>
+    <div style="font-weight:700;font-size:16px;margin-bottom:4px">${en?"Transfer detected!":"¡Transferencia detectada!"}</div>
+    <div style="font-size:13px;color:var(--muted)">${en?"Deposit credited":"Depósito acreditado"}</div>
   </div>`;
 
   await db.rpc("unlock_deposit_wallet", { p_wallet_id: s.walletId });
@@ -10699,8 +10512,593 @@ async function depFinishAlreadyCredited(amount){
     render();
   }
 
-  notify(`💰 ¡Depósito confirmado! +$${(+amount).toFixed(2)} acreditados`,"success");
+  notify(en?`💰 Deposit confirmed! +$${(+amount).toFixed(2)} credited`:`💰 ¡Depósito confirmado! +$${(+amount).toFixed(2)} acreditados`,"success");
   closeDepositModal();
+}
+
+// ── Liberación de la wallet si el usuario cierra la pestaña ─────────
+// closeDepositModal ya libera la wallet al cancelar o salir del panel.
+// Esto cubre el caso de cerrar la pestaña/navegador con una sesión activa:
+// fetch con keepalive permite que la petición sobreviva al unload.
+window.addEventListener("pagehide", ()=>{
+  const s = STATE.depositSession;
+  if(!s) return;
+  try{
+    fetch(SUPABASE_URL + "/rest/v1/rpc/unlock_deposit_wallet", {
+      method: "POST",
+      keepalive: true,
+      headers: {
+        "Content-Type": "application/json",
+        "apikey": SUPABASE_KEY,
+        "Authorization": "Bearer " + SUPABASE_KEY,
+      },
+      body: JSON.stringify({ p_wallet_id: s.walletId }),
+    });
+  }catch(_){}
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// COMERCIO P2P — Compra/venta de saldo entre usuarios (estilo Binance P2P)
+// Región: Estados Unidos · Método: Zelle (por ahora, único método)
+// Flujo:
+//   1. El vendedor publica una oferta con sus datos de Zelle.
+//   2. El comprador abre una orden por un monto → el saldo del vendedor
+//      queda EN CUSTODIA (escrow, descontado de su balance).
+//   3. El comprador envía el dinero por Zelle y marca "Ya pagué".
+//   4. El vendedor VERIFICA EN SU PROPIO BANCO que recibió el dinero y
+//      solo entonces presiona "Liberar fondos" → se acreditan al comprador.
+//   5. Chat entre ambos durante todo el proceso.
+// Los fondos NUNCA se liberan automáticamente: solo el vendedor libera.
+// ═══════════════════════════════════════════════════════════════════
+const P2P = {
+  tab: "buy",           // buy | sell | orders
+  offers: [],
+  myOffers: [],
+  orders: [],
+  activeOrder: null,    // id de la orden abierta en detalle
+  chatTimer: null,
+  _lastMsgIds: "",
+};
+
+function p2pT(es, en){ return STATE.lang==="en" ? en : es; }
+
+function p2pUserName(id){
+  const u = STATE.users.find(x=>x.id===id);
+  return u ? "@"+u.username : "@usuario";
+}
+
+function p2pStatusBadge(status){
+  const map = {
+    pending_payment: [p2pT("Esperando pago","Awaiting payment"), "#f59e0b", "rgba(245,158,11,.12)"],
+    paid:            [p2pT("Pago marcado — verificar banco","Marked paid — verify bank"), "var(--accent)", "rgba(0,152,168,.12)"],
+    released:        [p2pT("Fondos liberados ✓","Funds released ✓"), "var(--yes)", "rgba(0,168,112,.12)"],
+    cancelled:       [p2pT("Cancelada","Cancelled"), "var(--no)", "rgba(224,40,74,.10)"],
+  };
+  const [label,color,bg] = map[status] || [status,"var(--muted)","var(--card2)"];
+  return `<span style="font-size:10px;font-weight:800;padding:3px 9px;border-radius:20px;background:${bg};color:${color}">${label}</span>`;
+}
+
+function renderP2P(){
+  const u = getUser();
+  if(!u) return "";
+  if(P2P.chatTimer){ clearInterval(P2P.chatTimer); P2P.chatTimer = null; }
+
+  if(P2P.activeOrder) return renderP2POrderShell();
+
+  const tabs = [
+    ["buy",    "🛒 "+p2pT("Comprar","Buy")],
+    ["sell",   "💵 "+p2pT("Vender","Sell")],
+    ["orders", "📋 "+p2pT("Mis órdenes","My orders")],
+  ];
+
+  return `<div class="container-xs fade-up">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+      <button onclick="navigate('wallet')" style="background:var(--card2);border:none;border-radius:50%;
+          width:32px;height:32px;cursor:pointer;color:var(--text);font-size:15px">←</button>
+      <h2 style="margin:0">🤝 ${p2pT("Comercio P2P","P2P Trading")}</h2>
+    </div>
+    <p style="color:var(--muted);margin-bottom:14px;font-size:13px">
+      ${p2pT("Compra y vende saldo directamente con otros usuarios","Buy and sell balance directly with other users")}
+    </p>
+
+    <!-- Región / método -->
+    <div style="display:flex;gap:8px;margin-bottom:18px;flex-wrap:wrap">
+      <span style="font-size:11px;font-weight:700;padding:6px 12px;border-radius:20px;
+          background:rgba(0,152,168,.10);color:var(--yes);border:1px solid rgba(0,152,168,.25)">
+        🇺🇸 ${p2pT("Región: Estados Unidos","Region: United States")}
+      </span>
+      <span style="font-size:11px;font-weight:700;padding:6px 12px;border-radius:20px;
+          background:rgba(109,40,217,.08);color:#7c3aed;border:1px solid rgba(109,40,217,.2)">
+        Ⓩ ${p2pT("Método: Zelle","Method: Zelle")}
+      </span>
+    </div>
+
+    <!-- Tabs -->
+    <div style="display:flex;gap:0;border-bottom:2px solid var(--border);margin-bottom:18px">
+      ${tabs.map(([id,label])=>`
+        <button onclick="P2P.tab='${id}';render();loadP2PData()"
+          style="padding:10px 16px;font-size:13px;font-weight:${P2P.tab===id?"800":"500"};
+            background:none;border:none;cursor:pointer;
+            color:${P2P.tab===id?"var(--text)":"var(--muted)"};
+            border-bottom:2px solid ${P2P.tab===id?"var(--yes)":"transparent"};
+            margin-bottom:-2px">${label}</button>`).join("")}
+    </div>
+
+    <div id="p2p-content">
+      <div style="text-align:center;color:var(--muted);padding:30px 0;font-size:13px">⏳ ${p2pT("Cargando...","Loading...")}</div>
+    </div>
+  </div>`;
+}
+
+function loadP2PData(){
+  if(P2P.activeOrder){ loadP2POrderDetail(); return; }
+  if(P2P.tab==="buy") loadP2POffers();
+  else if(P2P.tab==="sell") loadP2PSellTab();
+  else loadP2POrders();
+}
+
+// ── TAB COMPRAR: ofertas activas de otros usuarios ──────────────────
+async function loadP2POffers(){
+  const el = document.getElementById("p2p-content");
+  if(!el) return;
+  const u = getUser(); if(!u) return;
+
+  const {data:offers, error} = await db.from("p2p_offers")
+    .select("*")
+    .eq("status","active")
+    .gt("amount_available", 0)
+    .order("created_at",{ascending:false})
+    .limit(50);
+
+  if(error){ el.innerHTML = `<div style="color:var(--no);font-size:12px">${error.message}</div>`; return; }
+  const list = (offers||[]).filter(o=>o.seller_id!==u.id);
+  P2P.offers = list;
+
+  if(!list.length){
+    el.innerHTML = `<div class="card" style="text-align:center;padding:36px 20px">
+      <div style="font-size:28px;margin-bottom:10px">🛒</div>
+      <div style="font-weight:700;margin-bottom:4px">${p2pT("No hay ofertas disponibles","No offers available")}</div>
+      <div style="font-size:12px;color:var(--muted)">${p2pT("Vuelve más tarde o publica tu propia oferta de venta.","Check back later or post your own sell offer.")}</div>
+    </div>`;
+    return;
+  }
+
+  el.innerHTML = list.map(o=>{
+    const minA = Math.max(1, o.min_amount||1);
+    const maxA = Math.min(o.max_amount||o.amount_available, o.amount_available);
+    return `<div class="card" style="margin-bottom:10px;padding:16px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+        <div>
+          <div style="font-weight:800;font-size:14px">${escHtml(p2pUserName(o.seller_id))}</div>
+          <div style="font-size:11px;color:var(--muted)">Ⓩ Zelle · 🇺🇸 US · 1 USD = 1 USD</div>
+        </div>
+        <div style="text-align:right">
+          <div style="font-size:11px;color:var(--muted)">${p2pT("Disponible","Available")}</div>
+          <div style="font-weight:900;font-size:16px;color:var(--yes)">${usd(o.amount_available)}</div>
+        </div>
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:10px">
+        ${p2pT("Límites","Limits")}: ${usd(minA)} — ${usd(maxA)}
+      </div>
+      <div style="display:flex;gap:8px">
+        <input id="p2p-buy-amt-${o.id}" type="number" min="${minA}" max="${maxA}" step="0.01"
+          placeholder="${p2pT("Monto USD","Amount USD")}"
+          style="flex:1;padding:10px 12px;border:1.5px solid var(--border);border-radius:10px;
+            background:var(--bg);color:var(--text);font-size:14px;font-weight:700;min-width:0"/>
+        <button onclick="p2pBuy('${o.id}')"
+          style="padding:10px 18px;border-radius:10px;border:none;background:var(--yes);
+            color:#fff;font-weight:800;font-size:13px;cursor:pointer;flex-shrink:0">
+          ${p2pT("Comprar","Buy")}
+        </button>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+async function p2pBuy(offerId){
+  const u = getUser(); if(!u) return;
+  const inp = document.getElementById("p2p-buy-amt-"+offerId);
+  const amount = parseFloat(inp?.value);
+  if(!amount || amount <= 0){ notify(p2pT("Ingresa un monto válido","Enter a valid amount"),"error"); return; }
+
+  const {data, error} = await db.rpc("p2p_create_order", {
+    p_offer_id: offerId,
+    p_buyer_id: u.id,
+    p_amount:   Math.round(amount*100)/100,
+  });
+  if(error || data?.error){
+    notify((error?.message)||data.error,"error"); return;
+  }
+  notify(p2pT("Orden creada — realiza el pago por Zelle","Order created — send the payment via Zelle"),"success");
+  P2P.activeOrder = data.order_id;
+  render(); loadP2PData();
+}
+
+// ── TAB VENDER: crear oferta + mis ofertas ───────────────────────────
+async function loadP2PSellTab(){
+  const el = document.getElementById("p2p-content");
+  if(!el) return;
+  const u = getUser(); if(!u) return;
+
+  const {data:mine} = await db.from("p2p_offers")
+    .select("*")
+    .eq("seller_id", u.id)
+    .neq("status","closed")
+    .order("created_at",{ascending:false});
+  P2P.myOffers = mine||[];
+
+  el.innerHTML = `
+    <div class="card" style="margin-bottom:14px;padding:18px">
+      <div style="font-weight:800;font-size:14px;margin-bottom:4px">💵 ${p2pT("Publicar oferta de venta","Post a sell offer")}</div>
+      <div style="font-size:11.5px;color:var(--muted);margin-bottom:14px">
+        ${p2pT("Vende tu saldo y recibe el dinero en tu cuenta bancaria vía Zelle. Tu saldo queda en custodia cuando alguien abre una orden, y solo TÚ lo liberas cuando confirmes en tu banco que recibiste el pago.","Sell your balance and receive money in your bank account via Zelle. Your balance goes into escrow when someone opens an order, and only YOU release it once you confirm in your bank that you received the payment.")}
+      </div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:10px">${p2pT("Tu balance","Your balance")}: <strong style="color:var(--yes)">${usd(u.balance)}</strong></div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
+        <div>
+          <label style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase">${p2pT("Monto a vender (USD)","Amount to sell (USD)")}</label>
+          <input id="p2p-off-amount" type="number" min="5" step="0.01" placeholder="100.00"
+            style="width:100%;box-sizing:border-box;padding:10px;border:1.5px solid var(--border);border-radius:10px;background:var(--bg);color:var(--text);font-weight:700;margin-top:3px"/>
+        </div>
+        <div>
+          <label style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase">${p2pT("Mínimo por orden","Min per order")}</label>
+          <input id="p2p-off-min" type="number" min="1" step="0.01" placeholder="5.00" value="5"
+            style="width:100%;box-sizing:border-box;padding:10px;border:1.5px solid var(--border);border-radius:10px;background:var(--bg);color:var(--text);font-weight:700;margin-top:3px"/>
+        </div>
+      </div>
+      <div style="margin-bottom:8px">
+        <label style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase">${p2pT("Nombre del titular Zelle","Zelle account holder name")}</label>
+        <input id="p2p-off-name" type="text" placeholder="${p2pT("Nombre completo","Full name")}"
+          style="width:100%;box-sizing:border-box;padding:10px;border:1.5px solid var(--border);border-radius:10px;background:var(--bg);color:var(--text);margin-top:3px"/>
+      </div>
+      <div style="margin-bottom:14px">
+        <label style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase">${p2pT("Email o teléfono de Zelle","Zelle email or phone")}</label>
+        <input id="p2p-off-contact" type="text" placeholder="email@ejemplo.com / +1 305..."
+          style="width:100%;box-sizing:border-box;padding:10px;border:1.5px solid var(--border);border-radius:10px;background:var(--bg);color:var(--text);margin-top:3px"/>
+      </div>
+      <button onclick="p2pCreateOffer()"
+        style="width:100%;padding:13px;border-radius:11px;border:none;background:var(--yes);
+          color:#fff;font-weight:800;font-size:14px;cursor:pointer">
+        ${p2pT("Publicar oferta","Post offer")}
+      </button>
+    </div>
+
+    ${P2P.myOffers.length ? `
+    <div style="font-weight:800;font-size:13px;margin-bottom:8px">${p2pT("Mis ofertas activas","My active offers")}</div>
+    ${P2P.myOffers.map(o=>`
+      <div class="card" style="margin-bottom:8px;padding:14px;display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <div style="font-weight:800;font-size:14px;color:var(--yes)">${usd(o.amount_available)} <span style="font-size:10px;color:var(--muted);font-weight:600">/ ${usd(o.amount_total)}</span></div>
+          <div style="font-size:10.5px;color:var(--muted)">Ⓩ ${escHtml(o.zelle_contact)} · ${p2pT("mín","min")} ${usd(o.min_amount)}</div>
+        </div>
+        <button onclick="p2pCloseOffer('${o.id}')"
+          style="padding:8px 14px;border-radius:8px;border:1.5px solid rgba(224,40,74,.35);
+            background:transparent;color:var(--no);font-weight:700;font-size:12px;cursor:pointer">
+          ${p2pT("Cerrar","Close")}
+        </button>
+      </div>`).join("")}` : ""}
+  `;
+}
+
+async function p2pCreateOffer(){
+  const u = getUser(); if(!u) return;
+  const amount  = parseFloat(document.getElementById("p2p-off-amount")?.value);
+  const minA    = parseFloat(document.getElementById("p2p-off-min")?.value)||5;
+  const name    = (document.getElementById("p2p-off-name")?.value||"").trim();
+  const contact = (document.getElementById("p2p-off-contact")?.value||"").trim();
+
+  if(!amount || amount < 5){ notify(p2pT("Monto mínimo de venta: $5","Minimum sell amount: $5"),"error"); return; }
+  if(amount > u.balance){ notify(p2pT("No tienes suficiente balance","Insufficient balance"),"error"); return; }
+  if(minA > amount){ notify(p2pT("El mínimo por orden no puede superar el monto total","Min per order can't exceed total amount"),"error"); return; }
+  if(!name || !contact){ notify(p2pT("Completa tus datos de Zelle","Fill in your Zelle details"),"error"); return; }
+
+  const {data, error} = await db.rpc("p2p_create_offer", {
+    p_seller_id: u.id,
+    p_amount:    Math.round(amount*100)/100,
+    p_min:       Math.round(minA*100)/100,
+    p_max:       Math.round(amount*100)/100,
+    p_zelle_name: name,
+    p_zelle_contact: contact,
+  });
+  if(error || data?.error){ notify((error?.message)||data.error,"error"); return; }
+  notify(p2pT("✅ Oferta publicada","✅ Offer posted"),"success");
+  loadP2PSellTab();
+}
+
+async function p2pCloseOffer(offerId){
+  const u = getUser(); if(!u) return;
+  const {data, error} = await db.rpc("p2p_close_offer", { p_offer_id: offerId, p_seller_id: u.id });
+  if(error || data?.error){ notify((error?.message)||data.error,"error"); return; }
+  notify(p2pT("Oferta cerrada","Offer closed"),"success");
+  loadP2PSellTab();
+}
+
+// ── TAB MIS ÓRDENES ──────────────────────────────────────────────────
+async function loadP2POrders(){
+  const el = document.getElementById("p2p-content");
+  if(!el) return;
+  const u = getUser(); if(!u) return;
+
+  const {data:orders} = await db.from("p2p_orders")
+    .select("*")
+    .or(`buyer_id.eq.${u.id},seller_id.eq.${u.id}`)
+    .order("created_at",{ascending:false})
+    .limit(50);
+  P2P.orders = orders||[];
+
+  if(!P2P.orders.length){
+    el.innerHTML = `<div class="card" style="text-align:center;padding:36px 20px">
+      <div style="font-size:28px;margin-bottom:10px">📋</div>
+      <div style="font-weight:700">${p2pT("Aún no tienes órdenes P2P","You have no P2P orders yet")}</div>
+    </div>`;
+    return;
+  }
+
+  el.innerHTML = P2P.orders.map(o=>{
+    const isBuyer = o.buyer_id===u.id;
+    return `<div class="card" style="margin-bottom:8px;padding:14px;cursor:pointer"
+        onclick="P2P.activeOrder='${o.id}';render();loadP2PData()">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <div style="font-weight:800;font-size:14px">
+            ${isBuyer?"🛒 "+p2pT("Compra a","Buying from"):"💵 "+p2pT("Venta a","Selling to")}
+            ${escHtml(p2pUserName(isBuyer?o.seller_id:o.buyer_id))}
+          </div>
+          <div style="font-size:10.5px;color:var(--muted);margin-top:3px">${new Date(o.created_at).toLocaleString()}</div>
+        </div>
+        <div style="text-align:right">
+          <div style="font-weight:900;font-size:15px;color:${isBuyer?"var(--yes)":"var(--accent)"}">${usd(o.amount)}</div>
+          <div style="margin-top:4px">${p2pStatusBadge(o.status)}</div>
+        </div>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+// ── DETALLE DE ORDEN + CHAT ──────────────────────────────────────────
+function renderP2POrderShell(){
+  return `<div class="container-xs fade-up">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+      <button onclick="P2P.activeOrder=null;render();loadP2PData()"
+        style="background:var(--card2);border:none;border-radius:50%;width:32px;height:32px;
+          cursor:pointer;color:var(--text);font-size:15px">←</button>
+      <h2 style="margin:0;font-size:18px">🤝 ${p2pT("Orden P2P","P2P Order")}</h2>
+    </div>
+    <div id="p2p-order-detail">
+      <div style="text-align:center;color:var(--muted);padding:30px 0;font-size:13px">⏳ ${p2pT("Cargando orden...","Loading order...")}</div>
+    </div>
+  </div>`;
+}
+
+async function loadP2POrderDetail(){
+  const u = getUser(); if(!u) return;
+  const orderId = P2P.activeOrder;
+  if(!orderId) return;
+
+  const [{data:order},{data:msgs}] = await Promise.all([
+    db.from("p2p_orders").select("*").eq("id",orderId).maybeSingle(),
+    db.from("p2p_messages").select("*").eq("order_id",orderId).order("created_at",{ascending:true}).limit(200),
+  ]);
+  if(!order){ P2P.activeOrder=null; render(); return; }
+
+  const {data:offer} = await db.from("p2p_offers").select("*").eq("id",order.offer_id).maybeSingle();
+
+  const el = document.getElementById("p2p-order-detail");
+  if(!el){ return; }
+
+  const isBuyer  = order.buyer_id  === u.id;
+  const isSeller = order.seller_id === u.id;
+
+  // ── Panel de estado según rol ──
+  let actionHtml = "";
+  if(order.status==="pending_payment"){
+    if(isBuyer){
+      actionHtml = `
+        <div style="background:rgba(245,158,11,.07);border:1.5px solid rgba(245,158,11,.3);border-radius:12px;padding:14px;margin-bottom:12px">
+          <div style="font-weight:800;font-size:13px;margin-bottom:8px">Ⓩ ${p2pT("Realiza el pago por Zelle","Send the payment via Zelle")}</div>
+          <div style="font-size:12px;line-height:1.9">
+            <div>${p2pT("Titular","Account holder")}: <strong>${escHtml(offer?.zelle_name||"—")}</strong></div>
+            <div>${p2pT("Zelle (email/teléfono)","Zelle (email/phone)")}: <strong style="font-family:monospace">${escHtml(offer?.zelle_contact||"—")}</strong></div>
+            <div>${p2pT("Monto exacto","Exact amount")}: <strong style="color:var(--yes);font-size:15px">${usd(order.amount)}</strong></div>
+          </div>
+          <div style="font-size:10.5px;color:var(--muted);margin-top:8px">
+            ⚠️ ${p2pT("Envía el monto EXACTO desde tu banco. Cuando lo hayas enviado, presiona el botón.","Send the EXACT amount from your bank. Once sent, press the button.")}
+          </div>
+        </div>
+        <button onclick="p2pMarkPaid('${order.id}')"
+          style="width:100%;padding:13px;border-radius:11px;border:none;background:var(--yes);color:#fff;font-weight:800;font-size:14px;cursor:pointer;margin-bottom:8px">
+          ✅ ${p2pT("Ya realicé el pago","I've made the payment")}
+        </button>
+        <button onclick="p2pCancelOrder('${order.id}')"
+          style="width:100%;padding:11px;border-radius:11px;border:1.5px solid rgba(224,40,74,.35);background:transparent;color:var(--no);font-weight:700;font-size:13px;cursor:pointer">
+          ${p2pT("Cancelar orden","Cancel order")}
+        </button>`;
+    } else if(isSeller){
+      actionHtml = `
+        <div style="background:rgba(245,158,11,.07);border:1.5px solid rgba(245,158,11,.3);border-radius:12px;padding:14px;margin-bottom:8px;text-align:center">
+          <div style="font-size:20px;margin-bottom:6px">⏳</div>
+          <div style="font-weight:700;font-size:13px">${p2pT("Esperando que el comprador realice el pago por Zelle","Waiting for the buyer to send the Zelle payment")}</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:4px">${p2pT("Tus","Your")} ${usd(order.amount)} ${p2pT("están en custodia de forma segura","are safely held in escrow")}</div>
+        </div>
+        <button onclick="p2pCancelOrder('${order.id}')"
+          style="width:100%;padding:11px;border-radius:11px;border:1.5px solid rgba(224,40,74,.35);background:transparent;color:var(--no);font-weight:700;font-size:13px;cursor:pointer">
+          ${p2pT("Cancelar orden","Cancel order")}
+        </button>`;
+    }
+  } else if(order.status==="paid"){
+    if(isSeller){
+      actionHtml = `
+        <div style="background:rgba(0,152,168,.07);border:1.5px solid rgba(0,152,168,.3);border-radius:12px;padding:14px;margin-bottom:12px">
+          <div style="font-weight:800;font-size:13px;margin-bottom:6px">🏦 ${p2pT("El comprador marcó el pago como enviado","The buyer marked the payment as sent")}</div>
+          <div style="font-size:11.5px;color:var(--muted);line-height:1.7">
+            ⚠️ ${p2pT("VERIFICA EN TU PROPIO BANCO que el dinero llegó a tu cuenta ANTES de liberar. Una vez liberados, los fondos se acreditan al comprador y NO se pueden recuperar.","VERIFY IN YOUR OWN BANK that the money arrived BEFORE releasing. Once released, the funds are credited to the buyer and CANNOT be recovered.")}
+          </div>
+        </div>
+        <button onclick="p2pRelease('${order.id}')"
+          style="width:100%;padding:13px;border-radius:11px;border:none;background:var(--yes);color:#fff;font-weight:800;font-size:14px;cursor:pointer">
+          🔓 ${p2pT("Recibí el dinero — Liberar fondos","I received the money — Release funds")}
+        </button>`;
+    } else {
+      actionHtml = `
+        <div style="background:rgba(0,152,168,.07);border:1.5px solid rgba(0,152,168,.3);border-radius:12px;padding:14px;text-align:center">
+          <div style="font-size:20px;margin-bottom:6px">⏳</div>
+          <div style="font-weight:700;font-size:13px">${p2pT("Esperando que el vendedor confirme en su banco y libere los fondos","Waiting for the seller to confirm in their bank and release the funds")}</div>
+        </div>`;
+    }
+  } else if(order.status==="released"){
+    actionHtml = `
+      <div style="background:rgba(0,168,112,.08);border:1.5px solid rgba(0,168,112,.3);border-radius:12px;padding:16px;text-align:center">
+        <div style="font-size:24px;margin-bottom:6px">✅</div>
+        <div style="font-weight:800;font-size:14px;color:var(--yes)">${p2pT("Fondos liberados","Funds released")}</div>
+        <div style="font-size:12px;color:var(--muted);margin-top:4px">
+          ${usd(order.amount)} ${isBuyer?p2pT("acreditados en tu balance","credited to your balance"):p2pT("entregados al comprador","delivered to the buyer")}
+        </div>
+      </div>`;
+  } else if(order.status==="cancelled"){
+    actionHtml = `
+      <div style="background:rgba(224,40,74,.06);border:1.5px solid rgba(224,40,74,.25);border-radius:12px;padding:16px;text-align:center">
+        <div style="font-size:20px;margin-bottom:6px">✕</div>
+        <div style="font-weight:800;font-size:14px;color:var(--no)">${p2pT("Orden cancelada","Order cancelled")}</div>
+        <div style="font-size:11.5px;color:var(--muted);margin-top:4px">${p2pT("Los fondos en custodia regresaron al vendedor.","Escrowed funds were returned to the seller.")}</div>
+      </div>`;
+  }
+
+  const chatRows = (msgs||[]).map(mg=>{
+    const mine = mg.sender_id===u.id;
+    return `<div style="display:flex;justify-content:${mine?"flex-end":"flex-start"};margin-bottom:6px">
+      <div style="max-width:78%;padding:8px 12px;border-radius:${mine?"12px 12px 3px 12px":"12px 12px 12px 3px"};
+          background:${mine?"rgba(0,152,168,.12)":"var(--card2)"};font-size:12.5px;line-height:1.4">
+        ${escHtml(mg.text)}
+        <div style="font-size:9px;color:var(--muted);margin-top:3px;text-align:right">${new Date(mg.created_at).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}</div>
+      </div>
+    </div>`;
+  }).join("");
+
+  const chatOpen = order.status==="pending_payment" || order.status==="paid";
+
+  el.innerHTML = `
+    <div class="card" style="padding:16px;margin-bottom:12px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+        <div style="font-weight:800;font-size:14px">
+          ${isBuyer?"🛒 "+p2pT("Compra a","Buying from"):"💵 "+p2pT("Venta a","Selling to")}
+          ${escHtml(p2pUserName(isBuyer?order.seller_id:order.buyer_id))}
+        </div>
+        ${p2pStatusBadge(order.status)}
+      </div>
+      <div style="font-size:26px;font-weight:900;color:var(--yes);margin-bottom:2px">${usd(order.amount)}</div>
+      <div style="font-size:10.5px;color:var(--muted)">Ⓩ Zelle · 🇺🇸 US · ${new Date(order.created_at).toLocaleString()}</div>
+    </div>
+
+    ${actionHtml}
+
+    <!-- Chat -->
+    <div class="card" style="padding:14px;margin-top:12px">
+      <div style="font-weight:800;font-size:12px;margin-bottom:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">
+        💬 ${p2pT("Chat de la orden","Order chat")}
+      </div>
+      <div id="p2p-chat-box" style="max-height:260px;overflow-y:auto;margin-bottom:10px;padding-right:4px">
+        ${chatRows || `<div style="text-align:center;color:var(--muted);font-size:11.5px;padding:14px 0">${p2pT("Sin mensajes aún — coordina el pago aquí","No messages yet — coordinate the payment here")}</div>`}
+      </div>
+      ${chatOpen?`
+      <div style="display:flex;gap:8px">
+        <input id="p2p-chat-input" type="text" placeholder="${p2pT("Escribe un mensaje...","Type a message...")}"
+          onkeydown="if(event.key==='Enter')p2pSendMsg('${order.id}')"
+          style="flex:1;padding:10px 12px;border:1.5px solid var(--border);border-radius:10px;
+            background:var(--bg);color:var(--text);font-size:13px;min-width:0"/>
+        <button onclick="p2pSendMsg('${order.id}')"
+          style="padding:10px 16px;border-radius:10px;border:none;background:var(--yes);
+            color:#fff;font-weight:800;cursor:pointer;flex-shrink:0">➤</button>
+      </div>`:""}
+    </div>`;
+
+  // Auto-scroll del chat al final
+  const box = document.getElementById("p2p-chat-box");
+  if(box) box.scrollTop = box.scrollHeight;
+
+  // Polling: refresca estado + chat cada 5s mientras la orden esté abierta
+  if(P2P.chatTimer) clearInterval(P2P.chatTimer);
+  if(chatOpen){
+    P2P.chatTimer = setInterval(()=>{
+      if(!document.getElementById("p2p-order-detail") || P2P.activeOrder!==orderId){
+        clearInterval(P2P.chatTimer); P2P.chatTimer=null; return;
+      }
+      p2pRefreshOrderTick(orderId);
+    }, 5000);
+  }
+}
+
+// Refresco silencioso: si cambió el estado o hay mensajes nuevos, re-renderiza
+async function p2pRefreshOrderTick(orderId){
+  const inputEl = document.getElementById("p2p-chat-input");
+  const typing  = inputEl && inputEl.value.length > 0 && document.activeElement===inputEl;
+  const [{data:order},{data:msgs}] = await Promise.all([
+    db.from("p2p_orders").select("id,status").eq("id",orderId).maybeSingle(),
+    db.from("p2p_messages").select("id").eq("order_id",orderId),
+  ]);
+  if(!order) return;
+  const sig = order.status + ":" + (msgs||[]).length;
+  if(sig !== P2P._lastMsgIds){
+    P2P._lastMsgIds = sig;
+    if(!typing) {
+      loadP2POrderDetail();
+      // Si se liberaron los fondos, refrescar balance del usuario
+      if(order.status==="released") p2pRefreshBalance();
+    }
+  }
+}
+
+async function p2pRefreshBalance(){
+  const u = getUser(); if(!u) return;
+  const {data:fu} = await db.from("users").select("balance").eq("id",u.id).maybeSingle();
+  if(fu){
+    const ui = STATE.users.findIndex(x=>x.id===u.id);
+    if(ui>=0) STATE.users[ui]={...STATE.users[ui], balance:fu.balance};
+  }
+}
+
+async function p2pSendMsg(orderId){
+  const u = getUser(); if(!u) return;
+  const inp = document.getElementById("p2p-chat-input");
+  const text = (inp?.value||"").trim();
+  if(!text) return;
+  inp.value = "";
+  const {error} = await db.from("p2p_messages").insert({
+    order_id: orderId, sender_id: u.id, text: text.slice(0,500),
+  });
+  if(error){ notify(error.message,"error"); return; }
+  loadP2POrderDetail();
+}
+
+async function p2pMarkPaid(orderId){
+  const u = getUser(); if(!u) return;
+  const {data, error} = await db.rpc("p2p_mark_paid", { p_order_id: orderId, p_buyer_id: u.id });
+  if(error || data?.error){ notify((error?.message)||data.error,"error"); return; }
+  notify(p2pT("Pago marcado — el vendedor verificará su banco","Payment marked — the seller will verify their bank"),"success");
+  loadP2POrderDetail();
+}
+
+async function p2pRelease(orderId){
+  const u = getUser(); if(!u) return;
+  const en = STATE.lang==="en";
+  const ok = confirm(en
+    ? "Confirm ONLY if you already verified in your bank that you received the money. This cannot be undone. Release funds?"
+    : "Confirma SOLO si ya verificaste en tu banco que recibiste el dinero. Esta acción no se puede deshacer. ¿Liberar fondos?");
+  if(!ok) return;
+  const {data, error} = await db.rpc("p2p_release", { p_order_id: orderId, p_seller_id: u.id });
+  if(error || data?.error){ notify((error?.message)||data.error,"error"); return; }
+  notify(p2pT("✅ Fondos liberados al comprador","✅ Funds released to the buyer"),"success");
+  loadP2POrderDetail();
+}
+
+async function p2pCancelOrder(orderId){
+  const u = getUser(); if(!u) return;
+  const en = STATE.lang==="en";
+  if(!confirm(en?"Cancel this order? Escrowed funds return to the seller.":"¿Cancelar esta orden? Los fondos en custodia regresan al vendedor.")) return;
+  const {data, error} = await db.rpc("p2p_cancel", { p_order_id: orderId, p_user_id: u.id });
+  if(error || data?.error){ notify((error?.message)||data.error,"error"); return; }
+  notify(p2pT("Orden cancelada","Order cancelled"),"success");
+  loadP2POrderDetail();
 }
 
 
