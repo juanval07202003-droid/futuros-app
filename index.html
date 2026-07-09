@@ -5154,23 +5154,24 @@ async function loadProChart(marketId){
 
   // Fuente ÚNICA de verdad: órdenes REALES de usuarios (no MM, no ventas).
   // Cada orden ejecutada tiene el timestamp exacto en que se hizo la compra.
-  const {data: ordersData} = await db.from('orders')
-    .select('created_at, side, price, order_type, is_mm, is_mirror')
+  // NOTA: solo se seleccionan columnas garantizadas — si una columna no
+  // existe, Supabase falla la consulta COMPLETA y la gráfica queda vacía.
+  const {data: ordersData, error: ordErr} = await db.from('orders')
+    .select('created_at, side, price, order_type, is_mm')
     .eq('market_id', marketId)
     .in('status', ['filled', 'partial'])
     .order('created_at', {ascending: true})
     .limit(5000);
+  if(ordErr) console.warn('loadProChart orders error:', ordErr.message);
 
   let trades = [];
 
   if(ordersData && ordersData.length > 0){
-    // Incluir SOLO compras reales de usuarios:
-    // · is_mm=false   → nunca órdenes del MM
-    // · is_mirror=false → nunca contrapartes espejo
-    // · order_type distinto de 'sell' y 'mm' → nunca órdenes de venta ni seed del MM
+    // Incluir SOLO compras reales de usuarios (filtros null-safe):
+    // · is_mm !== true      → nunca órdenes del MM
+    // · order_type distinto de 'sell' y 'mm'
     const relevant = ordersData.filter(o =>
-      !o.is_mm &&
-      !o.is_mirror &&
+      o.is_mm !== true &&
       o.order_type !== 'sell' &&
       o.order_type !== 'mm'
     );
@@ -5553,11 +5554,22 @@ async function loadProOrderBook(marketId){
     .in("status", ["open","partial"])
     .order("price", {ascending:false});
 
-  const {data:trades} = await db.from("contracts")
+  let {data:trades, error:trErr} = await db.from("contracts")
     .select("shares,yes_price,no_price,yes_user_id,no_user_id,created_at,updated_at")
     .eq("market_id", marketId)
     .order("updated_at", {ascending:false})
     .limit(15);
+  if(trErr){
+    // Fallback: si yes_user_id/no_user_id no existen en la tabla,
+    // reintentar sin ellas para no dejar el historial vacío
+    console.warn("loadProOrderBook contracts error:", trErr.message);
+    const r2 = await db.from("contracts")
+      .select("shares,yes_price,no_price,created_at,updated_at")
+      .eq("market_id", marketId)
+      .order("updated_at", {ascending:false})
+      .limit(15);
+    trades = r2.data;
+  }
 
   el.innerHTML = renderProOrderBookHTML(orders||[], trades||[]);
 }
@@ -7489,6 +7501,7 @@ async function cancelPendingOrder(orderId, marketId, kind){
     if(STATE.view==="pro"){
       loadProMyTrades(marketId);
       loadProSentiment(marketId);
+      if(PRO_CHART_STATE.marketId===marketId) loadProChart(marketId);
     }
     render();
   }
@@ -9007,10 +9020,11 @@ async function loadProSentiment(marketId){
 
   const [{data:mFresh},{data:buyOrders}] = await Promise.all([
     db.from("markets").select("q_yes,q_no").eq("id",marketId).maybeSingle(),
-    // Compras REALES de usuarios: nunca órdenes del MM (is_mm=true), ni
-    // contrapartes/espejo (is_mirror / order_type='mm'), ni ventas.
-    // El sentimiento es el número de compras de la gente por lado.
-    db.from("orders").select("side,user_id,is_mirror,order_type,is_mm")
+    // Compras REALES de usuarios: nunca órdenes del MM ni ventas.
+    // El sentimiento es el NÚMERO de compras de la gente por lado, sin
+    // importar el monto apostado. Solo columnas garantizadas en el select:
+    // una columna inexistente rompe la consulta completa y deja 0 compras.
+    db.from("orders").select("side,user_id,order_type,is_mm")
       .eq("market_id",marketId)
       .eq("is_mm",false)
       .neq("order_type","sell")
@@ -9024,11 +9038,11 @@ async function loadProSentiment(marketId){
 
   if(!el) return;
 
-  // Excluir espejos/contrapartes del MM y cualquier compra de un admin.
+  // Excluir contrapartes del MM y cualquier compra de un admin (null-safe).
   // Sin este filtro el MM (que compra la contraparte de cada orden) haría
   // que ambos lados mostraran siempre la misma cantidad de compras.
   const buys = (buyOrders||[]).filter(o=>
-    !o.is_mirror &&
+    o.is_mm !== true &&
     o.order_type !== "mm" &&
     !adminIds.has(String(o.user_id))
   );
@@ -9883,6 +9897,14 @@ function renderWallet(){
 
 function openDeposit(){
   if(!getUser()){navigate("auth");return;}
+  // Si ya hay una dirección reservada y vigente, mostrarla de nuevo
+  // (la reserva de 5 min sobrevive al cierre del panel)
+  if(STATE.depositSession && STATE.depositSession.expiresAt > Date.now()){
+    STATE.depositNetwork = STATE.depositSession.network;
+    STATE.depositAmount  = STATE.depositSession.amount;
+    Promise.resolve(renderDepositModal()).then(()=>depShowWalletUI());
+    return;
+  }
   STATE.depositNetwork = "sol";
   STATE.depositToken   = "usdc";
   STATE.depositAmount  = 10;
@@ -9893,14 +9915,13 @@ function openDeposit(){
 //  El polling de Solana ahora usa Alchemy; Helius fue removido por completo.)
 
 function closeDepositModal(){
-  // Si había una sesión de depósito activa, liberarla INMEDIATAMENTE
-  // (sin esperar los 5 minutos) para que otro usuario pueda usar la wallet
-  if(STATE.depositSession){
-    clearInterval(STATE.depositSession.timer);
-    clearInterval(STATE.depositSession.checkTimer);
-    db.rpc("unlock_deposit_wallet", { p_wallet_id: STATE.depositSession.walletId }).then(()=>{});
-    STATE.depositSession = null;
-  }
+  // La reserva se MANTIENE los 5 minutos completos aunque el usuario
+  // cierre el panel o presione X: los timers siguen corriendo en
+  // background y si la transferencia llega (manual, desde exchange, etc.)
+  // se acredita igual. La wallet se libera únicamente cuando:
+  //  · expira el tiempo (depTickCountdown)
+  //  · se acredita el depósito (depCreditUser / depFinishAlreadyCredited)
+  //  · el usuario genera una NUEVA dirección (depRequestWallet)
   STATE.depositOpen = false;
   const el = document.getElementById("deposit-overlay");
   if(el) el.remove();
@@ -10013,7 +10034,17 @@ async function renderDepositModal(){
   </div>`;
 
   document.body.insertAdjacentHTML("beforeend", html);
-  depSetNetwork(STATE.depositNetwork||"sol");
+
+  // Si hay una sesión de depósito activa (el usuario cerró el panel y
+  // volvió dentro de los 5 minutos), restaurar su dirección reservada
+  // con el contador donde iba — la reserva nunca se perdió.
+  if(STATE.depositSession){
+    STATE.depositNetwork = STATE.depositSession.network;
+    depSetNetwork(STATE.depositSession.network);
+    depShowWalletUI();
+  }else{
+    depSetNetwork(STATE.depositNetwork||"sol");
+  }
 }
 
 // Selecciona monto: sincroniza input, STATE y resalta el chip activo
@@ -10155,60 +10186,103 @@ function depShowWalletUI(){
   const mins = Math.floor(remaining/60);
   const secs = remaining%60;
 
-  // ── Deep links para abrir la wallet del usuario directamente ──────
-  // Si el usuario está en el navegador de su wallet, estos botones
-  // abren la app correcta con la dirección pre-cargada (no tienen que
-  // copiar/salir/pegar — todo en un solo toque).
+  // ── Detección de wallets del usuario ─────────────────────────────
+  // Se muestran ÚNICAMENTE los botones de las wallets que el navegador
+  // realmente tiene inyectadas (extensión o navegador in-app de la wallet).
+  // Si no se detecta ninguna, se muestran deep links como respaldo.
+  const detected = depDetectWallets(s.network);
   const addr = encodeURIComponent(s.address);
-  const solDeepLinks = `
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:10px">
-      <a href="phantom://ul/v1/browse?ref=statwaves" target="_blank"
-        style="display:flex;flex-direction:column;align-items:center;gap:3px;padding:9px 4px;
-          border-radius:10px;border:1.5px solid var(--border);background:var(--card2);
-          text-decoration:none;color:var(--text)">
-        <span style="font-size:18px">👻</span>
-        <span style="font-size:9px;font-weight:700">Phantom</span>
-      </a>
-      <a href="solflare://ul/v1/browse?ref=statwaves" target="_blank"
-        style="display:flex;flex-direction:column;align-items:center;gap:3px;padding:9px 4px;
-          border-radius:10px;border:1.5px solid var(--border);background:var(--card2);
-          text-decoration:none;color:var(--text)">
-        <span style="font-size:18px">☀️</span>
-        <span style="font-size:9px;font-weight:700">Solflare</span>
-      </a>
-      <a href="https://link.trustwallet.com/send?asset=c501&address=${addr}" target="_blank"
-        style="display:flex;flex-direction:column;align-items:center;gap:3px;padding:9px 4px;
-          border-radius:10px;border:1.5px solid var(--border);background:var(--card2);
-          text-decoration:none;color:var(--text)">
-        <span style="font-size:18px">🛡️</span>
-        <span style="font-size:9px;font-weight:700">Trust</span>
-      </a>
-    </div>`;
 
-  const polyDeepLinks = `
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:10px">
-      <a href="https://metamask.app.link/send/${s.address}@137" target="_blank"
-        style="display:flex;flex-direction:column;align-items:center;gap:3px;padding:9px 4px;
-          border-radius:10px;border:1.5px solid var(--border);background:var(--card2);
-          text-decoration:none;color:var(--text)">
-        <span style="font-size:18px">🦊</span>
-        <span style="font-size:9px;font-weight:700">MetaMask</span>
-      </a>
-      <a href="https://link.trustwallet.com/send?asset=c60_t0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174&address=${addr}" target="_blank"
-        style="display:flex;flex-direction:column;align-items:center;gap:3px;padding:9px 4px;
-          border-radius:10px;border:1.5px solid var(--border);background:var(--card2);
-          text-decoration:none;color:var(--text)">
-        <span style="font-size:18px">🛡️</span>
-        <span style="font-size:9px;font-weight:707">Trust</span>
-      </a>
-      <a href="https://go.cb-wallet.com/send?network=polygon&to=${addr}" target="_blank"
-        style="display:flex;flex-direction:column;align-items:center;gap:3px;padding:9px 4px;
-          border-radius:10px;border:1.5px solid var(--border);background:var(--card2);
-          text-decoration:none;color:var(--text)">
-        <span style="font-size:18px">🔵</span>
-        <span style="font-size:9px;font-weight:707">Coinbase</span>
-      </a>
-    </div>`;
+  let payButtonsHtml = "";
+  if(detected.length > 0){
+    // Selector de token para Polygon (la transferencia interna necesita
+    // saber qué token ERC-20 enviar)
+    const tokenSelector = !isSol ? `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px">
+        <button onclick="depSetPayToken('usdc')" id="dep-paytok-usdc"
+          style="padding:8px;border-radius:9px;font-size:12px;font-weight:800;cursor:pointer;
+            border:1.5px solid ${STATE.depositToken!=="usdt"?netColor:"var(--border)"};
+            background:${STATE.depositToken!=="usdt"?"rgba(130,71,229,.08)":"var(--card2)"};
+            color:${STATE.depositToken!=="usdt"?netColor:"var(--muted)"}">USDC</button>
+        <button onclick="depSetPayToken('usdt')" id="dep-paytok-usdt"
+          style="padding:8px;border-radius:9px;font-size:12px;font-weight:800;cursor:pointer;
+            border:1.5px solid ${STATE.depositToken==="usdt"?netColor:"var(--border)"};
+            background:${STATE.depositToken==="usdt"?"rgba(130,71,229,.08)":"var(--card2)"};
+            color:${STATE.depositToken==="usdt"?netColor:"var(--muted)"}">USDT</button>
+      </div>` : "";
+
+    payButtonsHtml = `
+      ${tokenSelector}
+      ${detected.map(w=>`
+        <button onclick="depPayFromWallet('${w.key}')"
+          style="width:100%;display:flex;align-items:center;justify-content:center;gap:8px;
+            padding:13px;border-radius:11px;border:none;margin-bottom:7px;
+            background:${netColor};color:#fff;font-weight:800;font-size:14px;cursor:pointer;
+            box-shadow:0 4px 14px ${isSol?"rgba(153,69,255,.25)":"rgba(130,71,229,.25)"}">
+          <span style="font-size:16px">${w.icon}</span>
+          ${en?`Deposit from ${w.name}`:`Depositar desde ${w.name}`} · $${s.amount.toFixed(2)}
+        </button>`).join("")}
+      ${isSol ? `
+      <div style="font-size:10px;color:var(--muted);text-align:center;margin-top:2px">
+        ${en?"Sends the equivalent in SOL at the live price. For USDC/USDT use the QR or copy the address.":"Envía el equivalente en SOL al precio en vivo. Para USDC/USDT usa el QR o copia la dirección."}
+      </div>`:""}`;
+  } else {
+    // Ninguna wallet inyectada detectada en la otra red disponible?
+    const otherHas = depDetectWallets(isSol ? "poly" : "sol").length > 0;
+    const deepLinks = isSol ? `
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:4px">
+        <a href="phantom://ul/v1/browse?ref=statwaves" target="_blank"
+          style="display:flex;flex-direction:column;align-items:center;gap:3px;padding:9px 4px;
+            border-radius:10px;border:1.5px solid var(--border);background:var(--card2);
+            text-decoration:none;color:var(--text)">
+          <span style="font-size:18px">👻</span>
+          <span style="font-size:9px;font-weight:700">Phantom</span>
+        </a>
+        <a href="solflare://ul/v1/browse?ref=statwaves" target="_blank"
+          style="display:flex;flex-direction:column;align-items:center;gap:3px;padding:9px 4px;
+            border-radius:10px;border:1.5px solid var(--border);background:var(--card2);
+            text-decoration:none;color:var(--text)">
+          <span style="font-size:18px">☀️</span>
+          <span style="font-size:9px;font-weight:700">Solflare</span>
+        </a>
+        <a href="https://link.trustwallet.com/send?asset=c501&address=${addr}" target="_blank"
+          style="display:flex;flex-direction:column;align-items:center;gap:3px;padding:9px 4px;
+            border-radius:10px;border:1.5px solid var(--border);background:var(--card2);
+            text-decoration:none;color:var(--text)">
+          <span style="font-size:18px">🛡️</span>
+          <span style="font-size:9px;font-weight:700">Trust</span>
+        </a>
+      </div>` : `
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:4px">
+        <a href="https://metamask.app.link/send/${s.address}@137" target="_blank"
+          style="display:flex;flex-direction:column;align-items:center;gap:3px;padding:9px 4px;
+            border-radius:10px;border:1.5px solid var(--border);background:var(--card2);
+            text-decoration:none;color:var(--text)">
+          <span style="font-size:18px">🦊</span>
+          <span style="font-size:9px;font-weight:700">MetaMask</span>
+        </a>
+        <a href="https://link.trustwallet.com/send?asset=c60_t0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359&address=${addr}" target="_blank"
+          style="display:flex;flex-direction:column;align-items:center;gap:3px;padding:9px 4px;
+            border-radius:10px;border:1.5px solid var(--border);background:var(--card2);
+            text-decoration:none;color:var(--text)">
+          <span style="font-size:18px">🛡️</span>
+          <span style="font-size:9px;font-weight:700">Trust</span>
+        </a>
+        <a href="https://go.cb-wallet.com/send?network=polygon&to=${addr}" target="_blank"
+          style="display:flex;flex-direction:column;align-items:center;gap:3px;padding:9px 4px;
+            border-radius:10px;border:1.5px solid var(--border);background:var(--card2);
+            text-decoration:none;color:var(--text)">
+          <span style="font-size:18px">🔵</span>
+          <span style="font-size:9px;font-weight:700">Coinbase</span>
+        </a>
+      </div>`;
+    payButtonsHtml = deepLinks + (otherHas ? `
+      <div style="font-size:10.5px;color:var(--muted);text-align:center;margin-top:6px">
+        💡 ${en
+          ? `Your wallet doesn't support ${netName} transfers from this browser — switch to ${isSol?"Polygon":"Solana"} to deposit directly from it, or scan the QR.`
+          : `Tu wallet no maneja ${netName} desde este navegador — cambia a la red ${isSol?"Polygon":"Solana"} para depositar directo desde ella, o escanea el QR.`}
+      </div>`:"");
+  }
 
   container.innerHTML = `
     <!-- Contador siempre visible arriba -->
@@ -10260,12 +10334,14 @@ function depShowWalletUI(){
         📋 ${en?"Copy address":"Copiar dirección"}
       </button>
 
-      <!-- Deep links: abrir wallet directamente sin salir del flujo -->
+      <!-- Botones de pago: SOLO las wallets detectadas en este navegador -->
       <div style="font-size:10px;color:var(--muted);font-weight:700;text-transform:uppercase;
           letter-spacing:.5px;margin-bottom:6px;text-align:center">
-        ${en?"Or open directly in your wallet:":"O abre directamente en tu wallet:"}
+        ${detected.length
+          ? (en?"Or deposit directly from your wallet:":"O deposita directo desde tu wallet:")
+          : (en?"Open in your wallet app:":"Abre en tu app de wallet:")}
       </div>
-      ${isSol ? solDeepLinks : polyDeepLinks}
+      ${payButtonsHtml}
     </div>
 
     <!-- Aviso: el usuario puede volver a esta pantalla si salió -->
@@ -10284,6 +10360,176 @@ function depShowWalletUI(){
   `;
 }
 
+
+// ═══════════════════════════════════════════════════════════════════
+// DETECCIÓN DE WALLETS + PAGO INTERNO (sin salir de la página)
+// Solo se muestran las wallets que el navegador realmente tiene
+// inyectadas: extensión de escritorio o navegador in-app de la wallet.
+// Al presionar el botón, la transferencia se procesa DENTRO de esa
+// wallet (hoja de confirmación nativa) hacia la dirección exacta
+// reservada — el webhook la identifica y acredita al usuario.
+// ═══════════════════════════════════════════════════════════════════
+
+function depDetectWallets(network){
+  // Recolectar todos los proveedores EVM inyectados (puede haber varios)
+  const evms = [];
+  const e = window.ethereum;
+  if(e){
+    if(Array.isArray(e.providers) && e.providers.length) evms.push(...e.providers);
+    else evms.push(e);
+  }
+  const findEvm = pred => evms.find(pred) || null;
+
+  const wallets = [];
+
+  // Phantom — Solana nativa Y también EVM/Polygon (Phantom es multichain)
+  const phSol = (window.phantom?.solana?.isPhantom) ? window.phantom.solana
+              : (window.solana?.isPhantom ? window.solana : null);
+  const phEvm = (window.phantom?.ethereum) || findEvm(p=>p.isPhantom);
+  if(phSol || phEvm) wallets.push({key:"phantom", name:"Phantom", icon:"👻", sol:phSol, evm:phEvm});
+
+  // MetaMask — EVM/Polygon
+  const mmEvm = findEvm(p=>p.isMetaMask && !p.isPhantom && !p.isTrust && !p.isTrustWallet && !p.isCoinbaseWallet);
+  if(mmEvm) wallets.push({key:"metamask", name:"MetaMask", icon:"🦊", sol:null, evm:mmEvm});
+
+  // Trust Wallet — EVM y Solana (navegador in-app inyecta ambos)
+  const twEvm = findEvm(p=>p.isTrust || p.isTrustWallet) || window.trustwallet?.ethereum || null;
+  const twSol = window.trustwallet?.solana || (window.solana?.isTrust ? window.solana : null);
+  if(twEvm || twSol) wallets.push({key:"trust", name:"Trust Wallet", icon:"🛡️", sol:twSol, evm:twEvm});
+
+  // Solflare — Solana
+  if(window.solflare?.isSolflare) wallets.push({key:"solflare", name:"Solflare", icon:"☀️", sol:window.solflare, evm:null});
+
+  // Coinbase Wallet — EVM
+  const cbEvm = findEvm(p=>p.isCoinbaseWallet);
+  if(cbEvm) wallets.push({key:"coinbase", name:"Coinbase Wallet", icon:"🔵", sol:null, evm:cbEvm});
+
+  // Solo wallets que realmente pueden operar la red seleccionada.
+  // Si el usuario está en el navegador de Phantom y elige Polygon,
+  // aparece "Depositar desde Phantom" usando su proveedor EVM; si elige
+  // Solana, usa su proveedor Solana — misma wallet, ambas redes.
+  return wallets.filter(w => network==="sol" ? !!w.sol : !!w.evm);
+}
+
+function depSetPayToken(tok){
+  STATE.depositToken = tok;
+  depShowWalletUI();
+}
+
+// Contratos ERC-20 en Polygon (ambos con 6 decimales)
+const DEP_POLY_TOKENS = {
+  usdc: { addr:"0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359", sym:"USDC", dec:6 },
+  usdt: { addr:"0xc2132D05D31c914a87C6611C10748AEb04B58e8F", sym:"USDT", dec:6 },
+};
+
+async function depPayFromWallet(key){
+  const s  = STATE.depositSession;
+  const en = STATE.lang==="en";
+  if(!s){
+    notify(en?"Session expired — generate a new address":"Sesión expirada — genera una nueva dirección","error");
+    return;
+  }
+  const w = depDetectWallets(s.network).find(x=>x.key===key);
+  if(!w){ notify(en?"Wallet not detected":"Wallet no detectada","error"); return; }
+  const statusEl = document.getElementById("dep-status");
+
+  try{
+    if(s.network==="poly"){
+      await depPayEVM(w.evm, s, en, statusEl);
+    }else{
+      await depPaySolanaNative(w.sol, s, en, statusEl);
+    }
+  }catch(err){
+    const msg = err?.message || String(err);
+    const rejected = err?.code===4001 || /reject|denied|declin|cancel/i.test(msg);
+    notify(rejected ? (en?"Transaction cancelled":"Transacción cancelada") : ("⚠️ "+msg.slice(0,120)),
+           rejected ? "info" : "error");
+    if(statusEl) statusEl.innerHTML = `🔍 ${en?"Checking automatically...":"Verificando automáticamente..."}`;
+  }
+}
+
+// ── Polygon: transferencia ERC-20 interna (USDC/USDT, monto exacto) ──
+async function depPayEVM(provider, s, en, statusEl){
+  if(statusEl) statusEl.innerHTML = `⏳ ${en?"Opening your wallet...":"Abriendo tu wallet..."}`;
+  const accounts = await provider.request({ method:"eth_requestAccounts" });
+  const from = accounts && accounts[0];
+  if(!from) throw new Error(en?"No account authorized":"Ninguna cuenta autorizada");
+
+  // Asegurar red Polygon (chainId 137 = 0x89); agregarla si la wallet no la tiene
+  try{
+    await provider.request({ method:"wallet_switchEthereumChain", params:[{ chainId:"0x89" }] });
+  }catch(swErr){
+    if(swErr?.code === 4001) throw swErr; // usuario rechazó el cambio de red
+    await provider.request({ method:"wallet_addEthereumChain", params:[{
+      chainId:"0x89", chainName:"Polygon Mainnet",
+      nativeCurrency:{ name:"POL", symbol:"POL", decimals:18 },
+      rpcUrls:["https://polygon-rpc.com"],
+      blockExplorerUrls:["https://polygonscan.com"],
+    }]});
+  }
+
+  const tok   = DEP_POLY_TOKENS[STATE.depositToken==="usdt" ? "usdt" : "usdc"];
+  // transfer(address,uint256) → calldata: selector + destino + monto EXACTO
+  const units = BigInt(Math.round(s.amount * Math.pow(10, tok.dec)));
+  const data  = "0xa9059cbb"
+    + s.address.toLowerCase().replace("0x","").padStart(64,"0")
+    + units.toString(16).padStart(64,"0");
+
+  if(statusEl) statusEl.innerHTML = `✍️ ${en?"Confirm the transfer in your wallet...":"Confirma la transferencia en tu wallet..."}`;
+  const txHash = await provider.request({ method:"eth_sendTransaction", params:[{
+    from, to: tok.addr, value:"0x0", data,
+  }]});
+
+  notify(en?`✅ ${tok.sym} transfer sent — waiting for confirmation`
+           :`✅ Transferencia ${tok.sym} enviada — esperando confirmación`,"success");
+  if(statusEl) statusEl.innerHTML =
+    `⛓️ ${en?"Transaction sent":"Transacción enviada"} · ${String(txHash).slice(0,10)}… · ${en?"crediting when confirmed":"se acredita al confirmar"}`;
+  setTimeout(depCheckPayment, 5000);
+}
+
+// ── Solana: transferencia SOL nativa interna (equivalente al precio en vivo) ──
+async function depPaySolanaNative(provider, s, en, statusEl){
+  if(statusEl) statusEl.innerHTML = `⏳ ${en?"Preparing transaction...":"Preparando transacción..."}`;
+  const web3 = await loadSolanaWeb3();
+
+  if(statusEl) statusEl.innerHTML = `⏳ ${en?"Opening your wallet...":"Abriendo tu wallet..."}`;
+  const resp   = await provider.connect();
+  const fromPk = provider.publicKey || resp?.publicKey;
+  if(!fromPk) throw new Error(en?"Could not connect wallet":"No se pudo conectar la wallet");
+
+  // Convertir el monto USD a lamports con el precio de SOL EN ESTE MOMENTO
+  const price    = await fetchSolPriceUSD();
+  const lamports = Math.round((s.amount / price) * 1e9);
+  if(!(lamports > 0)) throw new Error(en?"Invalid amount":"Monto inválido");
+
+  const connection = new web3.Connection(ALCHEMY_SOL_RPC, "confirmed");
+  const fromPub = new web3.PublicKey(fromPk.toString());
+  const tx = new web3.Transaction().add(
+    web3.SystemProgram.transfer({
+      fromPubkey: fromPub,
+      toPubkey:   new web3.PublicKey(s.address),   // dirección EXACTA reservada
+      lamports,
+    })
+  );
+  tx.feePayer = fromPub;
+  tx.recentBlockhash = (await connection.getLatestBlockhash("confirmed")).blockhash;
+
+  if(statusEl) statusEl.innerHTML = `✍️ ${en?"Confirm the transfer in your wallet...":"Confirma la transferencia en tu wallet..."}`;
+  let sig;
+  if(typeof provider.signAndSendTransaction === "function"){
+    const r = await provider.signAndSendTransaction(tx);
+    sig = r?.signature || r;
+  }else{
+    const signed = await provider.signTransaction(tx);
+    sig = await connection.sendRawTransaction(signed.serialize());
+  }
+
+  notify(en?`✅ SOL sent (~$${s.amount.toFixed(2)}) — waiting for confirmation`
+           :`✅ SOL enviado (~$${s.amount.toFixed(2)}) — esperando confirmación`,"success");
+  if(statusEl) statusEl.innerHTML =
+    `⛓️ ${en?"Transaction sent":"Transacción enviada"} · ${String(sig).slice(0,10)}… · ${en?"crediting when confirmed":"se acredita al confirmar"}`;
+  setTimeout(depCheckPayment, 5000);
+}
 
 function depCopyAddress(address){
   const en = STATE.lang==="en";
@@ -10585,26 +10831,10 @@ async function depFinishAlreadyCredited(amount){
   closeDepositModal();
 }
 
-// ── Liberación de la wallet si el usuario cierra la pestaña ─────────
-// closeDepositModal ya libera la wallet al cancelar o salir del panel.
-// Esto cubre el caso de cerrar la pestaña/navegador con una sesión activa:
-// fetch con keepalive permite que la petición sobreviva al unload.
-window.addEventListener("pagehide", ()=>{
-  const s = STATE.depositSession;
-  if(!s) return;
-  try{
-    fetch(SUPABASE_URL + "/rest/v1/rpc/unlock_deposit_wallet", {
-      method: "POST",
-      keepalive: true,
-      headers: {
-        "Content-Type": "application/json",
-        "apikey": SUPABASE_KEY,
-        "Authorization": "Bearer " + SUPABASE_KEY,
-      },
-      body: JSON.stringify({ p_wallet_id: s.walletId }),
-    });
-  }catch(_){}
-});
+// La reserva de 5 minutos sobrevive al cierre de pestaña/navegador a
+// propósito: si el usuario transfiere manualmente después de salir, el
+// webhook igual le acredita porque la wallet sigue bloqueada a su nombre.
+// (El desbloqueo por cierre de pestaña fue removido intencionalmente.)
 
 // ═══════════════════════════════════════════════════════════════════
 // COMERCIO P2P — Compra/venta de saldo entre usuarios (estilo Binance P2P)
@@ -12230,6 +12460,7 @@ async function executeTrade(){
         loadPendingOrders(marketId);
         loadMyTrades(marketId);
         loadProSentiment(marketId);
+        if(STATE.view==="pro" && PRO_CHART_STATE.marketId===marketId) loadProChart(marketId);
         if(STATE.view==="pro") loadProMyTrades(marketId);
       }, 400);
 
@@ -12344,6 +12575,7 @@ async function executeTrade(){
         loadSellOrdersPanel(marketId);
         startSellRefresh(marketId);
         loadProSentiment(marketId);
+        if(STATE.view==="pro" && PRO_CHART_STATE.marketId===marketId) loadProChart(marketId);
         const u2=getUser(); if(u2) loadRealPositionForSell(marketId, u2.id);
         if(STATE.view==="pro") loadProMyTrades(marketId);
       }, 300);
