@@ -12717,6 +12717,254 @@ async function clearSTWLaunchDate(){
   render();
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// WHITELABEL — Personalización de marca para revender la plataforma
+// Cambia nombre, logos y colores de TODA la plataforma en runtime.
+// La configuración vive en la tabla site_settings (fila id=1) y se
+// aplica a todos los usuarios al cargar la página.
+// ═══════════════════════════════════════════════════════════════════
+
+const BRAND_DEFAULTS = {
+  brand_name: "Statwaves",
+  logo_url: "",        // data URI o URL del logo (reemplaza todos los logos)
+  favicon_url: "",     // data URI o URL del favicon
+  color_accent: "",    // color primario/acento de la marca
+  color_yes: "",       // color "SÍ"/positivo
+  color_no: "",        // color "NO"/negativo
+  support_email: "",
+};
+window.BRAND = {...BRAND_DEFAULTS};
+
+async function loadBranding(){
+  try{
+    const {data, error} = await db.from("site_settings").select("*").eq("id",1).maybeSingle();
+    if(!error && data){
+      const clean = Object.fromEntries(Object.entries(data).filter(([k,v])=>v!=null && v!==""));
+      window.BRAND = {...BRAND_DEFAULTS, ...clean};
+    }
+  }catch(_){ /* tabla aún no creada: usar defaults */ }
+  applyBranding();
+}
+
+function applyBranding(){
+  const B = window.BRAND;
+
+  // ── Colores: override de variables CSS (gana sobre :root y temas) ──
+  const rs = document.documentElement.style;
+  if(B.color_yes){ rs.setProperty("--yes", B.color_yes); rs.setProperty("--yes-text", B.color_yes); }
+  if(B.color_no){ rs.setProperty("--no", B.color_no); }
+  if(B.color_accent){ rs.setProperty("--accent", B.color_accent); }
+
+  // ── Título de la pestaña y favicon ──
+  if(B.brand_name && B.brand_name !== "Statwaves"){
+    document.title = `${B.brand_name} — Prediction Markets`;
+  }
+  if(B.favicon_url){
+    let l = document.querySelector('link[rel="icon"]');
+    if(!l){ l = document.createElement("link"); l.rel = "icon"; document.head.appendChild(l); }
+    l.href = B.favicon_url;
+  }
+
+  // ── Reescritura inicial de todo el DOM ──
+  brandRewriteDOM(document.body);
+
+  // ── Observer: reescribe todo contenido nuevo (renders, modales, notify) ──
+  if(!window._brandObserver){
+    window._brandObserver = new MutationObserver(muts=>{
+      for(const m of muts){
+        if(m.type === "characterData"){ brandRewriteText(m.target); continue; }
+        m.addedNodes.forEach(n=>{
+          if(n.nodeType === 1) brandRewriteDOM(n);
+          else if(n.nodeType === 3) brandRewriteText(n);
+        });
+      }
+    });
+    window._brandObserver.observe(document.body, {childList:true, subtree:true, characterData:true});
+  }
+}
+
+function brandRewriteText(node){
+  const B = window.BRAND;
+  if(!B || B.brand_name === "Statwaves") return;
+  const v = node.nodeValue;
+  if(!v || !/statwaves/i.test(v)) return;
+  // No tocar textos que parezcan emails (el email de soporte se maneja aparte)
+  if(v.includes("@") && /statwaves[^ ]*@|@[^ ]*statwaves/i.test(v)) return;
+  node.nodeValue = v.replace(/Statwaves/g, B.brand_name).replace(/statwaves/g, B.brand_name);
+}
+
+function brandRewriteDOM(root){
+  const B = window.BRAND;
+  if(!root || root.nodeType !== 1) return;
+
+  // 1) Nombre de marca en todos los nodos de texto
+  if(B.brand_name !== "Statwaves"){
+    const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    let n;
+    while((n = w.nextNode())){
+      const p = n.parentElement;
+      if(p && (p.tagName==="SCRIPT" || p.tagName==="STYLE" || p.tagName==="TEXTAREA")) continue;
+      brandRewriteText(n);
+    }
+  }
+
+  // 2) Logos: todo <img alt="Statwaves"> se reemplaza por el logo de la marca
+  //    (el alt se conserva como marcador para poder seguir encontrándolos)
+  if(B.logo_url){
+    const imgs = [];
+    if(root.matches && root.matches('img[alt="Statwaves"]')) imgs.push(root);
+    if(root.querySelectorAll) imgs.push(...root.querySelectorAll('img[alt="Statwaves"]'));
+    imgs.forEach(img=>{ if(img.getAttribute("src") !== B.logo_url) img.src = B.logo_url; });
+  }
+
+  // 3) Email de soporte
+  if(B.support_email && root.querySelectorAll){
+    root.querySelectorAll('a[href^="mailto:statwaves"]').forEach(a=>{
+      a.href = "mailto:" + B.support_email;
+      if(a.textContent.includes("@")) a.textContent = B.support_email;
+    });
+  }
+}
+
+// ── Panel de administración Whitelabel ──────────────────────────────
+window._wlDraft = {};
+
+function renderAdminWhitelabel(){
+  const B = window.BRAND;
+  const cs = getComputedStyle(document.documentElement);
+  const curAccent = B.color_accent || cs.getPropertyValue("--accent").trim() || "#0098a8";
+  const curYes    = B.color_yes    || cs.getPropertyValue("--yes").trim()    || "#0098a8";
+  const curNo     = B.color_no     || cs.getPropertyValue("--no").trim()     || "#e0284a";
+
+  const fileRow = (key, label, hint, cur) => `
+    <div style="margin-bottom:18px">
+      <div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">${label}</div>
+      <div style="display:flex;align-items:center;gap:14px">
+        <div id="wl-prev-${key}" style="width:${key==='favicon_url'?'40px':'120px'};height:40px;border:1px dashed var(--border-strong);
+            border-radius:8px;display:flex;align-items:center;justify-content:center;overflow:hidden;background:var(--card2)">
+          ${cur ? `<img src="${cur}" style="max-width:100%;max-height:100%"/>` : `<span style="font-size:10px;color:var(--muted)">actual</span>`}
+        </div>
+        <label style="padding:9px 16px;border-radius:9px;border:1.5px solid var(--border-strong);cursor:pointer;
+            font-size:12.5px;font-weight:700;background:var(--card2)">
+          📁 Subir imagen
+          <input type="file" accept="image/*" style="display:none" onchange="wlFile('${key}', this)"/>
+        </label>
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-top:5px">${hint}</div>
+    </div>`;
+
+  const colorRow = (id, label, val) => `
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border)">
+      <span style="font-size:13px;font-weight:600">${label}</span>
+      <div style="display:flex;align-items:center;gap:8px">
+        <input type="color" id="${id}" value="${val}"
+          style="width:44px;height:30px;border:none;border-radius:6px;cursor:pointer;background:transparent"/>
+        <code style="font-size:11px;color:var(--muted)">${val}</code>
+      </div>
+    </div>`;
+
+  return `<div class="card" style="padding:26px;max-width:660px">
+    <div class="admin-section-title">🎨 Whitelabel — Personalización de la plataforma</div>
+    <p style="font-size:13px;color:var(--muted);margin-bottom:22px;line-height:1.6">
+      Configura la identidad de marca para vender esta plataforma como whitelabel.
+      Los cambios se aplican a <strong>toda la plataforma para todos los usuarios</strong>:
+      el nombre reemplaza «Statwaves» en cada texto, los logos se cambian en header,
+      footer, login y modales, y los colores redefinen el tema completo.
+    </p>
+
+    <div style="margin-bottom:18px">
+      <div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Nombre de la marca</div>
+      <input id="wl-name" type="text" value="${escHtml(B.brand_name)}" placeholder="Mi Plataforma"
+        style="width:100%;box-sizing:border-box;padding:11px 14px;border:1.5px solid var(--border-strong);
+          border-radius:10px;background:var(--bg);color:var(--text);font-size:15px;font-weight:700"/>
+      <div style="font-size:11px;color:var(--muted);margin-top:5px">
+        Reemplaza «Statwaves» en títulos, textos, bienvenida, footer y título de la pestaña del navegador.
+      </div>
+    </div>
+
+    ${fileRow("logo_url","Logo de la plataforma","PNG o SVG con fondo transparente. Se usa en el header, footer y pantalla de login.", window._wlDraft.logo_url || B.logo_url)}
+    ${fileRow("favicon_url","Favicon","Icono cuadrado (32×32 o 64×64). Aparece en la pestaña del navegador.", window._wlDraft.favicon_url || B.favicon_url)}
+
+    <div style="margin-bottom:22px">
+      <div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Colores del tema</div>
+      ${colorRow("wl-accent","Color primario / acento de marca", curAccent)}
+      ${colorRow("wl-yes","Color positivo (SÍ, ganancias, botones principales)", curYes)}
+      ${colorRow("wl-no","Color negativo (NO, pérdidas, alertas)", curNo)}
+    </div>
+
+    <div style="margin-bottom:24px">
+      <div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Email de soporte</div>
+      <input id="wl-email" type="email" value="${escHtml(B.support_email||"")}" placeholder="soporte@mimarca.com"
+        style="width:100%;box-sizing:border-box;padding:11px 14px;border:1.5px solid var(--border-strong);
+          border-radius:10px;background:var(--bg);color:var(--text);font-size:14px"/>
+    </div>
+
+    <div style="display:flex;gap:10px">
+      <button onclick="wlSave()" style="flex:1;padding:13px;border-radius:11px;border:none;
+          background:var(--yes);color:#fff;font-weight:800;font-size:14px;cursor:pointer">
+        💾 Guardar y aplicar a toda la plataforma
+      </button>
+      <button onclick="wlReset()" style="padding:13px 18px;border-radius:11px;
+          border:1.5px solid var(--border-strong);background:var(--card2);color:var(--text);
+          font-weight:700;font-size:13px;cursor:pointer">
+        ↩️ Restaurar original
+      </button>
+    </div>
+  </div>`;
+}
+
+function wlFile(key, input){
+  const f = input.files && input.files[0];
+  if(!f) return;
+  if(f.size > 500*1024){ notify("Imagen muy pesada — máximo 500KB (usa un PNG/SVG optimizado)","error"); return; }
+  const r = new FileReader();
+  r.onload = () => {
+    window._wlDraft[key] = r.result;
+    const prev = document.getElementById("wl-prev-"+key);
+    if(prev) prev.innerHTML = `<img src="${r.result}" style="max-width:100%;max-height:100%"/>`;
+  };
+  r.readAsDataURL(f);
+}
+
+async function wlSave(){
+  const name = (document.getElementById("wl-name")?.value || "").trim() || "Statwaves";
+  const payload = {
+    id: 1,
+    brand_name:    name,
+    color_accent:  document.getElementById("wl-accent")?.value || null,
+    color_yes:     document.getElementById("wl-yes")?.value || null,
+    color_no:      document.getElementById("wl-no")?.value || null,
+    support_email: (document.getElementById("wl-email")?.value || "").trim() || null,
+  };
+  if(window._wlDraft.logo_url)    payload.logo_url    = window._wlDraft.logo_url;
+  if(window._wlDraft.favicon_url) payload.favicon_url = window._wlDraft.favicon_url;
+
+  const {error} = await db.from("site_settings").upsert(payload);
+  if(error){ notify("Error guardando: "+error.message, "error"); return; }
+
+  const clean = Object.fromEntries(Object.entries(payload).filter(([k,v])=>v!=null && v!==""));
+  window.BRAND = {...window.BRAND, ...clean};
+  window._wlDraft = {};
+  applyBranding();
+  render();
+  notify(`✅ Marca «${name}» aplicada a toda la plataforma`, "success");
+}
+
+async function wlReset(){
+  if(!confirm("¿Restaurar la marca original (Statwaves, logos y colores por defecto)?")) return;
+  const {error} = await db.from("site_settings").delete().eq("id",1);
+  if(error){ notify("Error: "+error.message, "error"); return; }
+  window.BRAND = {...BRAND_DEFAULTS};
+  window._wlDraft = {};
+  ["--yes","--yes-text","--no","--accent"].forEach(v=>document.documentElement.style.removeProperty(v));
+  document.title = "Statwaves — Prediction Markets";
+  notify("Marca restaurada — recarga la página para ver todos los textos originales","info");
+  render();
+}
+
+// Cargar la marca al iniciar (el script corre al final del body, db ya existe)
+setTimeout(loadBranding, 50);
+
 function renderAdmin(){
   if(!isAdmin())return`<div class="container"><p>${t("admin_access_denied")}</p></div>`;
   const featuredCount=STATE.markets.filter(m=>m.featured&&!m.resolved).length;
@@ -12736,6 +12984,7 @@ function renderAdmin(){
     {k:"trending",  l:`Tendencias`,                     count:null},
     {k:"stw",       l:`🪙 Token STW`,                       count:null},
     {k:"wallets",   l:`💳 Wallets`,                         count:null},
+    {k:"whitelabel",l:`🎨 Whitelabel`,                      count:null},
   ];
   let content="";
   if(STATE.adminTab==="accounts")   content=renderAdminAccounts();
@@ -12753,6 +13002,7 @@ function renderAdmin(){
   if(STATE.adminTab==="news")       content=renderAdminNews();
   if(STATE.adminTab==="trending")   content=renderAdminTrending();
   if(STATE.adminTab==="stw")         content=renderAdminSTW();
+  if(STATE.adminTab==="whitelabel")  content=renderAdminWhitelabel();
   if(STATE.adminTab==="wallets"){
     if(STATE._walletPinOk && Date.now()-STATE._walletPinOk < 15*60*1000){
       content=renderAdminWallets(); setTimeout(loadAdminWallets,100);
