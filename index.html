@@ -5180,30 +5180,40 @@ async function loadProChart(marketId){
     const noAdmin  = adminIds.has(String(c.no_user_id));
     if(yesAdmin && noAdmin) return;
 
-    // Precio SÍ del contrato, normalizado a 0-1
-    let p = parseFloat(c.yes_price);
-    if(!(p > 0)) return;
-    if(p > 1) p = p / 100;           // por si la DB guarda 54.5 en vez de 0.545
+    let yp = parseFloat(c.yes_price);
+    let np = parseFloat(c.no_price);
+    if(yp > 1) yp = yp / 100;
+    if(np > 1) np = np / 100;
+
+    // Regla dura del motor: yes_price + no_price = 1 en TODOS los contratos.
+    // Cuando ambos son válidos y suman 1 (±1¢), yes_price es correcto.
+    // Cuando NO suman 1, la fila viene invertida de una versión vieja
+    // del RPC → derivar el precio SÍ correcto de las dos formas y quedarse
+    // con la que produzca un precio válido.
+    let p;
+    if(yp > 0 && np > 0){
+      const sum = yp + np;
+      if(Math.abs(sum - 1) <= 0.01){
+        p = yp;                 // contrato sano
+      } else {
+        // Contrato invertido de versión vieja: en compras NO el RPC guardó
+        // yes_price = precio NO. El precio SÍ real es 1 − yes_price.
+        p = Math.round((1 - yp) * 10000) / 10000;
+      }
+    } else if(yp > 0){
+      p = yp;
+    } else if(np > 0){
+      p = Math.round((1 - np) * 10000) / 10000;
+    } else {
+      return;
+    }
     if(p <= 0 || p >= 1) return;
 
     trades.push({ price: p, ts: new Date(c.created_at).getTime() });
   });
 
-  // Reparar filas históricas: versiones antiguas del RPC guardaban en
-  // yes_price el precio del lado NO en compras NO. Si un precio salta
-  // demasiados ticks pero su espejo (1−p) encaja con el anterior, es una
-  // de esas filas → usar el espejo (el verdadero precio de SÍ).
-  const tk = m?.tick || 0.01;
-  for(let i=1; i<trades.length; i++){
-    const prev = trades[i-1].price, p = trades[i].price;
-    if(Math.abs(p - prev) > 8*tk && Math.abs((1-p) - prev) <= 3*tk){
-      trades[i].price = Math.round((1-p)*10000)/10000;
-    }
-  }
-
   // Punto sintético final: precio SÍ actual del mercado (markets.price_yes,
-  // movido por ticks en match_order — fuente de verdad para ambos lados).
-  // Marcado syn=true para que NO genere cuerpo de vela.
+  // movido por ticks en match_order — fuente de verdad).
   if(m?.priceYes != null){
     trades.push({ price: m.priceYes, ts: Date.now(), syn: true });
   }
