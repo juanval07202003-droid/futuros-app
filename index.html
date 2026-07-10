@@ -5152,42 +5152,34 @@ const PRO_PERIODS = {
 async function loadProChart(marketId){
   const m = getMarket(marketId);
 
-  // Fuente ÚNICA de verdad: órdenes REALES de usuarios (no MM, no ventas).
-  // Cada orden ejecutada tiene el timestamp exacto en que se hizo la compra.
-  // NOTA: solo se seleccionan columnas garantizadas — si una columna no
-  // existe, Supabase falla la consulta COMPLETA y la gráfica queda vacía.
-  const {data: ordersData, error: ordErr} = await db.from('orders')
-    .select('created_at, side, price, order_type, is_mm')
+  // Fuente de verdad: la tabla CONTRACTS — cada fila es una operación real
+  // ejecutada (la misma fuente que alimenta el historial de operaciones,
+  // que sí funciona). La tabla orders NO contiene las compras de usuarios
+  // en el flujo actual, por eso las velas no se movían.
+  const adminIds = new Set(STATE.users.filter(u=>u.role==="admin").map(u=>String(u.id)));
+
+  const {data: contracts, error: cErr} = await db.from('contracts')
+    .select('yes_price, yes_user_id, no_user_id, created_at')
     .eq('market_id', marketId)
-    .in('status', ['filled', 'partial'])
     .order('created_at', {ascending: true})
     .limit(5000);
-  if(ordErr) console.warn('loadProChart orders error:', ordErr.message);
+  if(cErr) console.warn('loadProChart contracts error:', cErr.message);
 
   let trades = [];
+  (contracts||[]).forEach(c => {
+    // Contratos internos del MM (admin en ambos lados): no son compras reales
+    const yesAdmin = adminIds.has(String(c.yes_user_id));
+    const noAdmin  = adminIds.has(String(c.no_user_id));
+    if(yesAdmin && noAdmin) return;
 
-  if(ordersData && ordersData.length > 0){
-    // Incluir SOLO compras reales de usuarios (filtros null-safe):
-    // · is_mm !== true      → nunca órdenes del MM
-    // · order_type distinto de 'sell' y 'mm'
-    const relevant = ordersData.filter(o =>
-      o.is_mm !== true &&
-      o.order_type !== 'sell' &&
-      o.order_type !== 'mm'
-    );
+    // Precio SÍ del contrato, normalizado a 0-1
+    let p = parseFloat(c.yes_price);
+    if(!(p > 0)) return;
+    if(p > 1) p = p / 100;           // por si la DB guarda 54.5 en vez de 0.545
+    if(p <= 0 || p >= 1) return;
 
-    trades = relevant.map(o => {
-      // Normalizar siempre a precio SÍ (0-1)
-      const price = o.side === 'YES'
-        ? o.price
-        : Math.round((1 - o.price) * 10000) / 10000;
-      return { price, ts: new Date(o.created_at).getTime() };
-    }).filter(t => t.price > 0.01 && t.price < 0.99);
-  }
-
-  // NO usar priceHistory como fallback de trades — contiene precios interpolados
-  // que crean velas con cuerpo aunque nadie haya comprado en esos períodos.
-  // Si no hay trades reales, el gráfico mostrará solo dojis al precio actual.
+    trades.push({ price: p, ts: new Date(c.created_at).getTime() });
+  });
 
   // Punto sintético final: precio actual del mercado. Marcado como syn=true
   // para que NO genere cuerpo de vela — solo fuerza el doji de la vela
@@ -5254,7 +5246,7 @@ function buildCandleSVG(trades, period){
   //  · Sin trades → doji: línea horizontal al precio del período anterior.
   //    NO se dibuja cuerpo aunque el precio actual del mercado haya cambiado.
   //    Solo la vela en curso (la de nowBucket) usa el precio actual como cierre.
-  let lastClose = synPrice ?? (realTrades[0]?.price ?? 0.5);
+  let lastClose = realTrades[0]?.price ?? synPrice ?? 0.5;
   const allCandles = [];
 
   for(let b = firstBucket; b <= lastBucket; b += periodMs){
@@ -9018,18 +9010,16 @@ async function loadProSentiment(marketId){
   // TODOS los admins/MM quedan fuera del sentimiento (puede haber más de uno)
   const adminIds = new Set(STATE.users.filter(u=>u.role==="admin").map(u=>String(u.id)));
 
-  const [{data:mFresh},{data:buyOrders}] = await Promise.all([
+  const [{data:mFresh},{data:contracts, error:sErr}] = await Promise.all([
     db.from("markets").select("q_yes,q_no").eq("id",marketId).maybeSingle(),
-    // Compras REALES de usuarios: nunca órdenes del MM ni ventas.
-    // El sentimiento es el NÚMERO de compras de la gente por lado, sin
-    // importar el monto apostado. Solo columnas garantizadas en el select:
-    // una columna inexistente rompe la consulta completa y deja 0 compras.
-    db.from("orders").select("side,user_id,order_type,is_mm")
+    // Fuente: CONTRACTS — cada contrato es una operación real ejecutada
+    // (misma fuente que el historial de operaciones). La tabla orders no
+    // registra las compras de usuarios en el flujo actual.
+    db.from("contracts").select("yes_user_id,no_user_id")
       .eq("market_id",marketId)
-      .eq("is_mm",false)
-      .neq("order_type","sell")
-      .in("status",["filled","partial"]),
+      .limit(5000),
   ]);
+  if(sErr) console.warn("loadProSentiment contracts error:", sErr.message);
 
   const qY = mFresh?.q_yes||0;
   const qN = mFresh?.q_no||0;
@@ -9038,16 +9028,19 @@ async function loadProSentiment(marketId){
 
   if(!el) return;
 
-  // Excluir contrapartes del MM y cualquier compra de un admin (null-safe).
-  // Sin este filtro el MM (que compra la contraparte de cada orden) haría
-  // que ambos lados mostraran siempre la misma cantidad de compras.
-  const buys = (buyOrders||[]).filter(o=>
-    o.is_mm !== true &&
-    o.order_type !== "mm" &&
-    !adminIds.has(String(o.user_id))
-  );
-  const countY = buys.filter(o=>o.side==="YES").length;
-  const countN = buys.filter(o=>o.side==="NO").length;
+  // Contar COMPRAS de usuarios reales por lado, sin importar el monto:
+  // · Cada contrato tiene un lado SÍ y un lado NO.
+  // · Si un lado es el MM/admin, ese lado NO cuenta (el MM solo es contraparte).
+  // · Si ambos lados son admins, el contrato se ignora por completo.
+  // Así el MM nunca infla el conteo y los porcentajes reflejan solo a la gente.
+  let countY = 0, countN = 0;
+  (contracts||[]).forEach(c=>{
+    const yesAdmin = adminIds.has(String(c.yes_user_id));
+    const noAdmin  = adminIds.has(String(c.no_user_id));
+    if(yesAdmin && noAdmin) return;
+    if(!yesAdmin) countY++;
+    if(!noAdmin)  countN++;
+  });
   const total  = countY+countN;
   const pctY   = total>0 ? Math.round(countY/total*100) : 50;
   const pctN   = 100-pctY;
@@ -10227,9 +10220,34 @@ function depShowWalletUI(){
         ${en?"Sends the equivalent in SOL at the live price. For USDC/USDT use the QR or copy the address.":"Envía el equivalente en SOL al precio en vivo. Para USDC/USDT usa el QR o copia la dirección."}
       </div>`:""}`;
   } else {
-    // Ninguna wallet inyectada detectada en la otra red disponible?
+    // ¿Hay alguna wallet inyectada (estamos dentro del navegador in-app de
+    // alguna wallet), aunque no soporte la red seleccionada? En ese caso NO
+    // tiene sentido ofrecer deep links a OTRA app de wallet — el usuario ya
+    // está dentro de una wallet y solo puede operar con lo que esa wallet
+    // soporta. P. ej.: MetaMask no tiene soporte Solana (limitación real,
+    // no un bug) y Phantom EVM no se ofrece para Polygon (ver depDetectWallets).
+    // Los deep links solo tienen sentido cuando NO hay ninguna wallet inyectada
+    // (navegador normal, sin extensión ni app de wallet) — ahí sí redirigir
+    // a instalar/abrir una wallet es útil.
+    const anyWalletInjected = !!(window.ethereum || window.phantom?.solana || window.phantom?.ethereum ||
+                                  window.solana || window.trustwallet || window.solflare?.isSolflare);
     const otherHas = depDetectWallets(isSol ? "poly" : "sol").length > 0;
-    const deepLinks = isSol ? `
+
+    if(anyWalletInjected){
+      payButtonsHtml = `
+      <div style="font-size:11px;color:var(--muted);text-align:center;padding:6px 4px">
+        💡 ${en
+          ? (otherHas
+              ? `Your wallet doesn't support ${netName} transfers from this browser — switch to ${isSol?"Polygon":"Solana"} inside your wallet's browser to deposit directly, or scan the QR / copy the address above.`
+              : `Your wallet doesn't support ${netName} transfers from this browser — use the QR or copy the address above.`)
+          : (otherHas
+              ? `Tu wallet no maneja ${netName} desde este navegador — cambia a la red ${isSol?"Polygon":"Solana"} dentro del navegador de tu wallet para depositar directo, o escanea el QR / copia la dirección de arriba.`
+              : `Tu wallet no maneja ${netName} desde este navegador — usa el QR o copia la dirección de arriba.`)}
+      </div>`;
+    } else {
+      // Navegador normal sin ninguna wallet inyectada: sí tiene sentido
+      // ofrecer abrir/instalar una app de wallet compatible.
+      const deepLinks = isSol ? `
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:4px">
         <a href="phantom://ul/v1/browse?ref=statwaves" target="_blank"
           style="display:flex;flex-direction:column;align-items:center;gap:3px;padding:9px 4px;
@@ -10276,12 +10294,8 @@ function depShowWalletUI(){
           <span style="font-size:9px;font-weight:700">Coinbase</span>
         </a>
       </div>`;
-    payButtonsHtml = deepLinks + (otherHas ? `
-      <div style="font-size:10.5px;color:var(--muted);text-align:center;margin-top:6px">
-        💡 ${en
-          ? `Your wallet doesn't support ${netName} transfers from this browser — switch to ${isSol?"Polygon":"Solana"} to deposit directly from it, or scan the QR.`
-          : `Tu wallet no maneja ${netName} desde este navegador — cambia a la red ${isSol?"Polygon":"Solana"} para depositar directo desde ella, o escanea el QR.`}
-      </div>`:"");
+      payButtonsHtml = deepLinks;
+    }
   }
 
   container.innerHTML = `
@@ -10382,11 +10396,13 @@ function depDetectWallets(network){
 
   const wallets = [];
 
-  // Phantom — Solana nativa Y también EVM/Polygon (Phantom es multichain)
+  // Phantom — solo Solana. Su proveedor EVM (Polygon) NO se ofrece como botón
+  // de depósito directo: wallet_switchEthereumChain falla silenciosamente en
+  // Phantom móvil, con riesgo de enviar en la red equivocada. Para USDT/USDC
+  // por Polygon desde Phantom, el usuario usa el QR o copia la dirección.
   const phSol = (window.phantom?.solana?.isPhantom) ? window.phantom.solana
               : (window.solana?.isPhantom ? window.solana : null);
-  const phEvm = (window.phantom?.ethereum) || findEvm(p=>p.isPhantom);
-  if(phSol || phEvm) wallets.push({key:"phantom", name:"Phantom", icon:"👻", sol:phSol, evm:phEvm});
+  if(phSol) wallets.push({key:"phantom", name:"Phantom", icon:"👻", sol:phSol, evm:null});
 
   // MetaMask — EVM/Polygon
   const mmEvm = findEvm(p=>p.isMetaMask && !p.isPhantom && !p.isTrust && !p.isTrustWallet && !p.isCoinbaseWallet);
