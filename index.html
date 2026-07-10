@@ -5181,9 +5181,9 @@ async function loadProChart(marketId){
     trades.push({ price: p, ts: new Date(c.created_at).getTime() });
   });
 
-  // Punto sintético final: precio actual del mercado. Marcado como syn=true
-  // para que NO genere cuerpo de vela — solo fuerza el doji de la vela
-  // actual al precio exacto del mercado en este momento.
+  // Punto sintético final: precio SÍ actual del mercado (markets.price_yes,
+  // movido por ticks en match_order — fuente de verdad para ambos lados).
+  // Marcado syn=true para que NO genere cuerpo de vela.
   if(m?.priceYes != null){
     trades.push({ price: m.priceYes, ts: Date.now(), syn: true });
   }
@@ -10220,34 +10220,9 @@ function depShowWalletUI(){
         ${en?"Sends the equivalent in SOL at the live price. For USDC/USDT use the QR or copy the address.":"Envía el equivalente en SOL al precio en vivo. Para USDC/USDT usa el QR o copia la dirección."}
       </div>`:""}`;
   } else {
-    // ¿Hay alguna wallet inyectada (estamos dentro del navegador in-app de
-    // alguna wallet), aunque no soporte la red seleccionada? En ese caso NO
-    // tiene sentido ofrecer deep links a OTRA app de wallet — el usuario ya
-    // está dentro de una wallet y solo puede operar con lo que esa wallet
-    // soporta. P. ej.: MetaMask no tiene soporte Solana (limitación real,
-    // no un bug) y Phantom EVM no se ofrece para Polygon (ver depDetectWallets).
-    // Los deep links solo tienen sentido cuando NO hay ninguna wallet inyectada
-    // (navegador normal, sin extensión ni app de wallet) — ahí sí redirigir
-    // a instalar/abrir una wallet es útil.
-    const anyWalletInjected = !!(window.ethereum || window.phantom?.solana || window.phantom?.ethereum ||
-                                  window.solana || window.trustwallet || window.solflare?.isSolflare);
+    // Ninguna wallet inyectada detectada en la otra red disponible?
     const otherHas = depDetectWallets(isSol ? "poly" : "sol").length > 0;
-
-    if(anyWalletInjected){
-      payButtonsHtml = `
-      <div style="font-size:11px;color:var(--muted);text-align:center;padding:6px 4px">
-        💡 ${en
-          ? (otherHas
-              ? `Your wallet doesn't support ${netName} transfers from this browser — switch to ${isSol?"Polygon":"Solana"} inside your wallet's browser to deposit directly, or scan the QR / copy the address above.`
-              : `Your wallet doesn't support ${netName} transfers from this browser — use the QR or copy the address above.`)
-          : (otherHas
-              ? `Tu wallet no maneja ${netName} desde este navegador — cambia a la red ${isSol?"Polygon":"Solana"} dentro del navegador de tu wallet para depositar directo, o escanea el QR / copia la dirección de arriba.`
-              : `Tu wallet no maneja ${netName} desde este navegador — usa el QR o copia la dirección de arriba.`)}
-      </div>`;
-    } else {
-      // Navegador normal sin ninguna wallet inyectada: sí tiene sentido
-      // ofrecer abrir/instalar una app de wallet compatible.
-      const deepLinks = isSol ? `
+    const deepLinks = isSol ? `
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:4px">
         <a href="phantom://ul/v1/browse?ref=statwaves" target="_blank"
           style="display:flex;flex-direction:column;align-items:center;gap:3px;padding:9px 4px;
@@ -10294,8 +10269,12 @@ function depShowWalletUI(){
           <span style="font-size:9px;font-weight:700">Coinbase</span>
         </a>
       </div>`;
-      payButtonsHtml = deepLinks;
-    }
+    payButtonsHtml = deepLinks + (otherHas ? `
+      <div style="font-size:10.5px;color:var(--muted);text-align:center;margin-top:6px">
+        💡 ${en
+          ? `Your wallet doesn't support ${netName} transfers from this browser — switch to ${isSol?"Polygon":"Solana"} to deposit directly from it, or scan the QR.`
+          : `Tu wallet no maneja ${netName} desde este navegador — cambia a la red ${isSol?"Polygon":"Solana"} para depositar directo desde ella, o escanea el QR.`}
+      </div>`:"");
   }
 
   container.innerHTML = `
@@ -10384,46 +10363,160 @@ function depShowWalletUI(){
 // reservada — el webhook la identifica y acredita al usuario.
 // ═══════════════════════════════════════════════════════════════════
 
+// ── Descubrimiento moderno de wallets ───────────────────────────────
+// EIP-6963: las wallets EVM (MetaMask, Phantom-EVM, Trust, Coinbase...)
+//   anuncian su proveedor con un evento estándar — mucho más fiable que
+//   inspeccionar window.ethereum, sobre todo en navegadores in-app.
+// Wallet Standard: las wallets con soporte Solana (Phantom, Solflare,
+//   MetaMask-Solana, Trust...) se registran con otro evento estándar.
+// Con ambos registros, una misma wallet puede operar LAS DOS redes.
+window._evm6963 = window._evm6963 || [];
+window._solStd  = window._solStd  || [];
+
+function initWalletDiscovery(){
+  if(window._walletDiscoveryDone) return;
+  window._walletDiscoveryDone = true;
+
+  // EVM — EIP-6963
+  window.addEventListener("eip6963:announceProvider", (e)=>{
+    const d = e.detail;
+    if(!d || !d.provider) return;
+    const dup = window._evm6963.some(x =>
+      (d.info?.uuid && x.info?.uuid===d.info.uuid) ||
+      (d.info?.rdns && x.info?.rdns===d.info.rdns));
+    if(!dup) window._evm6963.push(d);
+  });
+  try{ window.dispatchEvent(new Event("eip6963:requestProvider")); }catch(_){}
+
+  // Solana — Wallet Standard
+  const api = {
+    register: (...wallets) => {
+      wallets.forEach(w => {
+        try{
+          if(w && w.features && (w.features["solana:signAndSendTransaction"] || w.features["solana:signTransaction"])){
+            if(!window._solStd.some(x => x.name === w.name)) window._solStd.push(w);
+          }
+        }catch(_){}
+      });
+      return ()=>{};
+    }
+  };
+  window.addEventListener("wallet-standard:register-wallet", (ev)=>{
+    try{ if(typeof ev.detail === "function") ev.detail(api); }catch(_){}
+  });
+  try{ window.dispatchEvent(new CustomEvent("wallet-standard:app-ready", {detail: api})); }catch(_){}
+}
+// Iniciar el descubrimiento inmediatamente (las wallets anuncian al cargar)
+initWalletDiscovery();
+
+// Codificador base58 (para firmas Solana devueltas como bytes)
+const _B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+function b58encode(bytes){
+  if(typeof bytes === "string") return bytes;
+  const b = Array.from(bytes);
+  let zeros = 0; while(zeros < b.length && b[zeros] === 0) zeros++;
+  const out = [];
+  for(let i = zeros; i < b.length; i++){
+    let carry = b[i];
+    for(let j = 0; j < out.length; j++){
+      carry += out[j] << 8;
+      out[j] = carry % 58;
+      carry = (carry / 58) | 0;
+    }
+    while(carry){ out.push(carry % 58); carry = (carry / 58) | 0; }
+  }
+  return "1".repeat(zeros) + out.reverse().map(i=>_B58[i]).join("");
+}
+
+// Adaptador: wallet del Wallet Standard → interfaz tipo Phantom
+// (connect / publicKey / signAndSendTransaction) que ya usa depPaySolanaNative
+function stdToSolProvider(std){
+  return {
+    _std: std,
+    _account: null,
+    publicKey: null,
+    async connect(){
+      const feat = std.features["standard:connect"];
+      if(!feat || !feat.connect) throw new Error("Wallet sin standard:connect");
+      const res = await feat.connect();
+      const accounts = (res && res.accounts) || std.accounts || [];
+      const acc = accounts.find(a => (a.chains||[]).some(c => String(c).startsWith("solana:"))) || accounts[0];
+      if(!acc) throw new Error("Sin cuenta Solana disponible en esta wallet");
+      this._account = acc;
+      this.publicKey = { toString: () => acc.address };
+      return { publicKey: this.publicKey };
+    },
+    async signAndSendTransaction(tx){
+      const feat = std.features["solana:signAndSendTransaction"];
+      if(!feat) throw new Error("Esta wallet no soporta enviar en Solana desde este navegador");
+      const bytes = tx.serialize({ requireAllSignatures:false, verifySignatures:false });
+      const outputs = await feat.signAndSendTransaction({
+        transaction: bytes,
+        account: this._account,
+        chain: "solana:mainnet",
+      });
+      const sig = outputs && outputs[0] && outputs[0].signature;
+      return { signature: b58encode(sig) };
+    },
+  };
+}
+
 function depDetectWallets(network){
-  // Recolectar todos los proveedores EVM inyectados (puede haber varios)
+  initWalletDiscovery();
+
+  // Proveedores EVM legacy (window.ethereum puede contener varios)
   const evms = [];
   const e = window.ethereum;
   if(e){
     if(Array.isArray(e.providers) && e.providers.length) evms.push(...e.providers);
     else evms.push(e);
   }
-  const findEvm = pred => evms.find(pred) || null;
+  const evm6963 = window._evm6963 || [];
+
+  // EVM: preferir EIP-6963 (por rdns), con fallback a flags legacy
+  const pickEvm = (rdnsParts, legacyPred) => {
+    const via = evm6963.find(d => rdnsParts.some(r => (d.info?.rdns||"").toLowerCase().includes(r)));
+    if(via) return via.provider;
+    return evms.find(legacyPred) || null;
+  };
+  // Solana: buscar en Wallet Standard por nombre
+  const pickStdSol = (nameParts) => {
+    const w = (window._solStd||[]).find(w => nameParts.some(s => (w.name||"").toLowerCase().includes(s)));
+    return w ? stdToSolProvider(w) : null;
+  };
 
   const wallets = [];
 
-  // Phantom — solo Solana. Su proveedor EVM (Polygon) NO se ofrece como botón
-  // de depósito directo: wallet_switchEthereumChain falla silenciosamente en
-  // Phantom móvil, con riesgo de enviar en la red equivocada. Para USDT/USDC
-  // por Polygon desde Phantom, el usuario usa el QR o copia la dirección.
-  const phSol = (window.phantom?.solana?.isPhantom) ? window.phantom.solana
-              : (window.solana?.isPhantom ? window.solana : null);
-  if(phSol) wallets.push({key:"phantom", name:"Phantom", icon:"👻", sol:phSol, evm:null});
+  // Phantom — Solana nativa Y EVM/Polygon (multichain)
+  const phSol = (window.phantom?.solana?.isPhantom ? window.phantom.solana : null)
+             || (window.solana?.isPhantom ? window.solana : null)
+             || pickStdSol(["phantom"]);
+  const phEvm = pickEvm(["app.phantom","phantom"], p=>p.isPhantom)
+             || window.phantom?.ethereum || null;
+  if(phSol || phEvm) wallets.push({key:"phantom", name:"Phantom", icon:"👻", sol:phSol, evm:phEvm});
 
-  // MetaMask — EVM/Polygon
-  const mmEvm = findEvm(p=>p.isMetaMask && !p.isPhantom && !p.isTrust && !p.isTrustWallet && !p.isCoinbaseWallet);
-  if(mmEvm) wallets.push({key:"metamask", name:"MetaMask", icon:"🦊", sol:null, evm:mmEvm});
+  // MetaMask — EVM/Polygon Y Solana (vía Wallet Standard en versiones nuevas)
+  const mmEvm = pickEvm(["io.metamask"], p=>p.isMetaMask && !p.isPhantom && !p.isTrust && !p.isTrustWallet && !p.isCoinbaseWallet);
+  const mmSol = pickStdSol(["metamask"]) || window.metamask?.solana || null;
+  if(mmEvm || mmSol) wallets.push({key:"metamask", name:"MetaMask", icon:"🦊", sol:mmSol, evm:mmEvm});
 
-  // Trust Wallet — EVM y Solana (navegador in-app inyecta ambos)
-  const twEvm = findEvm(p=>p.isTrust || p.isTrustWallet) || window.trustwallet?.ethereum || null;
-  const twSol = window.trustwallet?.solana || (window.solana?.isTrust ? window.solana : null);
+  // Trust Wallet — EVM y Solana
+  const twEvm = pickEvm(["com.trustwallet","trust"], p=>p.isTrust || p.isTrustWallet)
+             || window.trustwallet?.ethereum || null;
+  const twSol = window.trustwallet?.solana
+             || pickStdSol(["trust"])
+             || (window.solana?.isTrust ? window.solana : null);
   if(twEvm || twSol) wallets.push({key:"trust", name:"Trust Wallet", icon:"🛡️", sol:twSol, evm:twEvm});
 
   // Solflare — Solana
-  if(window.solflare?.isSolflare) wallets.push({key:"solflare", name:"Solflare", icon:"☀️", sol:window.solflare, evm:null});
+  const sfSol = (window.solflare?.isSolflare ? window.solflare : null) || pickStdSol(["solflare"]);
+  if(sfSol) wallets.push({key:"solflare", name:"Solflare", icon:"☀️", sol:sfSol, evm:null});
 
   // Coinbase Wallet — EVM
-  const cbEvm = findEvm(p=>p.isCoinbaseWallet);
+  const cbEvm = pickEvm(["com.coinbase"], p=>p.isCoinbaseWallet);
   if(cbEvm) wallets.push({key:"coinbase", name:"Coinbase Wallet", icon:"🔵", sol:null, evm:cbEvm});
 
-  // Solo wallets que realmente pueden operar la red seleccionada.
-  // Si el usuario está en el navegador de Phantom y elige Polygon,
-  // aparece "Depositar desde Phantom" usando su proveedor EVM; si elige
-  // Solana, usa su proveedor Solana — misma wallet, ambas redes.
+  // Solo wallets que realmente pueden operar la red seleccionada
   return wallets.filter(w => network==="sol" ? !!w.sol : !!w.evm);
 }
 
@@ -12427,9 +12520,11 @@ async function executeTrade(){
       }
 
       const netShares   = rpcData.shares_got || 0;
-      const newPriceYes = rpcData.price_yes;
       const spreadEarned= rpcData.spread_usd || 0;
       const newHistory  = Array.isArray(rpcData.new_history) ? rpcData.new_history : [];
+      // match_order devuelve price_yes = precio SÍ del mercado movido por
+      // ticks — es la fuente de verdad para AMBOS lados (compra SÍ o NO).
+      const newPriceYes = rpcData.price_yes;
 
       const nm={
         ...localM,
@@ -12537,9 +12632,10 @@ async function executeTrade(){
       }
 
       const netReturn = sellData.matched || 0;
-      const newPriceYesSell = sellData.price_yes;
       const newHistory= Array.isArray(sellData.new_history) ? sellData.new_history : [];
       const pendingShares = sellData.unfilled_shares ?? shares; // shares que quedaron en el libro
+      // Las ventas no mueven el precio: match_order devuelve el price_yes vigente
+      const newPriceYesSell = sellData.price_yes;
 
       const nm={...localM, priceYes:newPriceYesSell ?? localM.priceYes,
         spreadPool:(localM.spreadPool||0)+(sellData.spread_usd||0),
