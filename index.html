@@ -1230,7 +1230,13 @@ async function dbLoadMarkets(){
   try{
     const {data,error} = await db.from("markets").select("*").order("created_at",{ascending:true});
     if(error){ console.error("[DB] cargando mercados:", error.message); return; }
-    if(data && data.length > 0) STATE.markets = data.map(dbRowToMarket);
+    if(data && data.length > 0){
+      const all = data.map(dbRowToMarket);
+      // Los mercados eliminados (soft delete) NO aparecen en la plataforma,
+      // pero se conservan para el Historial del admin.
+      STATE.markets        = all.filter(m=>!m.deleted);
+      STATE.deletedMarkets = all.filter(m=> m.deleted);
+    }
     scheduleMarketCloseRefresh(); // planificar auto-refresh por cierres
   }catch(e){ console.error("[DB] excepción mercados:", e?.message||e); }
 }
@@ -1253,6 +1259,8 @@ function dbRowToMarket(row){
     qNo:  row.q_no||0,
     priceYes: row.price_yes||0.50,
     tick:     row.tick||0.01,
+    mmUserId: row.mm_user_id||null,
+    deleted:  row.deleted||false,
     similarMarkets: row.similar_markets||[],
     totalVolume: row.total_volume||0,
     spreadPool:  row.spread_pool||0,
@@ -1290,6 +1298,8 @@ function marketToDbRow(m){
     q_no:         m.qNo||0,
     price_yes:    m.priceYes||0.50,
     tick:         m.tick||0.01,
+    ...(m.mmUserId !== undefined ? {mm_user_id: m.mmUserId||null} : {}),
+    ...(m.deleted  !== undefined ? {deleted: m.deleted||false} : {}),
     total_volume: m.totalVolume||0,
     spread_pool:  m.spreadPool||0,
     total_paid:   m.totalPaid||0,
@@ -5180,6 +5190,18 @@ async function loadProChart(marketId){
 
     trades.push({ price: p, ts: new Date(c.created_at).getTime() });
   });
+
+  // Reparar filas históricas: versiones antiguas del RPC guardaban en
+  // yes_price el precio del lado NO en compras NO. Si un precio salta
+  // demasiados ticks pero su espejo (1−p) encaja con el anterior, es una
+  // de esas filas → usar el espejo (el verdadero precio de SÍ).
+  const tk = m?.tick || 0.01;
+  for(let i=1; i<trades.length; i++){
+    const prev = trades[i-1].price, p = trades[i].price;
+    if(Math.abs(p - prev) > 8*tk && Math.abs((1-p) - prev) <= 3*tk){
+      trades[i].price = Math.round((1-p)*10000)/10000;
+    }
+  }
 
   // Punto sintético final: precio SÍ actual del mercado (markets.price_yes,
   // movido por ticks en match_order — fuente de verdad para ambos lados).
@@ -12522,9 +12544,15 @@ async function executeTrade(){
       const netShares   = rpcData.shares_got || 0;
       const spreadEarned= rpcData.spread_usd || 0;
       const newHistory  = Array.isArray(rpcData.new_history) ? rpcData.new_history : [];
-      // match_order devuelve price_yes = precio SÍ del mercado movido por
-      // ticks — es la fuente de verdad para AMBOS lados (compra SÍ o NO).
-      const newPriceYes = rpcData.price_yes;
+      // Precio SÍ AUTORITATIVO: releer markets.price_yes de la DB.
+      // Algunas versiones del RPC devuelven el precio del lado operado
+      // (compra NO → devuelve precio de NO) — la columna de la DB siempre
+      // guarda el precio de SÍ, que es lo único que dibuja la gráfica.
+      let newPriceYes = rpcData.price_yes;
+      try{
+        const {data:mp} = await db.from("markets").select("price_yes").eq("id",marketId).maybeSingle();
+        if(mp && mp.price_yes != null) newPriceYes = mp.price_yes;
+      }catch(_){}
 
       const nm={
         ...localM,
@@ -12634,8 +12662,12 @@ async function executeTrade(){
       const netReturn = sellData.matched || 0;
       const newHistory= Array.isArray(sellData.new_history) ? sellData.new_history : [];
       const pendingShares = sellData.unfilled_shares ?? shares; // shares que quedaron en el libro
-      // Las ventas no mueven el precio: match_order devuelve el price_yes vigente
-      const newPriceYesSell = sellData.price_yes;
+      // Precio SÍ autoritativo desde la DB (misma protección que en compra)
+      let newPriceYesSell = sellData.price_yes;
+      try{
+        const {data:mp2} = await db.from("markets").select("price_yes").eq("id",marketId).maybeSingle();
+        if(mp2 && mp2.price_yes != null) newPriceYesSell = mp2.price_yes;
+      }catch(_){}
 
       const nm={...localM, priceYes:newPriceYesSell ?? localM.priceYes,
         spreadPool:(localM.spreadPool||0)+(sellData.spread_usd||0),
@@ -12837,12 +12869,16 @@ async function clearSTWLaunchDate(){
 // ═══════════════════════════════════════════════════════════════════
 
 const BRAND_DEFAULTS = {
-  brand_name: "Statwaves",
-  logo_url: "",        // data URI o URL del logo (reemplaza todos los logos)
-  favicon_url: "",     // data URI o URL del favicon
-  color_accent: "",    // color primario/acento de la marca
-  color_yes: "",       // color "SÍ"/positivo
-  color_no: "",        // color "NO"/negativo
+  brand_name: "Statwaves",     // reemplaza "Statwaves" en toda la UI
+  token_symbol: "STW",         // reemplaza "STW" en Be MM y balances de plataforma
+  logo_url: "",                // logo completo (ícono + nombre) — header/footer/login
+  logo_icon_url: "",           // solo ícono (sin nombre) — favicon fallback, avatares
+  favicon_url: "",             // icono de la pestaña del navegador
+  color_accent: "",            // primario/acento de marca
+  color_yes: "",               // positivo (SÍ/ganancias/CTA principales)
+  color_no: "",                // negativo (NO/pérdidas/alertas)
+  color_bg_light: "",          // fondo de la plataforma en tema claro
+  color_bg_dark: "",           // fondo de la plataforma en tema oscuro
   support_email: "",
 };
 window.BRAND = {...BRAND_DEFAULTS};
@@ -12861,26 +12897,35 @@ async function loadBranding(){
 function applyBranding(){
   const B = window.BRAND;
 
-  // ── Colores: override de variables CSS (gana sobre :root y temas) ──
+  // ── Colores del tema: override de variables CSS (gana sobre :root) ──
   const rs = document.documentElement.style;
   if(B.color_yes){ rs.setProperty("--yes", B.color_yes); rs.setProperty("--yes-text", B.color_yes); }
-  if(B.color_no){ rs.setProperty("--no", B.color_no); }
+  if(B.color_no){  rs.setProperty("--no",  B.color_no); }
   if(B.color_accent){ rs.setProperty("--accent", B.color_accent); }
+
+  // ── Fondos claro / oscuro por separado ──
+  // Se aplica el que corresponde al tema activo. Al alternar tema, este
+  // mismo bloque se vuelve a llamar y se actualiza (ver toggleTheme).
+  const isDark = document.documentElement.classList.contains("dark") ||
+                 document.body.classList.contains("dark") ||
+                 STATE.theme === "dark";
+  const bg = isDark ? B.color_bg_dark : B.color_bg_light;
+  if(bg){ rs.setProperty("--bg", bg); }
+  else  { rs.removeProperty("--bg"); }
 
   // ── Título de la pestaña y favicon ──
   if(B.brand_name && B.brand_name !== "Statwaves"){
     document.title = `${B.brand_name} — Prediction Markets`;
   }
-  if(B.favicon_url){
+  const favSrc = B.favicon_url || B.logo_icon_url || B.logo_url;
+  if(favSrc){
     let l = document.querySelector('link[rel="icon"]');
     if(!l){ l = document.createElement("link"); l.rel = "icon"; document.head.appendChild(l); }
-    l.href = B.favicon_url;
+    l.href = favSrc;
   }
 
-  // ── Reescritura inicial de todo el DOM ──
   brandRewriteDOM(document.body);
 
-  // ── Observer: reescribe todo contenido nuevo (renders, modales, notify) ──
   if(!window._brandObserver){
     window._brandObserver = new MutationObserver(muts=>{
       for(const m of muts){
@@ -12897,20 +12942,38 @@ function applyBranding(){
 
 function brandRewriteText(node){
   const B = window.BRAND;
-  if(!B || B.brand_name === "Statwaves") return;
+  if(!B) return;
   const v = node.nodeValue;
-  if(!v || !/statwaves/i.test(v)) return;
-  // No tocar textos que parezcan emails (el email de soporte se maneja aparte)
+  if(!v) return;
+
+  const nameChanged  = B.brand_name   && B.brand_name   !== "Statwaves";
+  const tokenChanged = B.token_symbol && B.token_symbol !== "STW";
+  if(!nameChanged && !tokenChanged) return;
+
+  // No tocar textos que parezcan emails
   if(v.includes("@") && /statwaves[^ ]*@|@[^ ]*statwaves/i.test(v)) return;
-  node.nodeValue = v.replace(/Statwaves/g, B.brand_name).replace(/statwaves/g, B.brand_name);
+
+  let out = v;
+  if(nameChanged){
+    out = out.replace(/Statwaves/g, B.brand_name).replace(/statwaves/g, B.brand_name);
+  }
+  if(tokenChanged){
+    // "STW" solo se reemplaza como palabra completa (no en STWave o similar).
+    // Cubre "STW", "$STW", "Token STW", etc.
+    out = out.replace(/\bSTW\b/g, B.token_symbol);
+  }
+  if(out !== v) node.nodeValue = out;
 }
 
 function brandRewriteDOM(root){
   const B = window.BRAND;
   if(!root || root.nodeType !== 1) return;
 
-  // 1) Nombre de marca en todos los nodos de texto
-  if(B.brand_name !== "Statwaves"){
+  const nameChanged  = B.brand_name   && B.brand_name   !== "Statwaves";
+  const tokenChanged = B.token_symbol && B.token_symbol !== "STW";
+
+  // 1) Nombre de marca y símbolo del token en todos los nodos de texto
+  if(nameChanged || tokenChanged){
     const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
     let n;
     while((n = w.nextNode())){
@@ -12920,14 +12983,16 @@ function brandRewriteDOM(root){
     }
   }
 
-  // 2) Logos: todo <img alt="Statwaves"> se reemplaza por el logo de la marca
-  //    (el alt se conserva como marcador para poder seguir encontrándolos)
-  if(B.logo_url){
-    const imgs = [];
-    if(root.matches && root.matches('img[alt="Statwaves"]')) imgs.push(root);
-    if(root.querySelectorAll) imgs.push(...root.querySelectorAll('img[alt="Statwaves"]'));
-    imgs.forEach(img=>{ if(img.getAttribute("src") !== B.logo_url) img.src = B.logo_url; });
-  }
+  // 2) Logos: <img alt="Statwaves"> = logo completo; <img alt="Statwaves icon"> = solo ícono
+  const swap = (sel, url) => {
+    if(!url) return;
+    const list = [];
+    if(root.matches && root.matches(sel)) list.push(root);
+    if(root.querySelectorAll) list.push(...root.querySelectorAll(sel));
+    list.forEach(img=>{ if(img.getAttribute("src") !== url) img.src = url; });
+  };
+  swap('img[alt="Statwaves"]',      B.logo_url);
+  swap('img[alt="Statwaves icon"]', B.logo_icon_url || B.logo_url);
 
   // 3) Email de soporte
   if(B.support_email && root.querySelectorAll){
@@ -12944,17 +13009,23 @@ window._wlDraft = {};
 function renderAdminWhitelabel(){
   const B = window.BRAND;
   const cs = getComputedStyle(document.documentElement);
-  const curAccent = B.color_accent || cs.getPropertyValue("--accent").trim() || "#0098a8";
-  const curYes    = B.color_yes    || cs.getPropertyValue("--yes").trim()    || "#0098a8";
-  const curNo     = B.color_no     || cs.getPropertyValue("--no").trim()     || "#e0284a";
+  const isDark = document.documentElement.classList.contains("dark") ||
+                 document.body.classList.contains("dark") ||
+                 STATE.theme === "dark";
+  const curAccent  = B.color_accent   || cs.getPropertyValue("--accent").trim() || "#0098a8";
+  const curYes     = B.color_yes      || cs.getPropertyValue("--yes").trim()    || "#0098a8";
+  const curNo      = B.color_no       || cs.getPropertyValue("--no").trim()     || "#e0284a";
+  const curBgLight = B.color_bg_light || (isDark ? "#f7f8fb" : (cs.getPropertyValue("--bg").trim() || "#f7f8fb"));
+  const curBgDark  = B.color_bg_dark  || (isDark ? (cs.getPropertyValue("--bg").trim() || "#0f1114") : "#0f1114");
 
-  const fileRow = (key, label, hint, cur) => `
+  const fileRow = (key, label, hint, cur, wide) => `
     <div style="margin-bottom:18px">
       <div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">${label}</div>
       <div style="display:flex;align-items:center;gap:14px">
-        <div id="wl-prev-${key}" style="width:${key==='favicon_url'?'40px':'120px'};height:40px;border:1px dashed var(--border-strong);
+        <div id="wl-prev-${key}" style="width:${wide?'140px':'44px'};height:44px;border:1px dashed var(--border-strong);
             border-radius:8px;display:flex;align-items:center;justify-content:center;overflow:hidden;background:var(--card2)">
-          ${cur ? `<img src="${cur}" style="max-width:100%;max-height:100%"/>` : `<span style="font-size:10px;color:var(--muted)">actual</span>`}
+          ${cur ? `<img src="${cur}" style="max-width:100%;max-height:100%;object-fit:contain"/>`
+                 : `<span style="font-size:10px;color:var(--muted)">actual</span>`}
         </div>
         <label style="padding:9px 16px;border-radius:9px;border:1.5px solid var(--border-strong);cursor:pointer;
             font-size:12.5px;font-weight:700;background:var(--card2)">
@@ -12979,9 +13050,7 @@ function renderAdminWhitelabel(){
     <div class="admin-section-title">🎨 Whitelabel — Personalización de la plataforma</div>
     <p style="font-size:13px;color:var(--muted);margin-bottom:22px;line-height:1.6">
       Configura la identidad de marca para vender esta plataforma como whitelabel.
-      Los cambios se aplican a <strong>toda la plataforma para todos los usuarios</strong>:
-      el nombre reemplaza «Statwaves» en cada texto, los logos se cambian en header,
-      footer, login y modales, y los colores redefinen el tema completo.
+      Los cambios se aplican a <strong>toda la plataforma para todos los usuarios</strong>.
     </p>
 
     <div style="margin-bottom:18px">
@@ -12990,18 +13059,31 @@ function renderAdminWhitelabel(){
         style="width:100%;box-sizing:border-box;padding:11px 14px;border:1.5px solid var(--border-strong);
           border-radius:10px;background:var(--bg);color:var(--text);font-size:15px;font-weight:700"/>
       <div style="font-size:11px;color:var(--muted);margin-top:5px">
-        Reemplaza «Statwaves» en títulos, textos, bienvenida, footer y título de la pestaña del navegador.
+        Reemplaza «Statwaves» en toda la UI: header, footer, login, título de la pestaña.
       </div>
     </div>
 
-    ${fileRow("logo_url","Logo de la plataforma","PNG o SVG con fondo transparente. Se usa en el header, footer y pantalla de login.", window._wlDraft.logo_url || B.logo_url)}
-    ${fileRow("favicon_url","Favicon","Icono cuadrado (32×32 o 64×64). Aparece en la pestaña del navegador.", window._wlDraft.favicon_url || B.favicon_url)}
+    <div style="margin-bottom:18px">
+      <div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Símbolo del token</div>
+      <input id="wl-token" type="text" value="${escHtml(B.token_symbol||"STW")}" placeholder="MMX" maxlength="10"
+        style="width:100%;box-sizing:border-box;padding:11px 14px;border:1.5px solid var(--border-strong);
+          border-radius:10px;background:var(--bg);color:var(--text);font-size:15px;font-weight:800;letter-spacing:.5px"/>
+      <div style="font-size:11px;color:var(--muted);margin-top:5px">
+        Reemplaza «STW» en Be MM, portafolio, market maker y balance del token.
+      </div>
+    </div>
+
+    ${fileRow("logo_url",      "Logo con nombre (ícono + texto)",  "Se usa en el header, footer y pantalla de login. PNG/SVG con fondo transparente.", window._wlDraft.logo_url      || B.logo_url,      true)}
+    ${fileRow("logo_icon_url", "Logo solo ícono (sin texto)",      "Cuadrado. Se usa en avatares, notificaciones y como fallback del favicon.",        window._wlDraft.logo_icon_url || B.logo_icon_url, false)}
+    ${fileRow("favicon_url",   "Favicon",                          "Icono cuadrado (32×32 o 64×64). Pestaña del navegador.",                           window._wlDraft.favicon_url   || B.favicon_url,   false)}
 
     <div style="margin-bottom:22px">
       <div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Colores del tema</div>
-      ${colorRow("wl-accent","Color primario / acento de marca", curAccent)}
-      ${colorRow("wl-yes","Color positivo (SÍ, ganancias, botones principales)", curYes)}
-      ${colorRow("wl-no","Color negativo (NO, pérdidas, alertas)", curNo)}
+      ${colorRow("wl-accent",   "Color primario / acento de marca", curAccent)}
+      ${colorRow("wl-yes",      "Color positivo (SÍ, ganancias, CTA)", curYes)}
+      ${colorRow("wl-no",       "Color negativo (NO, pérdidas, alertas)", curNo)}
+      ${colorRow("wl-bg-light", "Fondo de la plataforma — tema claro",  curBgLight)}
+      ${colorRow("wl-bg-dark",  "Fondo de la plataforma — tema oscuro", curBgDark)}
     </div>
 
     <div style="margin-bottom:24px">
@@ -13039,17 +13121,22 @@ function wlFile(key, input){
 }
 
 async function wlSave(){
-  const name = (document.getElementById("wl-name")?.value || "").trim() || "Statwaves";
+  const name  = (document.getElementById("wl-name")?.value  || "").trim() || "Statwaves";
+  const token = (document.getElementById("wl-token")?.value || "").trim().toUpperCase() || "STW";
   const payload = {
     id: 1,
-    brand_name:    name,
-    color_accent:  document.getElementById("wl-accent")?.value || null,
-    color_yes:     document.getElementById("wl-yes")?.value || null,
-    color_no:      document.getElementById("wl-no")?.value || null,
+    brand_name:     name,
+    token_symbol:   token,
+    color_accent:   document.getElementById("wl-accent")?.value   || null,
+    color_yes:      document.getElementById("wl-yes")?.value      || null,
+    color_no:       document.getElementById("wl-no")?.value       || null,
+    color_bg_light: document.getElementById("wl-bg-light")?.value || null,
+    color_bg_dark:  document.getElementById("wl-bg-dark")?.value  || null,
     support_email: (document.getElementById("wl-email")?.value || "").trim() || null,
   };
-  if(window._wlDraft.logo_url)    payload.logo_url    = window._wlDraft.logo_url;
-  if(window._wlDraft.favicon_url) payload.favicon_url = window._wlDraft.favicon_url;
+  if(window._wlDraft.logo_url)      payload.logo_url      = window._wlDraft.logo_url;
+  if(window._wlDraft.logo_icon_url) payload.logo_icon_url = window._wlDraft.logo_icon_url;
+  if(window._wlDraft.favicon_url)   payload.favicon_url   = window._wlDraft.favicon_url;
 
   const {error} = await db.from("site_settings").upsert(payload);
   if(error){ notify("Error guardando: "+error.message, "error"); return; }
@@ -13068,7 +13155,7 @@ async function wlReset(){
   if(error){ notify("Error: "+error.message, "error"); return; }
   window.BRAND = {...BRAND_DEFAULTS};
   window._wlDraft = {};
-  ["--yes","--yes-text","--no","--accent"].forEach(v=>document.documentElement.style.removeProperty(v));
+  ["--yes","--yes-text","--no","--accent","--bg"].forEach(v=>document.documentElement.style.removeProperty(v));
   document.title = "Statwaves — Prediction Markets";
   notify("Marca restaurada — recarga la página para ver todos los textos originales","info");
   render();
@@ -14156,6 +14243,16 @@ function renderAdminMarkets(){
         compra el lado opuesto y pone orden de venta a +$0.02 por share. El spread (2–3%) se acredita al resolver.
         Tu pérdida máxima es el pool del lado perdedor.
       </div>
+      <div style="margin-bottom:12px">
+        <label class="lbl">Usuario MM del mercado (admin)</label>
+        <select class="inp" onchange="STATE.mkForm.mmUserId=this.value">
+          ${STATE.users.filter(x=>x.role==="admin").map(a=>`
+            <option value="${a.id}" ${String(f.mmUserId||getUser()?.id)===String(a.id)?"selected":""}>
+              @${escHtml(a.username||a.id)} · balance ${usd(a.balance||0)}
+            </option>`).join("")}
+        </select>
+        <div class="hint">A este admin se le descuenta el dinero de las pools y él acumula las shares de contraparte del MM</div>
+      </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
         <div>
           <label class="lbl">Pool SÍ (USD)</label>
@@ -14533,7 +14630,7 @@ function renderAdminHistory(){
       ${sub?`<div style="font-size:11px;color:var(--muted);margin-top:5px">${sub}</div>`:""}
     </div>`;
 
-  const resolved = STATE.markets
+  const resolved = [...STATE.markets, ...(STATE.deletedMarkets||[])]
     .filter(m => m.resolved)
     .sort((a,b) => new Date(b.resolvedAt||b.closesAt||0) - new Date(a.resolvedAt||a.closesAt||0));
 
@@ -14934,6 +15031,9 @@ function renderAdminResolve(){
             onclick="confirmAdminResolve('${m.id}','YES','${escHtml(m.title).replace(/'/g,"\\'")}','${pct(pYesCurrent)}','${pct(1-pYesCurrent)}','${fmtVol(m.totalVolume)}')">✅ Resolver SÍ</button>
           <button class="btn-red" style="font-size:13px;padding:8px 14px;font-weight:700"
             onclick="confirmAdminResolve('${m.id}','NO','${escHtml(m.title).replace(/'/g,"\\'")}','${pct(pYesCurrent)}','${pct(1-pYesCurrent)}','${fmtVol(m.totalVolume)}')">❌ Resolver NO</button>
+          <button class="btn-ghost" style="font-size:11px;padding:8px 12px;color:#f59e0b;border-color:#f59e0b"
+            title="Devolver todo el dinero a todos los participantes y cerrar el mercado (falta de liquidez / evacuación)"
+            onclick="adminRefundMarket('${m.id}','${escHtml(m.title).replace(/'/g,"\\'")}')">🔄 Evacuar</button>
         </div>
       </div>
     </div>`;
@@ -15541,18 +15641,23 @@ async function adminDeleteMarket(id){
   const m = STATE.markets.find(x=>x.id===id);
   if(!m) return notify("Mercado no encontrado","error");
   if(!m.resolved) return notify("Solo se pueden eliminar mercados ya resueltos","error");
-  if(!confirm(`¿Eliminar permanentemente "${m.title}"? Esta acción no se puede deshacer.`)) return;
+  if(!confirm(`¿Eliminar "${m.title}" de la plataforma? Desaparecerá para los usuarios, pero su información quedará guardada permanentemente en el Historial del admin.`)) return;
   await db.from("positions").delete().eq("market_id",id);
   await db.from("orders").delete().eq("market_id",id);
   // Limpiar también las secciones (Última hora / Tendencias) — si no se
   // borra aquí, el market_id queda huérfano en market_sections y el
   // contador de esas pestañas sigue mostrando mercados ya eliminados.
   await db.from("market_sections").delete().eq("market_id",id);
-  await db.from("markets").delete().eq("id",id);
+  // SOFT DELETE: la fila del mercado NUNCA se borra — se marca deleted=true.
+  // Así el Historial de mercados del admin conserva pools, payout y
+  // resultados aunque el mercado se haya "eliminado" de la plataforma.
+  await db.from("markets").update({deleted:true}).eq("id",id);
+  m.deleted = true;
+  STATE.deletedMarkets = [...(STATE.deletedMarkets||[]), m];
   STATE.markets = STATE.markets.filter(x=>x.id!==id);
   STATE.breakingIds = (STATE.breakingIds||[]).filter(mid=>mid!==id);
   STATE.trendingIds = (STATE.trendingIds||[]).filter(mid=>mid!==id);
-  notify("🗑 Mercado eliminado correctamente","info");
+  notify("🗑 Mercado eliminado — su información persiste en el Historial","info");
   render();
 }
 
@@ -16378,6 +16483,29 @@ async function adminDelete(id){
   STATE.users=STATE.users.filter(u=>u.id!==id);
   notify("Cuenta eliminada");render();
 }
+// ── Evacuar mercado: devolver TODO el dinero a todos y cerrar ────────
+async function adminRefundMarket(marketId, title){
+  const u = getUser();
+  if(!u || u.role!=="admin") return;
+  if(!confirm(`🔄 EVACUAR "${title}"\n\nSe devolverá a CADA participante el valor de sus posiciones (shares × precio de entrada), se reembolsarán las órdenes pendientes, y el MM recibirá sus posiciones + pools libres + spread pool.\n\nEl mercado quedará cerrado como "refunded". Esta acción no se puede deshacer.\n\n¿Continuar?`)) return;
+
+  const {data, error} = await db.rpc("refund_market", {
+    p_market_id: String(marketId),
+    p_admin_id:  String(u.id),
+  });
+  if(error || data?.error){
+    notify("Error evacuando: "+(error?.message||data?.error), "error");
+    return;
+  }
+  notify(`✅ Mercado evacuado — devuelto a usuarios: ${usd(data.refunded_to_users||0)} · órdenes pendientes: ${usd(data.refunded_pending||0)} · al MM: ${usd(data.returned_to_mm||0)}`, "success");
+  const {data:row} = await db.from("markets").select("*").eq("id",marketId).maybeSingle();
+  if(row){
+    const idx = STATE.markets.findIndex(x=>x.id===marketId);
+    if(idx>=0) STATE.markets[idx] = dbRowToMarket(row);
+  }
+  render();
+}
+
 async function adminCreateMarket(){
   const f=STATE.mkForm;
   if(!f.title||!f.closesAt) return notify("Título y fecha son obligatorios","error");
@@ -16392,8 +16520,12 @@ async function adminCreateMarket(){
   const totalCost = sharesYes + sharesNo;
 
   const u = getUser();
-  if((u?.balance||0) < totalCost)
-    return notify(`Saldo insuficiente. Necesitas ${usd(totalCost)} — tienes ${usd(u?.balance||0)}`, "error");
+  // MM seleccionado en el formulario (por defecto, el admin que crea)
+  const mmUser = STATE.users.find(x=>String(x.id)===String(f.mmUserId)) || u;
+  if(!mmUser || mmUser.role!=="admin")
+    return notify("El MM del mercado debe ser un usuario admin","error");
+  if((mmUser.balance||0) < totalCost)
+    return notify(`Saldo insuficiente del MM @${mmUser.username||mmUser.id}. Necesita ${usd(totalCost)} — tiene ${usd(mmUser.balance||0)}`, "error");
 
   // El precio inicial del mercado = mmPrice
   // qYes/qNo iniciales = costo MM de cada lado (representan el inventario en el pool)
@@ -16417,6 +16549,7 @@ async function adminCreateMarket(){
     priceHistory:[parseFloat(mmPrice.toFixed(4))],
     priceYes: mmPrice,
     tick:     mmTick,
+    mmUserId: String(mmUser.id),
     similarMarkets:[],
     createdAt:new Date().toISOString(), featured:false
   };
@@ -16433,8 +16566,8 @@ async function adminCreateMarket(){
   // 2. Colocar órdenes MM en ambos lados via RPC
   let mmErrors = [];
 
-  // Cast user_id to string UUID format for RPC
-  const adminUid = String(u.id);
+  // Las pools se fondean con el balance del MM SELECCIONADO
+  const adminUid = String(mmUser.id);
 
   const {data:mmYes, error:errYes} = await db.rpc("place_mm_order",{
     p_market_id: String(m.id),
