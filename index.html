@@ -12984,12 +12984,19 @@ function brandRewriteDOM(root){
   }
 
   // 2) Logos: <img alt="Statwaves"> = logo completo; <img alt="Statwaves icon"> = solo ícono
+  // Guardamos data-original-src la primera vez que tocamos cada img — así
+  // wlReset puede restaurar los logos sin tener que recargar la página.
   const swap = (sel, url) => {
     if(!url) return;
     const list = [];
     if(root.matches && root.matches(sel)) list.push(root);
     if(root.querySelectorAll) list.push(...root.querySelectorAll(sel));
-    list.forEach(img=>{ if(img.getAttribute("src") !== url) img.src = url; });
+    list.forEach(img=>{
+      if(!img.hasAttribute("data-original-src")){
+        img.setAttribute("data-original-src", img.getAttribute("src") || "");
+      }
+      if(img.getAttribute("src") !== url) img.src = url;
+    });
   };
   swap('img[alt="Statwaves"]',      B.logo_url);
   swap('img[alt="Statwaves icon"]', B.logo_icon_url || B.logo_url);
@@ -13123,26 +13130,39 @@ function wlFile(key, input){
 async function wlSave(){
   const name  = (document.getElementById("wl-name")?.value  || "").trim() || "Statwaves";
   const token = (document.getElementById("wl-token")?.value || "").trim().toUpperCase() || "STW";
-  const payload = {
-    id: 1,
-    brand_name:     name,
-    token_symbol:   token,
-    color_accent:   document.getElementById("wl-accent")?.value   || null,
-    color_yes:      document.getElementById("wl-yes")?.value      || null,
-    color_no:       document.getElementById("wl-no")?.value       || null,
-    color_bg_light: document.getElementById("wl-bg-light")?.value || null,
-    color_bg_dark:  document.getElementById("wl-bg-dark")?.value  || null,
-    support_email: (document.getElementById("wl-email")?.value || "").trim() || null,
-  };
-  if(window._wlDraft.logo_url)      payload.logo_url      = window._wlDraft.logo_url;
-  if(window._wlDraft.logo_icon_url) payload.logo_icon_url = window._wlDraft.logo_icon_url;
-  if(window._wlDraft.favicon_url)   payload.favicon_url   = window._wlDraft.favicon_url;
+  const u = getUser();
+  if(!u){ notify("Sesión no válida","error"); return; }
 
-  const {error} = await db.from("site_settings").upsert(payload);
+  const {data, error} = await db.rpc("save_site_settings", {
+    p_admin_id:      String(u.id),
+    p_brand_name:    name,
+    p_token_symbol:  token,
+    p_logo_url:      window._wlDraft.logo_url      || null,
+    p_logo_icon_url: window._wlDraft.logo_icon_url || null,
+    p_favicon_url:   window._wlDraft.favicon_url   || null,
+    p_color_accent:  document.getElementById("wl-accent")?.value   || null,
+    p_color_yes:     document.getElementById("wl-yes")?.value      || null,
+    p_color_no:      document.getElementById("wl-no")?.value       || null,
+    p_color_bg_light: document.getElementById("wl-bg-light")?.value || null,
+    p_color_bg_dark:  document.getElementById("wl-bg-dark")?.value  || null,
+    p_support_email: (document.getElementById("wl-email")?.value || "").trim() || null,
+  });
   if(error){ notify("Error guardando: "+error.message, "error"); return; }
+  if(data?.error){ notify(data.error, "error"); return; }
 
-  const clean = Object.fromEntries(Object.entries(payload).filter(([k,v])=>v!=null && v!==""));
-  window.BRAND = {...window.BRAND, ...clean};
+  const applied = {
+    brand_name: name, token_symbol: token,
+    color_accent:  document.getElementById("wl-accent")?.value,
+    color_yes:     document.getElementById("wl-yes")?.value,
+    color_no:      document.getElementById("wl-no")?.value,
+    color_bg_light: document.getElementById("wl-bg-light")?.value,
+    color_bg_dark:  document.getElementById("wl-bg-dark")?.value,
+    support_email: (document.getElementById("wl-email")?.value || "").trim(),
+    logo_url:      window._wlDraft.logo_url      || window.BRAND.logo_url,
+    logo_icon_url: window._wlDraft.logo_icon_url || window.BRAND.logo_icon_url,
+    favicon_url:   window._wlDraft.favicon_url   || window.BRAND.favicon_url,
+  };
+  window.BRAND = {...window.BRAND, ...Object.fromEntries(Object.entries(applied).filter(([k,v])=>v))};
   window._wlDraft = {};
   applyBranding();
   render();
@@ -13150,14 +13170,41 @@ async function wlSave(){
 }
 
 async function wlReset(){
-  if(!confirm("¿Restaurar la marca original (Statwaves, logos y colores por defecto)?")) return;
-  const {error} = await db.from("site_settings").delete().eq("id",1);
-  if(error){ notify("Error: "+error.message, "error"); return; }
+  if(!confirm("¿Restaurar la marca original (Statwaves, logos y colores por defecto)?\n\nEste cambio se aplica a toda la plataforma para todos los usuarios.")) return;
+  const u = getUser();
+  if(!u){ notify("Sesión no válida","error"); return; }
+
+  const {data, error} = await db.rpc("reset_site_settings", { p_admin_id: String(u.id) });
+  if(error){ notify("Error restaurando: "+error.message, "error"); return; }
+  if(data?.error){ notify(data.error, "error"); return; }
+
+  // Restaurar TODO al estado por defecto sin necesidad de recargar la página
   window.BRAND = {...BRAND_DEFAULTS};
   window._wlDraft = {};
+
+  // Limpiar variables CSS que Whitelabel hubiera sobreescrito
   ["--yes","--yes-text","--no","--accent","--bg"].forEach(v=>document.documentElement.style.removeProperty(v));
+
+  // Restaurar título e ícono originales
   document.title = "Statwaves — Prediction Markets";
-  notify("Marca restaurada — recarga la página para ver todos los textos originales","info");
+  const favLink = document.querySelector('link[rel="icon"]');
+  if(favLink) favLink.remove();
+
+  // Restaurar todos los logos <img alt="Statwaves"> e <img alt="Statwaves icon">
+  // a su src original (leído de un atributo data-original-src que guardamos
+  // al primer swap; si no existe, se restaura al recargar)
+  document.querySelectorAll('img[alt="Statwaves"], img[alt="Statwaves icon"]').forEach(img=>{
+    const orig = img.getAttribute("data-original-src");
+    if(orig) img.src = orig;
+  });
+
+  // Detener el observer de reescritura para que no vuelva a aplicar la marca
+  if(window._brandObserver){
+    try{ window._brandObserver.disconnect(); }catch(_){}
+    window._brandObserver = null;
+  }
+
+  notify("✅ Marca original restaurada — el nombre en textos ya cargados se actualizará al navegar","success");
   render();
 }
 
