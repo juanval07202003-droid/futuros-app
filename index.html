@@ -1259,7 +1259,6 @@ function dbRowToMarket(row){
     qNo:  row.q_no||0,
     priceYes: row.price_yes||0.50,
     tick:     row.tick||0.01,
-    mmUserId: row.mm_user_id||null,
     deleted:  row.deleted||false,
     similarMarkets: row.similar_markets||[],
     totalVolume: row.total_volume||0,
@@ -1298,7 +1297,6 @@ function marketToDbRow(m){
     q_no:         m.qNo||0,
     price_yes:    m.priceYes||0.50,
     tick:         m.tick||0.01,
-    ...(m.mmUserId !== undefined ? {mm_user_id: m.mmUserId||null} : {}),
     ...(m.deleted  !== undefined ? {deleted: m.deleted||false} : {}),
     total_volume: m.totalVolume||0,
     spread_pool:  m.spreadPool||0,
@@ -14290,16 +14288,6 @@ function renderAdminMarkets(){
         compra el lado opuesto y pone orden de venta a +$0.02 por share. El spread (2–3%) se acredita al resolver.
         Tu pérdida máxima es el pool del lado perdedor.
       </div>
-      <div style="margin-bottom:12px">
-        <label class="lbl">Usuario MM del mercado (admin)</label>
-        <select class="inp" onchange="STATE.mkForm.mmUserId=this.value">
-          ${STATE.users.filter(x=>x.role==="admin").map(a=>`
-            <option value="${a.id}" ${String(f.mmUserId||getUser()?.id)===String(a.id)?"selected":""}>
-              @${escHtml(a.username||a.id)} · balance ${usd(a.balance||0)}
-            </option>`).join("")}
-        </select>
-        <div class="hint">A este admin se le descuenta el dinero de las pools y él acumula las shares de contraparte del MM</div>
-      </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
         <div>
           <label class="lbl">Pool SÍ (USD)</label>
@@ -16567,12 +16555,13 @@ async function adminCreateMarket(){
   const totalCost = sharesYes + sharesNo;
 
   const u = getUser();
-  // MM seleccionado en el formulario (por defecto, el admin que crea)
-  const mmUser = STATE.users.find(x=>String(x.id)===String(f.mmUserId)) || u;
+  // El MM del mercado es el admin que lo crea (usa el admin más antiguo
+  // como MM global; ver match_order). No hay MM por-mercado.
+  const mmUser = u;
   if(!mmUser || mmUser.role!=="admin")
-    return notify("El MM del mercado debe ser un usuario admin","error");
+    return notify("Solo un admin puede crear mercados","error");
   if((mmUser.balance||0) < totalCost)
-    return notify(`Saldo insuficiente del MM @${mmUser.username||mmUser.id}. Necesita ${usd(totalCost)} — tiene ${usd(mmUser.balance||0)}`, "error");
+    return notify(`Saldo insuficiente. Necesitas ${usd(totalCost)} — tienes ${usd(mmUser.balance||0)}`, "error");
 
   // El precio inicial del mercado = mmPrice
   // qYes/qNo iniciales = costo MM de cada lado (representan el inventario en el pool)
@@ -16596,7 +16585,6 @@ async function adminCreateMarket(){
     priceHistory:[parseFloat(mmPrice.toFixed(4))],
     priceYes: mmPrice,
     tick:     mmTick,
-    mmUserId: String(mmUser.id),
     similarMarkets:[],
     createdAt:new Date().toISOString(), featured:false
   };
@@ -16604,7 +16592,23 @@ async function adminCreateMarket(){
   // 1. Guardar mercado en DB
   try{
     const row = marketToDbRow(m);
-    const {error} = await db.from("markets").insert(row);
+    let {error} = await db.from("markets").insert(row);
+
+    // Red de seguridad contra "Could not find the 'X' column of 'markets'
+    // in the schema cache": puede ocurrir si el cache de Supabase quedó
+    // desactualizado (migraciones pendientes, etc.). Detectamos el nombre
+    // exacto de la columna en el mensaje, la eliminamos del row y reintentamos
+    // una sola vez. Si vuelve a fallar por otra columna distinta, cortamos.
+    if(error){
+      const match = /(?:column|columna)\s+["'`]?([a-z_]+)["'`]?/i.exec(error.message||"");
+      const col = match && match[1];
+      if(col && col in row){
+        delete row[col];
+        const retry = await db.from("markets").insert(row);
+        error = retry.error;
+      }
+    }
+
     if(error) return notify("Error al crear el mercado: "+error.message,"error");
   }catch(e){ return notify("Error al crear el mercado: "+(e?.message||e),"error"); }
 
