@@ -5161,17 +5161,30 @@ async function loadProChart(marketId){
   const m = getMarket(marketId);
 
   // Fuente de verdad: la tabla CONTRACTS — cada fila es una operación real
-  // ejecutada (la misma fuente que alimenta el historial de operaciones,
-  // que sí funciona). La tabla orders NO contiene las compras de usuarios
-  // en el flujo actual, por eso las velas no se movían.
+  // ejecutada. Traemos también el price_yes actualizado del mercado EN
+  // PARALELO, así el punto sintético que dibuja la vela en curso NUNCA
+  // queda desfasado respecto a lo que muestra la cabecera del panel.
+  // (Sin esto, el estado local podía ir un trade atrás por la carrera con
+  // el refresh global de precios cada 5s.)
   const adminIds = new Set(STATE.users.filter(u=>u.role==="admin").map(u=>String(u.id)));
 
-  const {data: contracts, error: cErr} = await db.from('contracts')
-    .select('yes_price, yes_user_id, no_user_id, created_at')
-    .eq('market_id', marketId)
-    .order('created_at', {ascending: true})
-    .limit(5000);
+  const [{data: contracts, error: cErr}, {data: mFresh}] = await Promise.all([
+    db.from('contracts')
+      .select('yes_price, no_price, yes_user_id, no_user_id, created_at')
+      .eq('market_id', marketId)
+      .order('created_at', {ascending: true})
+      .limit(5000),
+    db.from('markets').select('price_yes').eq('id', marketId).maybeSingle(),
+  ]);
   if(cErr) console.warn('loadProChart contracts error:', cErr.message);
+
+  // Precio SÍ AUTORITATIVO desde la DB. Además sincronizamos el estado local
+  // para que la cabecera del panel muestre el mismo valor que la vela.
+  const freshPriceYes = mFresh?.price_yes ?? m?.priceYes ?? null;
+  if(freshPriceYes != null && m && Math.abs((m.priceYes||0) - freshPriceYes) > 0.0001){
+    const idx = STATE.markets.findIndex(x=>x.id===marketId);
+    if(idx>=0) STATE.markets[idx] = {...STATE.markets[idx], priceYes: freshPriceYes};
+  }
 
   let trades = [];
   (contracts||[]).forEach(c => {
@@ -5214,8 +5227,8 @@ async function loadProChart(marketId){
 
   // Punto sintético final: precio SÍ actual del mercado (markets.price_yes,
   // movido por ticks en match_order — fuente de verdad).
-  if(m?.priceYes != null){
-    trades.push({ price: m.priceYes, ts: Date.now(), syn: true });
+  if(freshPriceYes != null){
+    trades.push({ price: freshPriceYes, ts: Date.now(), syn: true });
   }
 
   PRO_CHART_STATE.trades   = trades.filter(t => t.price > 0 && t.price < 1);
